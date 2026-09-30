@@ -1,0 +1,19 @@
+# 发布副本的 Git hooks —— Git 2.54+ 自带【配置化 hooks】，不装 Husky / pre-commit / Lefthook。
+# 本文件由发布管线生成，请勿手改；要改先改发布管线，再重新生成。
+#
+# 启用（克隆公开仓后跑一次）：
+#     git config include.path ../.githooks/gitconfig
+# 相对路径按 `.git/` 所在目录解析，换机器重跑同一行即可。
+#
+# 停用：git config --unset include.path
+# 查看：git hook list pre-push
+#
+# ⚠️ 为什么不让它自动生效：git 永远不允许仓库自带配置自动执行命令 ——
+#    那等于让克隆者远程执行任意代码。这一步必须由人显式开启，是 git 的有意设计。
+#
+# pre-push 只跑测试（`npm test` 里已含边界门禁：禁止具体服务名）。
+# lint 与打包检查交给 CI（本地跑 npx oxlint 每次都要下载，pre-push 太慢，不值）。
+
+[hook "tests"]
+	event = pre-push
+	command = npm test

@@ -1,0 +1,31 @@
+{
+  "name": "@cordium/plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cordium 插件机制：加载器、执行隔离、manifest 校验、依赖解析、目录索引（不含任何具体业务插件）",
+  "license": "MIT",
+  "author": "Cadttun (https://github.com/cadttun)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cadttun/cordium.git",
+    "directory": "packages/plugins"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@cordium/kernel": "0.1.0"
+  },
+  "exports": {
+    "./runtime": "./src/runtime.mjs",
+    "./ecosystem": "./src/ecosystem.mjs",
+    "./catalog": "./src/catalog.mjs",
+    "./isolation": "./src/isolation.mjs",
+    "./loader": "./src/loader.mjs",
+    "./package.json": "./package.json"
+  }
+}

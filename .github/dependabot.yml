@@ -1,0 +1,8 @@
+# 只管 GitHub Actions：workflow 里的 action 锁的是提交 SHA，升级靠这里每月提 PR（SHA 与行尾版本注释一起改）。
+# 不配 npm：两个包零运行时依赖，lockfile 里只有 workspace 链接，没有可升级的东西。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

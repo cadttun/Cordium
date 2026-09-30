@@ -1,0 +1,55 @@
+# 两包测试 + 打包检查。engines 为 >=20，矩阵覆盖 20 / 22 / 24（权限模型开关名在 20 与 22+ 不同，isolation 测试要两边都跑）
+name: test
+on:
+  push:
+  pull_request:
+# 最小权限：只读代码。任何 job 都不需要写仓库 / 发包 / 改 issue。
+permissions:
+  contents: read
+# ★ 第三方 action 一律锁提交 SHA（行尾注释标版本）：tag 可被改指，SHA 不能。升级由 dependabot 提 PR。
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22, 24]
+        # 6 个组合全跑：npm test 经 scripts/run-tests.mjs 列文件，不依赖 shell 展开 glob（Windows 的 cmd 不展开，Node 20 的 --test 也不认 glob）
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm test
+      - run: npm run pack
+
+  lint:
+    # 静态检查（死码一类）。★ 单独一个 job 而不是并进上面的矩阵：
+    #   · 只跑一次 —— 矩阵里跑等于同一份代码在 6 个组合上各扫一遍，纯浪费；
+    #   · 只在 ubuntu 跑 —— 静态检查与平台无关；且下方的 `*` 要靠 bash 展开（Windows 的 cmd 不展开，oxlint 自己也不展开）。
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+      # ★ 锁版本，不用 `@latest`：上游一发新版，代码一行没动 CI 也可能突然变红。
+      #   升级是一个**有意的动作**（改这个字符串 + 本地先跑一遍），不是自动发生的事。
+      # ★ 不写进 package.json：不碰运行时依赖，也不需要 `npm ci` —— 与仓库「零运行时依赖」一致。
+      # ★ 只扫 src，不扫 test：test 里 `new Array(1_000_000)` 是**故意**造大数组（测预算上限），
+      #   报出来的 no-new-array 是噪音。**src 当前零告警** —— 这条基线是有意的：
+      #   从零开始，以后新冒出来的每一条都值得看一眼；一上来就带一堆已知噪音等于没有门禁。
+      #   ★ 用 `packages/*/src`（不加引号，由 ubuntu 的 bash 展开），不显式列目录 —— 实测（oxlint 1.86.0）：
+      #     · 显式列两个目录时，其中一个被改名 / 删掉 ⇒ oxlint 只扫剩下那个、**退出 0（静默变绿）**；
+      #       新增第三个包 ⇒ 根本不在检查范围里，同样静默。
+      #     · glob 自动覆盖新包；一个都匹配不到时 bash 原样传字面量 ⇒ oxlint "No files found" ⇒ 退出 1。
+      #   ⚠️ 不要给它加引号（oxlint 自己不展开 glob ⇒ No files found），也不要把这一步挪到 Windows 上跑。
+      #   ★ `import/no-cycle`：模块间不得成环（跨包经 `@cordium/kernel/internal` 的边也算）。实测造一个环即退出 1。
+      - run: npx --yes oxlint@1.86.0 --deny-warnings --import-plugin -D import/no-cycle packages/*/src

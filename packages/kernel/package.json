@@ -1,0 +1,25 @@
+{
+  "name": "@cordium/kernel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cordium 微内核：契约、生命周期、服务交付、轻量通知（零业务、零外部依赖）",
+  "license": "MIT",
+  "author": "Cadttun (https://github.com/cadttun)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cadttun/cordium.git",
+    "directory": "packages/kernel"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": "./src/index.mjs",
+    "./internal": "./src/internal.mjs",
+    "./package.json": "./package.json"
+  }
+}

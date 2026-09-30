@@ -1,0 +1,25 @@
+{
+  "name": "cordium",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "通用插件基座（微内核）：契约、生命周期、服务交付、轻量消息",
+  "license": "MIT",
+  "author": "Cadttun (https://github.com/cadttun)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cadttun/cordium.git"
+  },
+  "workspaces": [
+    "packages/kernel",
+    "packages/plugins"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "pack": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && npm pack --workspaces --pack-destination dist",
+    "test:coverage": "node scripts/run-tests.mjs --experimental-test-coverage"
+  }
+}
