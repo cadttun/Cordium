@@ -1,7 +1,9 @@
 # 两包测试 + 打包检查。engines 为 >=20，矩阵覆盖 20 / 22 / 24（权限模型开关名在 20 与 22+ 不同，isolation 测试要两边都跑）
 name: test
 on:
+  # push 只跑 main：其他分支（如 dependabot 的）走 PR 触发即可，免得同一提交跑两遍
   push:
+    branches: [main]
   pull_request:
 # 最小权限：只读代码。任何 job 都不需要写仓库 / 发包 / 改 issue。
 permissions:
@@ -17,10 +19,10 @@ jobs:
         # 6 个组合全跑：npm test 经 scripts/run-tests.mjs 列文件，不依赖 shell 展开 glob（Windows 的 cmd 不展开，Node 20 的 --test 也不认 glob）
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
@@ -34,10 +36,10 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
       # ★ 锁版本，不用 `@latest`：上游一发新版，代码一行没动 CI 也可能突然变红。
