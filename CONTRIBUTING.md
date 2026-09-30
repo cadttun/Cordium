@@ -55,6 +55,7 @@ git config --unset include.path                   # 停用
 - 公开导出、宿主方法、`ctx` 成员、错误码表都由测试钉死（`public-surface.test.mjs`、`host.test.mjs`、`error-model.test.mjs`）。增删改名是有意的 API 变更，要同时改这些清单，并写进 `CHANGELOG.md`。
 - 插件可见的接口有破坏性变化时，升 `KERNEL_API_VERSION` 的主版本（它与包版本相互独立）。
 - 两个包版本同步发布（lockstep）。
+- 发版：两个 `package.json` 的版本改好、`CHANGELOG.md` 把 `[Unreleased]` 改成版本段 → 打标签 `vX.Y.Z` 推送 → 在 GitHub 上发布 Release。`release` workflow 会校验包版本与标签一致、跑测试，再把两个 `.tgz` 与 `SHA256SUMS` 附到 Release 上。
 - 删除过的接口及原因记录在 [design/removed-apis.md](design/removed-apis.md)，加回之前先读。
 
 ## 代码约定

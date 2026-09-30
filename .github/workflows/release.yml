@@ -1,0 +1,56 @@
+# 发版附件：把两个包打成 tarball（npm pack）+ SHA256SUMS，挂到对应的 GitHub Release 上。
+#   · 发布 Release 时自动触发（用的是该标签提交里的这份文件）；
+#   · 也可在 Actions 页手动运行，给已有的 Release 补附件（填标签名，如 v0.1.0；Release 须已建好）。
+name: release
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已发布 Release 的标签名（如 v0.1.0）
+        required: true
+# 默认只读；只有下面这一个 job 提到 contents: write（上传附件需要）。
+permissions:
+  contents: read
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # ★ 标签名只经环境变量进 shell，不直接拼进 run 脚本（防注入）
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: 校验标签格式
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::标签名不合法：$TAG"; exit 1
+          fi
+      # ★ 第三方 action 一律锁提交 SHA（与 test.yml 同一规矩）
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: 包版本须与标签一致
+        run: |
+          for p in kernel plugins; do
+            v=$(node -p "require('./packages/$p/package.json').version")
+            if [ "v$v" != "$TAG" ]; then
+              echo "::error::packages/$p 版本 $v 与标签 $TAG 不符"; exit 1
+            fi
+          done
+      - run: npm ci
+      - run: npm test
+      - run: npm run pack
+      - name: 生成校验和
+        working-directory: dist
+        run: sha256sum *.tgz > SHA256SUMS && cat SHA256SUMS
+      - name: 上传到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --clobber：重跑时覆盖同名附件，不报错
+        run: gh release upload "$TAG" dist/*.tgz dist/SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"

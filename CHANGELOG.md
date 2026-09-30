@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+- 发版 workflow：发布 GitHub Release 时自动打包两个包，把 `.tgz` 与 `SHA256SUMS` 附到 Release 上；也可手动运行，给已有的 Release 补附件。
+
 ## [0.1.0] - 2026-09-30
 
 首个公开版本。
