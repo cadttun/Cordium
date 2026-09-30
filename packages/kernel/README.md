@@ -1,6 +1,6 @@
 # @cordium/kernel
 
-Cordium 微内核：插件契约、生命周期、服务交付与轻量消息。零业务、零外部依赖，纯 ES Module，Node.js ≥ 20。
+Cordium 微内核：插件契约、生命周期、服务交付与轻量消息。零业务、零外部依赖，纯 ES Module，Node.js ≥ 22.13。
 
 **完整文档在主仓**：[Cordium](https://github.com/cadttun/cordium) —— 见 [README](https://github.com/cadttun/cordium/blob/main/README.md) 与 [插件开发指南](https://github.com/cadttun/cordium/blob/main/PLUGIN_GUIDE.md)。
 
