@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- manifest 移除 `restartRequired`（内核从未据此做任何事），由语义明确的 `hotReload` 取代；仍写 `restartRequired` 的 manifest 照常登记，该字段被丢弃并记一条诊断。
+- **最低 Node 版本升到 22.13**（`engines: >=22.13.0`）：Node 20 已于 2026-04-30 停止维护；22.13 起权限模型 `--permission` 为稳定开关，`/isolation` 的 process 档不再回退 `--experimental-permission`。CI 矩阵改为 Node 22 / 24 / 26。
+
+### Added
+
+- `@cordium/plugins/reload`（开发期热重载）：`reloadPlugin(host, entry)` 重新加载插件模块并经 `replacePlugin` 换上；`watchPlugins(host, entries)` 监视插件文件，保存即重载，失败交给 `onError` 且监视继续。只重载 manifest 声明了 `hotReload: true` 的插件（可用 `force` 跳过）。ESM 无法卸载模块，每次重载都会留下一份旧模块，且只重载入口文件，仅供开发使用。
+- manifest 新字段 `hotReload`（布尔，默认 `false`）：插件自报可在进程内热重载（只经 `ctx` 登记，或自己持有的资源都在停用时释放干净）；诊断快照的插件条目带出该值。
+- `examples/`：可运行的示例（基础装配、开发期热重载），由测试实际运行。
+- `host.replacePlugin(manifest, entry, options)`：原地替换已注册插件的 manifest 与代码（同 id）。依赖方先级联停下，换完按依赖顺序拉回；新版本须仍满足依赖方的版本范围；新代码激活失败则换回旧代码重新激活，再抛出原始错误。插件有必需依赖方时 `unregisterPlugin` 拒绝，升级 / 热重载走这里。
 - 发版 workflow：发布 GitHub Release 时自动打包两个包，把 `.tgz` 与 `SHA256SUMS` 附到 Release 上；也可手动运行，给已有的 Release 补附件。
 
 ## [0.1.0] - 2026-09-30

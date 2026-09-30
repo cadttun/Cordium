@@ -1,5 +1,5 @@
 // 列出两包的 *.test.mjs 交给 `node --test`，不依赖 shell 展开 glob。
-// Windows 的 cmd 不展开 `*.test.mjs`，Node 20 的 --test 也不认 glob，直接写在 npm script 里会在 Windows + Node 20 上找不到文件。
+// Windows 的 cmd 不展开 `*.test.mjs`，直接写在 npm script 里会在 Windows 上找不到文件；自己列文件也不依赖 `node --test` 的 glob 支持。
 // 额外参数原样转给 node（如 `--experimental-test-coverage`）。
 import fs from 'node:fs';
 import path from 'node:path';

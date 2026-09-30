@@ -155,7 +155,7 @@ export const MANIFEST_FIELD_TABLE = Object.freeze({
   /** 内核运行时契约：host.registerPlugin 走的 schema */
   kernel: Object.freeze([
     'id', 'version', 'apiVersion', 'displayName', 'description',
-    'provides', 'dependencies', 'optionalDependencies', 'permissions', 'restartRequired',
+    'provides', 'dependencies', 'optionalDependencies', 'permissions', 'hotReload',
     // ★ 插件类别 —— 取代宿主按 ID 前缀猜「这是不是基础设施」
     'kind'
   ]),
@@ -171,7 +171,7 @@ export const MANIFEST_FIELD_TABLE = Object.freeze({
    * 带默认值的可选字段：输入里没有、输出里必有。
    * ⇒ 计算「被丢弃字段」时**不得把它们报成问题**（否则是误报）。
    */
-  defaultsOnly: Object.freeze(['displayName', 'description', 'restartRequired'])
+  defaultsOnly: Object.freeze(['displayName', 'description', 'hotReload'])
 });
 
 /**
@@ -443,6 +443,11 @@ function validateManifestSnapshot(manifest) {
     );
   }
 
+  if (manifest.hotReload !== undefined && manifest.hotReload !== null && typeof manifest.hotReload !== 'boolean') {
+    throw new CordiumError(ErrorCode.INVALID_MANIFEST,
+      `Plugin ${manifest.id} hotReload must be a boolean, got ${Array.isArray(manifest.hotReload) ? 'array' : typeof manifest.hotReload}`);
+  }
+
   // ★ 展示类字段显式传了非字符串 ⇒ 响亮失败（此前原样透传，下游按字符串用时才炸）。
   //   缺省 / null / 空串仍走默认值（与依赖字段同一口径：只拒【类型】）。
   for (const field of ['displayName', 'description']) {
@@ -469,7 +474,9 @@ function validateManifestSnapshot(manifest) {
     //    因此 manifest 里写了 optionalDependencies 却漏了这一行，声明就会凭空消失。
     optionalDependencies: normalizeDependencyMap(manifest.optionalDependencies, { field: 'optionalDependencies', pluginId: manifest.id }),
     permissions: normalizeStringList(manifest.permissions),
-    restartRequired: Boolean(manifest.restartRequired),
+    // ★ 插件自报「可在进程内热重载」（开发期重载器据此放行；内核的 replacePlugin 不看它）。
+    //   只收 true / false：写成 'yes' / 1 这类值多半是误解了语义，静默转布尔会把意图吞掉。
+    hotReload: manifest.hotReload === true,
     // ★ 缺省 ⇒ business（第三方插件不该因忘写字段就被锁死；内置插件的一致性由上层装配层检查）
     kind: manifest.kind || PluginKind.BUSINESS
   };

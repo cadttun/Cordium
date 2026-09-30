@@ -1,4 +1,4 @@
-# 两包测试 + 打包检查。engines 为 >=20，矩阵覆盖 20 / 22 / 24（权限模型开关名在 20 与 22+ 不同，isolation 测试要两边都跑）
+# 两包测试 + 打包检查。engines 为 >=22.13.0（Node 20 已停止维护），矩阵覆盖 22 / 24 / 26
 name: test
 on:
   # push 只跑 main：其他分支（如 dependabot 的）走 PR 触发即可，免得同一提交跑两遍
@@ -15,8 +15,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: [20, 22, 24]
-        # 6 个组合全跑：npm test 经 scripts/run-tests.mjs 列文件，不依赖 shell 展开 glob（Windows 的 cmd 不展开，Node 20 的 --test 也不认 glob）
+        node: [22, 24, 26]
+        # 6 个组合全跑：npm test 经 scripts/run-tests.mjs 列文件，不依赖 shell 展开 glob（Windows 的 cmd 不展开 glob）
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

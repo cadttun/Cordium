@@ -62,7 +62,9 @@ test('★ 依赖方向：plugins/src 引用内核只能走 @cordium/kernel / @co
 // ─────────── 跨包不得用相对路径（src 与 test 都算）───────────
 
 const ALL_DIRS = ['packages/kernel/src', 'packages/kernel/test', 'packages/kernel/test/fixtures',
-  'packages/plugins/src', 'packages/plugins/test', 'packages/plugins/test/fixtures'];
+  'packages/plugins/src', 'packages/plugins/test', 'packages/plugins/test/fixtures',
+  // 示例是读者照抄的起点：同样只许经包名取用，且不得碰 ./internal
+  'examples/basic', 'examples/basic/plugins', 'examples/hot-reload', 'examples/hot-reload/plugins'];
 // 跨出本包：`../../<别的包>/…`；测试引自己包的 src（`../src/…`）不算
 const CROSS_PACKAGE_RELATIVE = /^(?:\.\.\/)+(?:\.\.\/)?(?:kernel|plugins)\//;
 
@@ -97,7 +99,7 @@ const readPkg = rel => JSON.parse(fs.readFileSync(path.join(ROOT, rel, 'package.
 test('★ exports 清单定稿（增删子路径 = 有意的 API 变更，必须同时改这里）', () => {
   assert.deepEqual(Object.keys(readPkg('packages/kernel').exports).sort(), ['.', './internal', './package.json']);
   assert.deepEqual(Object.keys(readPkg('packages/plugins').exports).sort(),
-    ['./catalog', './ecosystem', './isolation', './loader', './package.json', './runtime']);
+    ['./catalog', './ecosystem', './isolation', './loader', './package.json', './reload', './runtime']);
 });
 
 test('★ 每个 exports 目标文件都存在（改名 / 删文件不同步即红）', () => {

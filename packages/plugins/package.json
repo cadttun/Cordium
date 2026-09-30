@@ -12,7 +12,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "files": [
     "src"
@@ -26,6 +26,7 @@
     "./catalog": "./src/catalog.mjs",
     "./isolation": "./src/isolation.mjs",
     "./loader": "./src/loader.mjs",
+    "./reload": "./src/reload.mjs",
     "./package.json": "./package.json"
   }
 }

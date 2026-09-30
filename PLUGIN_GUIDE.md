@@ -1,6 +1,6 @@
 # 插件开发指南
 
-本文是写 Cordium 插件所需的全部接口说明，按它写不需要读内核源码。示例均可直接运行（Node.js ≥ 20，ES Module）。
+本文是写 Cordium 插件所需的全部接口说明，按它写不需要读内核源码。示例均可直接运行（Node.js ≥ 22.13，ES Module）。可运行的完整示例在仓库的 [`examples/`](examples/) 目录。
 
 - [1. 插件长什么样](#1-插件长什么样)
 - [2. manifest](#2-manifest)
@@ -65,7 +65,7 @@ export function deactivate() {
 | `kind` | | `'core'` \| `'business'` | 插件类别，默认 `business`。只是描述，「core 能否被用户停用」由应用决定 |
 | `displayName` / `description` | | string | 展示用 |
 | `name` | | string | 插件目录 / 市场用的名称（见下一小节）。内核不保留，登记时丢弃并记一条 `info` 级诊断 |
-| `restartRequired` | | boolean | 描述性标记，默认 `false`，内核不据此做任何事 |
+| `hotReload` | | boolean | 默认 `false`。写 `true` 表示本插件可以在进程内热重载：它只在 `ctx` 上登记东西，或自己开的外部资源都在 `deactivate` / `ctx.scope` 里释放干净。开发期重载器只重载写了它的插件，见 [§10](#开发期热重载) |
 
 - 不在上表的字段会被丢弃，并记一条诊断（`host.getDiagnostics().manifestDiagnostics`）。**分级按整条诊断判定**：这条 manifest 里只要有**两层都不认**的字段（多半是拼写错误），整条记 `warn`，同一条里被列出的描述符字段（如 `name`、`config`）也一并算在该条的 `fields` 里；一个都不认的字段也没有时，才记 `info`。
 - 插件拿到的 `ctx.manifest` 是规范化后的**冻结副本**，改它不会影响宿主，也不能借此提权。
@@ -85,7 +85,7 @@ export function deactivate() {
 | `kind` | | 同上表 |
 | `config` | | 普通对象，随描述符一起进目录；缺省为 `{}` |
 
-描述符**不保留** `optionalDependencies` / `displayName` / `description` / `restartRequired`。
+描述符**不保留** `optionalDependencies` / `displayName` / `description` / `hotReload`。
 
 要让同一份 manifest 既能运行又能上架，就写成两套字段的并集。本文与 README 的示例都已带上 `name`，可以直接上架。内核登记这份 manifest 时会丢掉 `name` / `config`，并记一条 `info` 级诊断，这是预期行为。运行时的配置由装配方通过 `loadPlugins` 清单的 `config` 传入（见 §10），不读 manifest 里的 `config`。
 
@@ -420,7 +420,75 @@ await host.boot();
 - **服务契约和权限名只能由装配方定义**，插件不能自造。契约里的 `requiredPermission` 会自动登记为权限名。
 - 加载清单的 `module` 必须是绝对路径、`file:` / `data:` URL 或 `URL` 对象。清单里任一条出错，一条都不登记。
 - 慢插件的时限在清单或 `registerPlugin(manifest, entry, { lifecycleTimeoutMs })` 里放宽；写在插件自己的 manifest 里无效。
-- 常用宿主方法：`registerPlugin` / `unregisterPlugin` / `boot` / `activatePlugin` / `deactivatePlugin` / `getInternalService` / `getUIContributions(type)` / `getDiagnostics()`。
+- 常用宿主方法：`registerPlugin` / `unregisterPlugin` / `replacePlugin` / `boot` / `activatePlugin` / `deactivatePlugin` / `getInternalService` / `getUIContributions(type)` / `getDiagnostics()`。
+- 插件放在哪个目录都可以，清单里写绝对路径即可；以脚本自身为基准时用 `new URL('./plugins/x.mjs', import.meta.url)`。
+
+### 按目录加载
+
+内核不扫描目录，只加载清单里写明的文件：会执行哪些代码一目了然，每一条还能带 `config` 等参数。想「把插件丢进一个目录就加载」，由应用自己扫描后生成清单：
+
+```js
+import { readdirSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { loadPlugins } from '@cordium/plugins/loader';
+
+const dir = resolve('plugins'); // 必须转成绝对路径：清单拒收相对路径
+const entries = readdirSync(dir)
+  .filter(f => f.endsWith('.mjs'))
+  .map(f => ({ module: join(dir, f) }));
+
+await loadPlugins(host, entries);
+```
+
+- 目录里只能放插件。混进一个不导出 `manifest` 的辅助模块，整批加载都会失败（`invalid_manifest`），一个插件都不登记。辅助模块请放到子目录或换个扩展名。
+- 注意：辅助模块在报错之前已经被 `import` 执行过一次。所以扫描的目录不能让不可信的人写入。
+- 同一个 `entries` 可以直接传给 `watchPlugins(host, entries)` 做开发期热重载（见下文）。只有启动时扫到的文件会被监视，之后新加的文件不会自动加载。
+
+### 替换插件
+
+`host.replacePlugin(manifest, entry, options)` 用新的 manifest 和代码原地换掉同 id 的已登记插件，升级插件与热重载都走它：
+
+1. 必需依赖它的插件先被停下，再停它自己；
+2. 换上新的 manifest 与代码（权限按新 manifest 生效），用新代码激活；
+3. 被停下的依赖方按依赖顺序重新激活，拿到新的 `ctx`，须重新 `getService`。
+
+- 新版本必须仍满足每个依赖方写的版本范围，否则同步抛 `dependency_version_mismatch`，什么都不改。
+- 新代码激活失败时，宿主换回旧代码重新激活，再把新代码的原始错误抛给调用方。
+- 原来没在运行（未启动、已停用、失败）的插件只换不启，停用状态保留。
+- 插件有必需依赖方时 `unregisterPlugin` 会拒绝，所以升级不要走「先移除再登记」。
+
+### 开发期热重载
+
+`@cordium/plugins/reload` 在开发时用：改完插件文件，不重启进程就换上新代码。
+
+```js
+import { loadPlugins } from '@cordium/plugins/loader';
+import { reloadPlugin, watchPlugins } from '@cordium/plugins/reload';
+
+const entries = [{ module: '/abs/path/plugins/greeter.mjs', config: { lang: 'zh' } }];
+await loadPlugins(host, entries);
+await host.boot();
+
+// 手动重载一个
+await reloadPlugin(host, entries[0]);
+
+// 或者监视文件，保存即重载
+const watcher = watchPlugins(host, entries, {
+  onReload: ({ id, version }) => console.log(`reloaded ${id}@${version}`),
+  onError: (err) => console.error(err)   // 语法错、激活失败等；监视继续
+});
+// watcher.close();
+```
+
+- **只重载 manifest 写了 `hotReload: true` 的插件**，正在运行的版本和新版本都要写，否则抛 `invalid_usage`；开发时想全部放行可传 `{ force: true }`。
+- 判断一个插件能不能写 `hotReload: true`，看它**持有什么**：
+  - 只经 `ctx` 登记服务、动作、监听器、UI 贡献、托管定时器的插件（登记型），停用时宿主全部回收，可以写；
+  - 自己开了端口、文件句柄、子进程、没托管的定时器或长任务的插件（持有型），只有在 `deactivate` 或 `ctx.scope.addDisposer` 里把它们释放干净时才能写，否则旧实例的资源会留在进程里。拿不准就不写，改完重启进程。
+- 重载失败不影响正在运行的代码：加载失败时什么都不换；激活失败时宿主换回旧代码。
+- ⚠️ **只在开发时用**：
+  - 内存只增不减。ESM 没有卸载模块的接口，每次重载都会在内存里留下一份旧模块；
+  - 只重载清单里的入口文件，它 `import` 的其它文件还是第一次加载的那份，改了它们要重启进程；
+  - 生产环境要换插件代码，重启进程即可。
 
 ## 11. 执行隔离（可选）
 
@@ -453,3 +521,4 @@ const result = await callIsolated('/abs/path/heavy.mjs', 'crunch', [data], {
 - 发出去的事件参数是**同一个对象引用**，监听器改它会影响后面的监听器；要不可变请自己复制。
 - 动作超时和生命周期超时都只是停止等待，不能打断同步死循环，重计算请用 `callIsolated`。
 - 停用后不要再用旧 `ctx`；重新激活时 `activate` 会拿到新的 `ctx`。
+- 热重载只在开发时用；插件持有外部资源时，要么在 `deactivate` / `ctx.scope` 里释放干净并声明 `hotReload: true`，要么改完重启进程。

@@ -274,7 +274,7 @@ test('★ 公开面门禁：实例字段与原型方法必须与清单一致（�
   assert.deepEqual(methods.sort(), [
     'activatePlugin', 'boot', 'deactivatePlugin', 'declarePermissions', 'declareServiceContract',
     'declareServiceContracts', 'dispatchAction', 'getDiagnostics', 'getInternalService', 'getService',
-    'getUIContributions', 'log', 'recordManifestDiagnostic', 'registerPlugin', 'unregisterPlugin'
+    'getUIContributions', 'log', 'recordManifestDiagnostic', 'registerPlugin', 'replacePlugin', 'unregisterPlugin'
   ]);
 });
 

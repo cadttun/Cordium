@@ -2,7 +2,7 @@
 
 ## 开发环境
 
-- Node.js ≥ 20（CI 覆盖 20 / 22 / 24）
+- Node.js ≥ 22.13（CI 覆盖 22 / 24 / 26）
 - 零运行时依赖；`npm install` 只建立两个 workspace 的链接
 
 ```bash

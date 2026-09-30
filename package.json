@@ -15,7 +15,7 @@
     "packages/plugins"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",

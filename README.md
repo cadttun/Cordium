@@ -1,13 +1,13 @@
 # Cordium
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Node.js >= 20](https://img.shields.io/badge/node-%3E%3D20-339933.svg)
+![Node.js >= 22.13](https://img.shields.io/badge/node-%3E%3D22.13-339933.svg)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)
 ![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-orange.svg)
 
 **通用插件基座（微内核）**：负责插件的契约、生命周期、服务交付和轻量消息。模型、记忆、工具、业务等上层能力都以插件形式装进来，内核本身不含任何业务。
 
-- **零运行时依赖**：纯 ES Module（`.mjs`），Node.js ≥ 20。
+- **零运行时依赖**：纯 ES Module（`.mjs`），Node.js ≥ 22.13。
 - **插件之间只经宿主交互**：服务按契约取用、带访问级别和权限；插件停用后它注册的一切自动回收。
 - **防失控**：生命周期钩子有时限，动作派发有在途上限；插件抛出的值经统一错误模型带码送达 —— 动作、服务与消息通道的失败抛给调用方（含插件归属），生命周期钩子与后台失败进宿主日志。
 - **可选执行隔离**：把一段可能卡死或吃内存的计算放进 worker 线程或子进程里跑，超时即终止。
@@ -91,6 +91,8 @@ await loadPlugins(host, [
 await host.boot();
 ```
 
+插件文件放在哪个目录都可以，清单里写绝对路径或 `file:` URL 即可。可运行的完整示例（含开发期热重载）见 [examples/](examples/)。
+
 ## 核心概念
 
 | 概念 | 说明 |
@@ -110,6 +112,7 @@ await host.boot();
 |---|---|---|
 | `@cordium/kernel` | `@cordium/kernel` | `CordiumHost`、`EffectScope`、`MessageChannel`、`CordiumError` / `ErrorCode`、manifest 校验、SemVer 工具 |
 | `@cordium/plugins` | `/loader` | `loadPlugins`：按清单从模块加载并登记插件（全有或全无） |
+| | `/reload` | `reloadPlugin` / `watchPlugins`：开发期热重载，改完插件文件不重启进程就换上新代码（只重载声明了 `hotReload: true` 的插件） |
 | | `/isolation` | `callIsolated` / `configureIsolation`：把某个模块里的一个导出函数放到 worker 线程或子进程里执行 |
 | | `/runtime` | `validatePluginManifest`：比内核更严格的 manifest 校验（适合插件市场 / 目录） |
 | | `/catalog` | `createPluginCatalog`：插件元数据索引（不执行插件代码） |
@@ -132,7 +135,7 @@ npm run test:coverage  # 测试 + 覆盖率
 npm run pack           # 打包到 dist/
 ```
 
-CI（GitHub Actions）在 Ubuntu 与 Windows 上、Node 20 / 22 / 24 各跑一遍测试与打包，另有一步 oxlint 静态检查。贡献约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私下报告；曾删除的接口及原因见 [design/removed-apis.md](design/removed-apis.md)。
+CI（GitHub Actions）在 Ubuntu 与 Windows 上、Node 22 / 24 / 26 各跑一遍测试与打包，另有一步 oxlint 静态检查。贡献约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请按 [SECURITY.md](SECURITY.md) 私下报告；曾删除的接口及原因见 [design/removed-apis.md](design/removed-apis.md)。
 
 ## 许可证
 

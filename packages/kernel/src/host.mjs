@@ -573,9 +573,17 @@ export class CordiumHost {
       stoppedByCascade: false
     });
 
-    // ★ 鉴权依据必须在【注册时】快照到宿主自己的记录里。
-    //   不能每次鉴权去读 record.manifest —— 那个对象会被交给插件（ctx.manifest），
-    //   插件往里 push 一个权限字符串就能给自己提权。
+    this.#snapshotAuthority(manifest);
+
+    this.log('info', `Plugin registered: ${manifest.id} v${manifest.version}`);
+  }
+
+  /**
+   * ★ 鉴权依据必须快照到宿主自己的记录里（注册 / 替换时各做一次）。
+   *   不能每次鉴权去读 record.manifest —— 那个对象会被交给插件（ctx.manifest），
+   *   插件往里 push 一个权限字符串就能给自己提权。
+   */
+  #snapshotAuthority(manifest) {
     this.#pluginPermissions.set(manifest.id, new Set(manifest.permissions));
     this.#pluginDependencies.set(manifest.id, new Set([
       ...Object.keys(manifest.dependencies),
@@ -585,8 +593,105 @@ export class CordiumHost {
       manifest.id,
       new Map(Object.entries(manifest.optionalDependencies))
     );
+  }
 
-    this.log('info', `Plugin registered: ${manifest.id} v${manifest.version}`);
+  /**
+   * 替换后的必需依赖不得绕回自己（A 依赖 B 时把 B 换成依赖 A）。
+   * 注册时不查环（boot 的拓扑排序会报）；替换发生在运行期，等到下次 boot 才报就晚了。
+   */
+  #assertNoNewCycle(id, manifest) {
+    const seen = new Set();
+    const stack = Object.keys(manifest.dependencies);
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      if (cur === id) {
+        throw new CordiumError(ErrorCode.CYCLIC_DEPENDENCY, `Cannot replace plugin '${id}': its new dependencies lead back to itself`, { pluginId: id });
+      }
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      const rec = this.#plugins.get(cur);
+      if (rec) stack.push(...Object.keys(rec.manifest.dependencies));
+    }
+  }
+
+  /** 换掉记录里的代码与 manifest（含鉴权快照），返回换下来的那份（回滚用） */
+  #swapPlugin(record, next) {
+    const previous = { manifest: record.manifest, entry: record.entry, lifecycleTimeoutMs: record.lifecycleTimeoutMs };
+    record.manifest = next.manifest;
+    record.entry = next.entry;
+    record.lifecycleTimeoutMs = next.lifecycleTimeoutMs;
+    this.#snapshotAuthority(next.manifest);
+    return previous;
+  }
+
+  /**
+   * 原地替换一个已注册插件的 manifest 与代码（同 id）—— 升级插件、开发期热重载都走这里。
+   *
+   * ★ 为什么不是 unregister + register：插件有必需依赖方时 unregisterPlugin 拒绝（见其注释）；
+   *   而替换不改变「谁依赖谁」，只换实现 ⇒ 依赖方先级联停下，换完再按依赖顺序拉回来（同 deactivate / activate）。
+   * 流程（与其他生命周期迁移同一队列串行）：
+   *   ① 入口同步校验：manifest 合法、id 已注册、权限已登记、新版本仍满足每个必需依赖方的范围（零副作用，失败同步抛出）；
+   *   ② 原来 ACTIVE ⇒ 级联停依赖方 → 停自己；
+   *   ③ 换 manifest / entry / 时限（未传 lifecycleTimeoutMs ⇒ 回到宿主默认）与鉴权快照；
+   *   ④ 原来 ACTIVE ⇒ 用新代码激活；失败 ⇒ **换回旧代码并重新激活**，再抛出新代码的原始错误；
+   *   ⑤ 恢复被级联停下的依赖方（它们拿到的是新实例：旧服务句柄已失效，须重新 getService）。
+   * ★ 原来不是 ACTIVE（未启动 / 已停用 / 失败）⇒ 只换不启，状态与「用户停用」标记原样保留。
+   * ⚠️ 错误通道同 unregisterPlugin：入口校验失败同步抛出；排队后失败是 Promise 拒绝（`await` 即可统一）。
+   *
+   * @param {object} rawManifest
+   * @param {{ activate?: Function, deactivate?: Function } | null} [entry]
+   * @param {{ lifecycleTimeoutMs?: number }} [options]
+   */
+  replacePlugin(rawManifest, entry = null, options) {
+    const { lifecycleTimeoutMs } = readOptions(options, 'CordiumHost.replacePlugin', ErrorCode.INVALID_OPTION);
+    assertTimeoutOption("replacePlugin option 'lifecycleTimeoutMs'", lifecycleTimeoutMs);
+    const manifest = validateManifest(rawManifest);
+    const id = manifest.id;
+    const record = this.#plugins.get(id);
+    if (!record) throw new CordiumError(ErrorCode.PLUGIN_NOT_FOUND, `Plugin '${id}' not found (replacePlugin only replaces a registered plugin)`);
+    for (const perm of manifest.permissions) this.#assertPermissionDeclared(perm, `Plugin '${id}'`);
+    const assertDependentsSatisfied = () => {
+      for (const depId of this.#dependentsOf(id)) {
+        const range = this.#plugins.get(depId).manifest.dependencies[id];
+        if (!satisfiesSemVer(manifest.version, range)) {
+          throw new CordiumError(ErrorCode.DEPENDENCY_VERSION_MISMATCH,
+            `Cannot replace plugin '${id}' with v${manifest.version}: '${depId}' requires ${range}`, { pluginId: id });
+        }
+      }
+    };
+    assertDependentsSatisfied();
+    this.#assertNoNewCycle(id, manifest);
+    const droppedDiagnostic = diffManifestFields('kernel', rawManifest, manifest, id);
+    if (droppedDiagnostic) this.recordManifestDiagnostic(droppedDiagnostic);
+
+    const run = this.#serializeLifecycle(id, async () => {
+      // ★ 排队期间可能已被移除 / 重新注册，或有新依赖方注册 ⇒ 任务体内重新校验
+      if (this.#plugins.get(id) !== record) throw new CordiumError(ErrorCode.PLUGIN_NOT_FOUND, `Plugin '${id}' not found`);
+      assertDependentsSatisfied();
+      const wasActive = record.state === LifecycleState.ACTIVE;
+      if (wasActive) {
+        await this.#stopDependents(id);
+        await this.#deactivatePluginNow(id);
+      }
+      const previous = this.#swapPlugin(record, { manifest, entry, lifecycleTimeoutMs: lifecycleTimeoutMs ?? null });
+      this.log('info', `Plugin replaced: ${id} v${previous.manifest.version} -> v${manifest.version}`);
+      if (!wasActive) return;
+      try {
+        await this.#activatePluginNow(id);
+      } catch (err) {
+        // ★ 新代码起不来 ⇒ 换回旧代码重新激活：宿主回到替换前的样子，而不是留下一个 failed 的空位
+        this.#swapPlugin(record, previous);
+        try {
+          await this.#activatePluginNow(id);
+          this.log('warn', `Plugin '${id}' rolled back to v${previous.manifest.version} after the replacement failed to activate`);
+        } catch (rollbackError) {
+          this.#logFailure('error', `Rollback of plugin '${id}' failed`, rollbackError, id);
+        }
+        throw err;
+      }
+    });
+    // 成功或回滚成功后，提供者都已 ACTIVE ⇒ 把级联停下的依赖方拉回来（提供者没起来时 #resumeCascaded 什么都不做）
+    return run.then(() => this.#resumeCascaded(id), err => this.#resumeCascaded(id).then(() => { throw err; }));
   }
 
   /**
@@ -1850,7 +1955,9 @@ export class CordiumHost {
         dependencies: { ...p.manifest.dependencies },
         permissions: [...p.manifest.permissions],
         error: p.state === LifecycleState.FAILED ? describeError(p.error) : null,
-        activationMs: p.activationMs
+        activationMs: p.activationMs,
+        // 插件自报可进程内热重载（开发期重载器据此放行）
+        hotReload: p.manifest.hotReload
       })),
       services: Array.from(this.#serviceContracts.entries()).map(([name, s]) => ({
         name,

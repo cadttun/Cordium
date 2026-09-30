@@ -109,8 +109,8 @@ function release() {
   drain();
 }
 
-// Node 22+ 为 --permission；Node 20 为 --experimental-permission（engines >=20）
-const PERMISSION_FLAG = process.allowedNodeEnvironmentFlags.has('--permission') ? '--permission' : '--experimental-permission';
+// 权限模型：Node 22.13 起 `--permission` 为稳定开关（engines >=22.13.0，不再需要 --experimental-permission 回退）
+const PERMISSION_FLAG = '--permission';
 
 /**
  * 在隔离环境里调用 `module` 的导出 `exportName`。
