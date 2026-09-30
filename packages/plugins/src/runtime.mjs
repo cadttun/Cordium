@@ -1,4 +1,4 @@
-// Runs capability-scoped plugins and isolates lifecycle and call failures.
+// Strict manifest validation (descriptor layer) for plugin catalogs and markets; never executes plugin code.
 // ★ 统一走 internal.mjs（不直连内核实现文件，也不走会牵出 host.mjs 的 index.mjs）
 import {
   normalizeStringList, normalizeDependencyMap, isValidSemVer,

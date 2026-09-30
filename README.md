@@ -2,12 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Node.js >= 22.13](https://img.shields.io/badge/node-%3E%3D22.13-339933.svg)
-![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)
+![Third-party deps: 0](https://img.shields.io/badge/third--party_deps-0-brightgreen.svg)
 ![Version 0.1.0](https://img.shields.io/badge/version-0.1.0-orange.svg)
 
 **通用插件基座（微内核）**：负责插件的契约、生命周期、服务交付和轻量消息。模型、记忆、工具、业务等上层能力都以插件形式装进来，内核本身不含任何业务。
 
-- **零运行时依赖**：纯 ES Module（`.mjs`），Node.js ≥ 22.13。
+- **零第三方依赖**：纯 ES Module（`.mjs`），Node.js ≥ 22.13。`@cordium/kernel` 无任何依赖；`@cordium/plugins` 只依赖同仓的 `@cordium/kernel`（精确钉版本，两者成对安装）。
 - **插件之间只经宿主交互**：服务按契约取用、带访问级别和权限；插件停用后它注册的一切自动回收。
 - **防失控**：生命周期钩子有时限，动作派发有在途上限；插件抛出的值经统一错误模型带码送达 —— 动作、服务与消息通道的失败抛给调用方（含插件归属），生命周期钩子与后台失败进宿主日志。
 - **可选执行隔离**：把一段可能卡死或吃内存的计算放进 worker 线程或子进程里跑，超时即终止。
@@ -114,7 +114,7 @@ await host.boot();
 | `@cordium/plugins` | `/loader` | `loadPlugins`：按清单从模块加载并登记插件（全有或全无） |
 | | `/reload` | `reloadPlugin` / `watchPlugins`：开发期热重载，改完插件文件不重启进程就换上新代码（只重载声明了 `hotReload: true` 的插件） |
 | | `/isolation` | `callIsolated` / `configureIsolation`：把某个模块里的一个导出函数放到 worker 线程或子进程里执行 |
-| | `/runtime` | `validatePluginManifest`：比内核更严格的 manifest 校验（适合插件市场 / 目录） |
+| | `/runtime` | `validatePluginManifest`：描述符层的 manifest 校验，列表与类型比内核更严格（适合插件市场 / 目录） |
 | | `/catalog` | `createPluginCatalog`：插件元数据索引（不执行插件代码） |
 | | `/ecosystem` | `resolvePluginDependencies`（依赖排序）、`normalizeDependencies`、`callWithTimeout` |
 

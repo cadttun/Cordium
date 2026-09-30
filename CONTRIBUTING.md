@@ -3,7 +3,7 @@
 ## 开发环境
 
 - Node.js ≥ 22.13（CI 覆盖 22 / 24 / 26）
-- 零运行时依赖；`npm install` 只建立两个 workspace 的链接
+- 零第三方依赖；`npm install` 只建立两个 workspace 的链接（`@cordium/plugins` 依赖同仓的 `@cordium/kernel`，不是外部包）
 
 ```bash
 npm test               # 两包全部测试
