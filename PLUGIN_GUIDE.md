@@ -242,6 +242,8 @@ ctx.emit('task/created', { id: 1 });
 
 「有效值」指 `undefined`、`null`、`false` 以外的返回值（`0` 和 `''` 也算有效）。
 
+`waterfall` 的返回类型与抛错方式**看链的构成**：链上全是同步监听器时，整条链同步执行、结果直接返回、错误同步抛；只要任何一环是 `async`，`next()` 就会落到微任务里，整条链返回 Promise，错误也改经 Promise 拒绝送达 —— 所以稳妥的写法一律 `await`。
+
 ```js
 // 谁能处理这个文件？
 ctx.on('file/open', (path) => path.endsWith('.md') ? 'markdown-viewer' : undefined);
@@ -348,7 +350,7 @@ try {
 
 ### 定位出错位置
 
-同步抛出的调用（服务方法、`bail`、`waterfall`，以及旧 `ctx` 上的发布方法 `emit` / `parallel` / `serial`）的错误直接抛给调用方；返回 Promise 的调用（`dispatchAction` 总是，`parallel` / `serial` 正常调用时）—— 监听器与动作里的错误在 Promise 拒绝里，**必须 `await` 才接得住**（同步 `try` / `catch` 抓不到）。两种情况下 `err.code` 是错误码，`err.pluginId` 是出错插件（部分场景为 `null`），`err.cause.stack` 是插件原始错误的完整栈。
+同步抛出的调用（服务方法、`bail`，以及旧 `ctx` 上的发布方法 `emit` / `parallel` / `serial`）的错误直接抛给调用方；`waterfall` 看链的构成 —— 全同步链同步抛，链上任何一环是 `async` 时整条链返回 Promise、错误经拒绝送达（见 [§6](#6-事件) 的说明）。返回 Promise 的调用（`dispatchAction` 总是，`parallel` / `serial` 正常调用时，异步链的 `waterfall`）—— 监听器与动作里的错误在 Promise 拒绝里，**必须 `await` 才接得住**（同步 `try` / `catch` 抓不到）。两种情况下 `err.code` 是错误码，`err.pluginId` 是出错插件（部分场景为 `null`），`err.cause.stack` 是插件原始错误的完整栈。
 
 没有调用方能接住的失败会进宿主日志（`host.getDiagnostics().recentLogs` / `recentErrors`）。这类失败包括 `emit` 监听器、清理回调、`activate` / `deactivate` 和启动回滚。日志报文末尾会附上错误码和源头位置：
 

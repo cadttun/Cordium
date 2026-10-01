@@ -114,7 +114,7 @@ await host.boot();
 | `@cordium/plugins` | `/loader` | `loadPlugins`：按清单从模块加载并登记插件（全有或全无） |
 | | `/reload` | `reloadPlugin` / `watchPlugins`：开发期热重载，改完插件文件不重启进程就换上新代码（只重载声明了 `hotReload: true` 的插件） |
 | | `/isolation` | `callIsolated` / `configureIsolation`：把某个模块里的一个导出函数放到 worker 线程或子进程里执行 |
-| | `/runtime` | `validatePluginManifest`：描述符层的 manifest 校验，列表与类型比内核更严格（适合插件市场 / 目录） |
+| | `/runtime` | `validatePluginManifest`：描述符层的 manifest 校验，列表与字段形状比内核更严格（适合插件市场 / 目录） |
 | | `/catalog` | `createPluginCatalog`：插件元数据索引（不执行插件代码） |
 | | `/ecosystem` | `resolvePluginDependencies`（依赖排序）、`normalizeDependencies`、`callWithTimeout` |
 
