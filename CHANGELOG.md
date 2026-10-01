@@ -3,7 +3,9 @@
 本文件记录 `@cordium/kernel` 与 `@cordium/plugins` 的有意变更（两包版本同步）。
 
 格式基于 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer 2.0](https://semver.org/lang/zh-CN/)。
-1.0 之前每次有意变更升 minor；`KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
+1.0 之前：有意的 API 变更升 minor，纯文档 / 注释 / 内部修正升 patch。
+破坏兼容的改动必须走 minor —— 0.x 的 patch 位会被下游的 `^0.x.0` 自动纳入，承载不了破坏性变更。
+`KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
 
 ## [0.2.0] - 2026-10-02
 
