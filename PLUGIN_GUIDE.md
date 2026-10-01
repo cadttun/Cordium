@@ -115,7 +115,7 @@ export function deactivate() {
 | `registerUIContribution(item)` | undefined | 登记一条 UI 贡献（`{ id, type, ... }` 或字符串 id） |
 | `log(level, message, details?)` | undefined | 写宿主审计日志，`level` 一般用 `info` / `warn` / `error` |
 
-- `dispatchAction` 总是返回 Promise；`parallel` / `serial` 正常调用返回 Promise（旧 `ctx` 上会先同步抛 `scope_disposed`，见下条）。`waterfall` 在所有监听器与 `fallback` 都同步时直接返回结果，链上任何一环返回 Promise 时整条链返回 Promise，稳妥的写法是一律 `await`。其余方法都是同步的。
+- `dispatchAction` 总是返回 Promise；`parallel` / `serial` 正常调用返回 Promise（旧 `ctx` 上会先同步抛 `scope_disposed`，见下条）。`waterfall` 在**实际走到**的监听器与 `fallback` 都同步时直接返回结果，实际走到某一环返回 Promise 时整条链返回 Promise，稳妥的写法是一律 `await`。其余方法都是同步的。
 - 插件停用后，手里留着的旧 `ctx` 基本都失效：除 `log` 外，登记、发布、取服务、派发动作、事件订阅与派发、`scoped` / `privateScope`，调用时都抛 `scope_disposed`。两处例外：`log` 不报错（只留日志，便于收尾）；`provideService` 在服务名未声明契约时，先报 `undeclared_service`（该项检查在生命周期门之前）。`dispatchAction` 是异步的，错误只会经 Promise 拒绝送达；`parallel` / `serial` 正常调用时监听器错误也走 Promise 拒绝，但生命周期门是**同步检查** —— 旧 `ctx` 上调用会**同步抛** `scope_disposed`。旧 `ctx` 的调用一律用 `try { await … } catch` 包住（同步抛与 Promise 拒绝都能接住）。
 - `ctx` 不能加、改、删属性（严格模式下抛 `TypeError`）。
 - `log` 的 `details` 在写入时被克隆（之后改原对象不影响日志）。单条上限 1 万个节点（对象属性 / 数组元素 / Map·Set 项）或 1 MiB（字符串按长度；二进制按底层整块 buffer 计，小视图套大 buffer 也按大的算）；超出时整条 `details` 换成 `{ truncated: true, reason }`，克隆不了的（函数等）换成 `{ unclonable: true, reason }`，`log` 本身不抛。大数据请只记摘要。
@@ -242,7 +242,7 @@ ctx.emit('task/created', { id: 1 });
 
 「有效值」指 `undefined`、`null`、`false` 以外的返回值（`0` 和 `''` 也算有效）。
 
-`waterfall` 的返回类型与抛错方式**看链的构成**：链上全是同步监听器时，整条链同步执行、结果直接返回、错误同步抛；只要任何一环是 `async`，`next()` 就会落到微任务里，整条链返回 Promise，错误也改经 Promise 拒绝送达 —— 所以稳妥的写法一律 `await`。
+`waterfall` 的返回类型与抛错方式**看实际走到的那一环**：派发是同步递归 —— 监听器不调 `next()`（直接返回）或抛错时链就断了，整条链同步结束、结果直接返回或错误同步抛；只有**实际走到了**一个 `async` 监听器时，`next()` 才会落到微任务里，整条链才升级为 Promise，错误也改经拒绝送达。因为「会不会走到异步环」要看运行期，稳妥的写法一律 `await`。
 
 ```js
 // 谁能处理这个文件？
@@ -350,7 +350,7 @@ try {
 
 ### 定位出错位置
 
-同步抛出的调用（服务方法、`bail`，以及旧 `ctx` 上的发布方法 `emit` / `parallel` / `serial`）的错误直接抛给调用方；`waterfall` 看链的构成 —— 全同步链同步抛，链上任何一环是 `async` 时整条链返回 Promise、错误经拒绝送达（见 [§6](#6-事件) 的说明）。返回 Promise 的调用（`dispatchAction` 总是，`parallel` / `serial` 正常调用时，异步链的 `waterfall`）—— 监听器与动作里的错误在 Promise 拒绝里，**必须 `await` 才接得住**（同步 `try` / `catch` 抓不到）。两种情况下 `err.code` 是错误码，`err.pluginId` 是出错插件（部分场景为 `null`），`err.cause.stack` 是插件原始错误的完整栈。
+同步抛出的调用（服务方法、`bail`，以及旧 `ctx` 上的发布方法 `emit` / `parallel` / `serial`）的错误直接抛给调用方；`waterfall` 按**实际走到的那一环**决定 —— 同步结束（监听器直接返回或抛错，链就此中断）时错误同步抛；实际走到 `async` 环、整条链升级为 Promise 时，错误经拒绝送达（见 [§6](#6-事件) 的说明）。返回 Promise 的调用（`dispatchAction` 总是，`parallel` / `serial` 正常调用时，走到异步环的 `waterfall`）—— 监听器与动作里的错误在 Promise 拒绝里，**必须 `await` 才接得住**（同步 `try` / `catch` 抓不到）。两种情况下 `err.code` 是错误码，`err.pluginId` 是出错插件（部分场景为 `null`），`err.cause.stack` 是插件原始错误的完整栈。
 
 没有调用方能接住的失败会进宿主日志（`host.getDiagnostics().recentLogs` / `recentErrors`）。这类失败包括 `emit` 监听器、清理回调、`activate` / `deactivate` 和启动回滚。日志报文末尾会附上错误码和源头位置：
 
