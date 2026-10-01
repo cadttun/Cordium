@@ -4,7 +4,7 @@ Cordium 的插件机制：加载器、执行隔离、manifest 校验、依赖解
 
 **完整文档在主仓**：[Cordium](https://github.com/cadttun/cordium) —— 见 [README](https://github.com/cadttun/cordium/blob/main/README.md) 与 [插件开发指南](https://github.com/cadttun/cordium/blob/main/PLUGIN_GUIDE.md)。
 
-> 本包依赖 `@cordium/kernel@0.1.0`，两个包要成对安装。
+> 本包依赖 `@cordium/kernel@0.2.0`，两个包要成对安装。
 
 ## 导出
 

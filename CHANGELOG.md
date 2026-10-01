@@ -5,7 +5,7 @@
 格式基于 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer 2.0](https://semver.org/lang/zh-CN/)。
 1.0 之前每次有意变更升 minor；`KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
 
-## [Unreleased]
+## [0.2.0] - 2026-10-02
 
 ### Changed
 
@@ -53,5 +53,6 @@
 - CI：Ubuntu 与 Windows × Node 20 / 22 / 24 测试与打包，oxlint 静态检查（含模块环检测 `import/no-cycle`）；workflow 只读权限、action 锁提交 SHA，dependabot 每月提升级 PR。
 - 安全策略（SECURITY.md）：私密漏洞报告渠道与范围说明。
 
-[Unreleased]: https://github.com/cadttun/cordium/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/cadttun/cordium/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cadttun/cordium/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cadttun/cordium/releases/tag/v0.1.0
