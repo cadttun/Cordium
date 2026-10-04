@@ -1787,11 +1787,15 @@ export class CordiumHost {
     }
     const bucket = contract.scopedProviders.get(scopeKey);
     if (!bucket) return null;
-    // 桶内最多一条（撞名即拒），直接取第一条。
-    for (const [pid, entry] of bucket) {
-      return { providerId: pid, impl: entry.impl, epoch: entry.epoch, slotKey: scopeKey };
-    }
-    return null;
+    // 桶内最多一条（撞名即拒）⇒ 直接取首元素，与上方全局槽同一个取法。
+    // ★ 此前写成 `for (const [pid, entry] of bucket) return ...` —— 单次迭代的循环，
+    //   语义正确但读起来像「漏了 break」（静态检查报的正是这一条）。
+    //   这里守卫退化为「非空判断」而非全局槽的 `!pid`：pid 由 PLUGIN_ID_PATTERN 强制非空，
+    //   两种守卫在本仓不可区分（若将来放开空 pid，需回来对齐）。
+    const first = bucket.entries().next().value;
+    if (!first) return null;
+    const [pid, entry] = first;
+    return { providerId: pid, impl: entry.impl, epoch: entry.epoch, slotKey: scopeKey };
   }
 
   /**

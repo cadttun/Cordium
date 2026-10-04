@@ -146,7 +146,11 @@ test('Kernel Scope & Cleanup: Deactivating a plugin revokes services, actions, t
   assert.equal(host.getUIContributions().length, 0);
 
   // 验证动作已注销
-  assert.rejects(
+  // ★ 必须 await：裸调用时断言失败不会被归到本测试头上 —— 实测（Node 24）默认 runner 下
+  //   本测试行仍显示 ✔、失败挂到【文件】（退出码 1），并伴随「测试结束后仍有异步活动」诊断；
+  //   若运行器带 --test-force-exit 则连诊断都没有、**完全静默（退出码 0）**。
+  //   全仓 123 处 assert.rejects，122 处已 await，此处是唯一的漏网 —— 保持这一条基线。
+  await assert.rejects(
     async () => host.dispatchAction('plugin.sample.feature', 'sample.action', 'test'),
     hasCode('access_denied')
   );

@@ -43,7 +43,8 @@ jobs:
               echo "::error::packages/$p 版本 $v 与标签 $TAG 不符"; exit 1
             fi
           done
-      - run: npm ci
+      # ★ `--ignore-scripts`：与 test.yml 同一规矩（本仓零第三方依赖 ⇒ 为将来预留；npm 10/11 默认会跑依赖脚本）。
+      - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run pack
       - name: 生成校验和

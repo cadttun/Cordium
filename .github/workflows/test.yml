@@ -25,7 +25,14 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
-      - run: npm ci
+      # ★ `--ignore-scripts`：本仓当前**零第三方依赖** ⇒ 今天拦不到任何东西，是**给将来加的依赖预留**。
+      #   为什么现在就加：实测 npm 10 / 11（正是本矩阵跑的版本）下 `npm ci` **默认会执行**第三方包的
+      #   preinstall / install / postinstall —— 只有 npm 12 才默认拦。哪天引入第一个依赖，这条立刻生效。
+      #   同一条威胁模型下，本文件顶部已经立了「第三方 action 一律锁提交 SHA」；这里补的是 npm 侧那一半。
+      #   ★ 挂在命令行而**不写 `.npmrc`**：实测 `ignore-scripts=true` 会**静默压掉** npm 12 的
+      #     allowScripts 白名单（fail-safe 但无声），且项目级配置会波及本地 `npm install` 与将来的 pre/post 脚本。
+      #   ★ 实测（npm 10.9.9 / 11.19.x / 12.2.0）：`npm ci --ignore-scripts` → `npm test`(473) → `npm run pack` 三段全绿。
+      - run: npm ci --ignore-scripts
       - run: npm test
       - run: npm run pack
 
@@ -54,4 +61,10 @@ jobs:
       #     · glob 自动覆盖新包；一个都匹配不到时 bash 原样传字面量 ⇒ oxlint "No files found" ⇒ 退出 1。
       #   ⚠️ 不要给它加引号（oxlint 自己不展开 glob ⇒ No files found），也不要把这一步挪到 Windows 上跑。
       #   ★ `import/no-cycle`：模块间不得成环（跨包经 `@cordium/kernel/internal` 的边也算）。实测造一个环即退出 1。
-      - run: npx --yes oxlint@1.86.0 --deny-warnings --import-plugin -D import/no-cycle packages/*/src
+      #   ★ `--ignore-scripts`：与本文件顶部的供应链口径对齐。**但对这条链要说实话 —— 它今天拦不到任何东西**：
+      #     实测 `npm view oxlint@1.86.0 scripts` 与其平台 binding 的 scripts **均为空**（无 install 脚本）。
+      #     它也不是 `npx` 这条链的真实风险面：oxlint 不在本仓 lockfile 里、每次现拉 ⇒ **无 integrity 约束**，
+      #     而「执行 oxlint 主程序」这件事本身就不受 `--ignore-scripts` 管。
+      #     真要加固这一条，得把 oxlint 落进 devDependencies（带 integrity 后再 `--no-install` 跑）——
+      #     那与上方「不写进 package.json、保持零依赖」的既定口径冲突，**留作待定**，此处只做口径对齐。
+      - run: npx --yes --ignore-scripts oxlint@1.86.0 --deny-warnings --import-plugin -D import/no-cycle packages/*/src
