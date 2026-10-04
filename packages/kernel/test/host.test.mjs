@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hasCode } from './fixtures/errors.mjs';
 import { CordiumHost, LifecycleState } from '../src/index.mjs';
+// ★ 诊断快照的字段契约以 MANIFEST_FIELD_TABLE.kernel 为**唯一真相源**（见下方门禁说明）。
+//   ⚠️ 本包自己的测试走**相对路径**：`@cordium/kernel/internal` 只许 plugins/src 引用
+//      （boundary.test.mjs 守这条边界 —— 它当场抓住了我最初写的包名形式）。
+import { MANIFEST_FIELD_TABLE } from '../src/types.mjs';
 
 /**
  * 测试专用：登记本文件用到的临时服务契约。
@@ -336,4 +340,89 @@ test('★ 公开面门禁：ctx 各方法的同步 / 异步形状钉死（调用
   assert.deepEqual(async, ['dispatchAction', 'parallel', 'serial'], JSON.stringify(shape));
   assert.deepEqual([...Object.keys(shape), 'registerAction'].sort(), shape.__fnMembers,
     '每个函数型 ctx 成员都要测到（registerAction 在前置里已调用，恒同步返回注销函数）');
+});
+
+// ★ 诊断快照必须带出 `kind` —— 装配层据此决定「能否被用户停用」。
+//
+// 为什么需要这条门禁：这是本项目记录过的「白名单重建漏字段」同形第 4 次 ——
+//   `kind` 加进了 manifest 与 MANIFEST_FIELD_TABLE，但 getDiagnostics() 的快照忘了带；
+//   上层装配代码拿不到它，只能改读私有字段（拿不到）或按 id 前缀猜（实测误伤）。
+//   门禁形状：**拿 MANIFEST_FIELD_TABLE.kernel 当清单**逐项比对快照 ——
+//   将来往 manifest 加字段时，这条会自动提醒「快照也要跟着加」。
+// ★★ 诊断快照的字段契约 —— **由 MANIFEST_FIELD_TABLE.kernel 派生**，不手列。
+//
+// ── 为什么必须派生（这是本门禁的设计要点）────────────────────────────
+// 这个 bug 的形状是「**手工维护的子集漏了新字段**」：`kind` 加进了 manifest 与
+// MANIFEST_FIELD_TABLE，而 getDiagnostics() 的投影没跟着加。
+//
+// ⚠️ 如果这里【手列】一份期望清单（`['kind', 'displayName', …]`），门禁本身
+//    就成了同一个 bug 的载体 —— 下次往 manifest 加字段时，**新字段同时被
+//    实现和门禁忽略**（门禁只检查它自己列的那几个），于是照常全绿。
+//    这就是「循环论证」：判据既然取自被检查对象自身，检查通过只证明了两者自洽。
+//
+// ⇒ 判据必须来自**唯一真相源** `MANIFEST_FIELD_TABLE.kernel`：
+//   往 manifest 加字段 ⇒ 表变 ⇒ 本条自动要求快照跟上，**不需要人记得改门禁**。
+//
+//    反例就是「循环论证」：判据取自被检查对象自身，检查通过只证明了两者自洽。
+//
+// 「照单全带出」而不是「只带装配层要的」：装配层需要哪些字段会随上层演进，
+// 内核无从预判（本仓的教训：判据一旦取自「当前调用方要什么」，调用方一变就失效）。
+// 全带出 + 逐层深拷贝，既满足投影完整性，也不泄露可变引用。
+test('★★ 诊断快照的字段必须【由 manifest 契约派生】—— 白名单重建不得漏字段', async () => {
+  const host = new CordiumHost({ hostVersion: '1.0.0' });
+  host.registerPlugin({
+    id: 'plugin.kinded', version: '1.0.0', apiVersion: '1.0.0',
+    displayName: '带类型的插件', description: '说明文字',
+    provides: [], permissions: [], dependencies: {}, kind: 'core'
+  });
+  await host.boot();
+
+  const entry = host.getDiagnostics().plugins.find(p => p.id === 'plugin.kinded');
+  assert.ok(entry, '插件必须出现在诊断快照里');
+
+  // ① 契约里的每个字段都必须出现在快照里（**清单来自真相源，不手写**）
+  const missing = MANIFEST_FIELD_TABLE.kernel.filter((f) => !(f in entry));
+  assert.deepEqual(
+    missing,
+    [],
+    `诊断快照漏了 manifest 契约里的字段：${missing.join(', ')}\n`
+    + `  ⇒ 往 MANIFEST_FIELD_TABLE.kernel 加字段时，getDiagnostics() 的投影必须同步带上。\n`
+    + `     这是本项目「白名单重建漏字段」的同形（前三次：optionalDependencies / `
+    + `optionalProvider / 契约未知键）。`
+  );
+
+  // ② 快照的**非 manifest 字段**必须白名单化，不得凭空多出。
+  //
+  //    快照由两部分组成，判据不同：
+  //      · manifest 字段 —— 由 ① 保证「恰好等于契约表」；
+  //      · 运行时状态字段 —— 不是 manifest 的一部分（内核自己的观察结果：生命周期、
+  //        错误、耗时），**必须显式登记**，否则「顺手多带一个内部字段到公开面」
+  //        不会有任何提示。
+  //    ⇒ 这条是 ① 的**反向对照**：① 防漏，② 防多。
+  //      只写「不漏」是单向断言 —— 实现把整个内部 record 透传出去也照样能过。
+  const RUNTIME_FIELDS = ['state', 'error', 'activationMs'];
+  const extra = Object.keys(entry).filter(
+    (k) => !MANIFEST_FIELD_TABLE.kernel.includes(k) && !RUNTIME_FIELDS.includes(k)
+  );
+  assert.deepEqual(
+    extra,
+    [],
+    `诊断快照出现了未登记的字段：${extra.join(', ')}\n`
+    + `  ⇒ 要么是忘了登记进 MANIFEST_FIELD_TABLE.kernel（若是 manifest 字段），\n`
+    + `     要么是新增运行时状态却没加进本测试的 RUNTIME_FIELDS（若是内核观察结果）。`
+  );
+
+  // ③ kind 的语义（装配层靠它区分 core / business）
+  assert.equal(entry.kind, 'core');
+  host.registerPlugin({ id: 'plugin.nokind', version: '1.0.0', apiVersion: '1.0.0' });
+  const entry2 = host.getDiagnostics().plugins.find(p => p.id === 'plugin.nokind');
+  assert.equal(entry2.kind, 'business', '未声明 kind 的插件必须报 business，不是 undefined');
+
+  // ④ 快照如实反映 manifest 的**已归一化**形态（不是原始输入）：
+  //    `displayName` 缺省回落 id、`description` 缺省为 ''（types.mjs 的既有默认）。
+  //    把两条默认值都钉住 —— 否则将来有人改默认，快照与展示层会一起静默变样。
+  assert.equal(entry.displayName, '带类型的插件');
+  assert.equal(entry.description, '说明文字');
+  assert.equal(entry2.displayName, 'plugin.nokind', '未写 displayName 时按既有默认回落到 id');
+  assert.equal(entry2.description, '', '未写 description 时按既有默认为空串');
 });

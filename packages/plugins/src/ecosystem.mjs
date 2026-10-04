@@ -105,7 +105,13 @@ function addCandidates(manifests, allMap, report) {
   return candidateIds;
 }
 
-/** 一条依赖边：被依赖方必须存在且版本满足范围 */
+/**
+ * 校验一条依赖边：被依赖方必须存在且版本满足范围。
+ *
+ * ★ 无返回值：唯一调用点是拓扑 DFS，它只要「边合法」这个结论，之后自己按 id 取条目。
+ *   此前返回 `depItem` 却无人接 —— 一个「算出来就丢掉」的死值。
+ *   删掉而不是留着，因为留着会让人以为调用方依赖它。
+ */
 function checkEdge(allMap, id, depId, expectedRange) {
   const depItem = allMap.get(depId);
   if (!depItem) {
@@ -120,7 +126,6 @@ function checkEdge(allMap, id, depId, expectedRange) {
       { pluginId: id }
     );
   }
-  return depItem;
 }
 
 /**

@@ -55,6 +55,11 @@ const DEFAULT_LIMITS = Object.freeze({
   maxQueued: 256,
   maxPendingBytes: Math.floor(totalmem() / 4)
 });
+// ★ 普通对象字面量即可 —— 判定走下面的 Object.hasOwn，不依赖这张表的原型。
+//   ⚠️ 曾短暂改成 Object.create(null)：那会让「原型链上本来就没有这些名字」与
+//      「查表不看原型链」两道防线**互相遮蔽** —— 任一单独存在都能通过测试，
+//      于是没有任何用例能判别 hasOwn 那一行。防线数量超过测试能判别的数量，
+//      等于把一处可验证的检查换成了两处不可验证的。只留 hasOwn。
 const LIMIT_MIN = { maxConcurrent: 1, maxQueued: 0, maxPendingBytes: 1 };
 let limits = { ...DEFAULT_LIMITS };
 let live = 0;
@@ -72,7 +77,20 @@ export function configureIsolation(next) {
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'configureIsolation: limits must be an object');
     }
     for (const [key, value] of Object.entries(next)) {
-      if (!(key in LIMIT_MIN)) {
+      // ★★ 必须用 Object.hasOwn —— **不能用 `key in LIMIT_MIN`**。
+      //
+      //   `in` 会走原型链，于是 `toString` / `constructor` / `hasOwnProperty` / `__proto__`
+      //   这些**继承来的**名字全都「存在」：
+      //     · 校验形同虚设（它们不是合法上限名，却一律放行）；
+      //     · 更糟的是下一行 `value < LIMIT_MIN[key]` 拿到的是**函数**，
+      //       `数字 < 函数` 恒为 false ⇒ **任意数值都能过**；
+      //     · 最终 `{ ...limits, ...next }` 把 `toString: 1` 这类键写进生效上限表并带进返回值。
+      //
+      //   实测（改前）：`configureIsolation({ toString: 1 })` 被接受，返回值含该键。
+      //   ★ 同形外部案例：2026 年一批原型链键查找缺陷（joi / JSON 反序列化按路径写值 /
+      //     某 HTTP 路由按方法名查表 / Electron contextBridge），修法一律是
+      //     「只认自有属性」。其中路由那个与本处形状最接近：同样是查表拿到原型上的函数后崩。
+      if (!Object.hasOwn(LIMIT_MIN, key)) {
         throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `configureIsolation: unknown limit '${key}' (expected ${Object.keys(LIMIT_MIN).join(', ')})`);
       }
       if (!Number.isSafeInteger(value) || value < LIMIT_MIN[key]) {

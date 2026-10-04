@@ -203,22 +203,98 @@ export async function runWithTimeout(task, timeoutMs, onTimeout) {
 }
 
 /**
+ * 本实现【不进入、也不冻结】的容器类型。
+ *
+ * ★ 按【类型】判断，不按字段名 —— 这是与「手列字段清单」的根本差别：
+ *   清单会随 schema 增长而静默漏项；类型判定对新增字段自动成立。
+ *
+ * 两类原因，都不能靠 Object.freeze 解决：
+ *   · **非空 TypedArray 直接抛 TypeError**（"Cannot freeze array buffer views with elements"）——
+ *     不是「不可冻结」，是调用会炸，必须绕开；
+ *   · Map / Set / ArrayBuffer：冻结【挡不住】它们的内容（`map.set()` 照样生效），
+ *     冻了只会给出「已保护」的错觉。
+ *
+ * @param {any} value
+ */
+function isOpaqueContainer(value) {
+  if (value instanceof Map || value instanceof Set) return true;
+  if (value instanceof WeakMap || value instanceof WeakSet) return true;
+  if (ArrayBuffer.isView(value)) return true;   // TypedArray / DataView
+  if (value instanceof ArrayBuffer) return true;
+  if (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer) return true;
+  if (value instanceof Promise) return true;
+  return false;
+}
+
+/** 只遍历【数据属性】：访问器一律跳过（读 getter 等于执行任意代码） */
+function dataEntries(value) {
+  const out = [];
+  for (const key of Reflect.ownKeys(value)) {
+    const desc = Object.getOwnPropertyDescriptor(value, key);
+    if (desc && !('value' in desc)) continue;
+    out.push([key, value[key]]);
+  }
+  return out;
+}
+
+/**
+ * 递归冻结一个值**可达的一切**，返回原对象。
+ *
+ * ★ 与「手列字段名」的差别：这里**不查字段名**，凡本层容器一律冻到叶 ——
+ *   契约表将来新增任何容器字段都自动覆盖，不存在「加了字段忘了同步冻结」这一失效模式。
+ *   外部同形做法：规范文档给出的 deepFreeze 用 `Reflect.ownKeys` 递归；能力对象加固库
+ *   的 `harden` 明确描述为「传递性反射自有属性遍历」，且**对访问器不调用 getter**。
+ *
+ * ★ 边界（如实标注）：
+ *   · 函数不进入也不冻结 —— 它不是数据契约的一部分，冻一个共享函数对象是不必要的副作用；
+ *   · isOpaqueContainer 列出的一律跳过（见其注释）；
+ *   · `WeakSet` 防环（自引用对象会让朴素递归栈溢出）。
+ *
+ * @param {any} value
+ * @param {WeakSet<object>} [seen]
+ */
+export function deepFreeze(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  if (isOpaqueContainer(value)) return value;
+  for (const [, v] of dataEntries(value)) deepFreeze(v, seen);
+  return Object.freeze(value);
+}
+
+/**
+ * 深拷贝普通容器并冻结副本（原对象不受影响）。
+ *
+ * ★ 为什么是「拷贝后冻结」而不是「就地冻结」：交付给插件的是**副本**，
+ *   就地冻结会连带冻住宿主自己持有的那份（宿主内部状态不该因为「交付一次」而被改变）。
+ */
+function copyDeepFrozen(value, seen = new WeakMap()) {
+  if (value === null || typeof value !== 'object') return value;
+  if (isOpaqueContainer(value)) return value;
+  if (seen.has(value)) return seen.get(value);
+  const out = Array.isArray(value) ? [] : {};
+  seen.set(value, out);
+  for (const [key, v] of dataEntries(value)) out[key] = copyDeepFrozen(v, seen);
+  return Object.freeze(out);
+}
+
+/**
  * 为插件交付一份【逐层冻结】的 manifest 副本。
  *
  * 为什么不能只做浅冻结：Object.freeze 是浅的，挡不住 manifest.permissions.push(...) ——
- * 数组本身仍是可变的。必须把 provides / dependencies / permissions 一并冻结。
- * 冻结后插件再写它会在严格模式（ESM 默认）下直接抛 TypeError，而不是静默失败。
+ * 数组本身仍是可变的。冻结后插件再写它会在严格模式（ESM 默认）下直接抛 TypeError，
+ * 而不是静默失败。
+ *
+ * ⚠️ 此前这里是**手列的四个字段名**（provides / dependencies / optionalDependencies / permissions）。
+ *   实测：往 manifest 契约表新增一个容器字段后，该字段**不在冻结之列** ——
+ *   插件可以直接 push 进内核交付的 manifest，而「逐层冻结」的宣称不成立；
+ *   且归一化产物**本身不冻结**这些容器，所以这份清单是唯一防线，漏一项就是真漏。
+ *   ⇒ 改为泛化递归，按类型判定，不再依赖任何人记得同步。
  *
  * @param {any} manifest
  */
 export function freezeManifestForPlugin(manifest) {
-  return Object.freeze({
-    ...manifest,
-    provides: Object.freeze([...manifest.provides]),
-    dependencies: Object.freeze({ ...manifest.dependencies }),
-    optionalDependencies: Object.freeze({ ...manifest.optionalDependencies }),
-    permissions: Object.freeze([...manifest.permissions])
-  });
+  return copyDeepFrozen({ ...manifest });
 }
 
 /**

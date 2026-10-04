@@ -688,6 +688,54 @@ test('★ getDiagnostics 看得见作用域实现（全局槽口径不变），�
   assert.equal(svc().scopedProviderCount, 1, '停用即注销，计数随之减少');
 });
 
+test('★ 诊断面看得见【哪个作用域由谁提供】：明细与计数同源分立，停用即同步摘除', async () => {
+  const host = makeHost();
+  const a = provider('plugin.a', 'A', 'agent:a');
+  const b = provider('plugin.b', 'B', 'agent:b');
+  host.registerPlugin(a.manifest, a.entry);
+  host.registerPlugin(b.manifest, b.entry);
+  await host.boot();
+  const svc = () => host.getDiagnostics().services.find(s => s.name === SERVICE);
+
+  // ① 明细两条、配对正确 —— 删掉 scopedProviders 投影即 undefined，本行变红
+  assert.deepEqual(
+    svc().scopedProviders,
+    [{ scopeKey: 'agent:a', providerId: 'plugin.a' }, { scopeKey: 'agent:b', providerId: 'plugin.b' }],
+    '★ 作用域归属必须【配对可见】，不只是计数'
+  );
+  // ② 全局槽不进明细（口径分立的正向对照）：明细里只有作用域实现，activeProvider/计数各说各话
+  assert.equal(svc().providerCount, 0);
+  assert.equal(svc().activeProvider, null);
+  assert.equal(svc().scopedProviderCount, 2, '计数仍在且口径不变');
+
+  // ③ 停用即摘除 —— 明细与计数必须同步收缩，只清一边即红
+  await host.deactivatePlugin('plugin.a');
+  assert.deepEqual(
+    svc().scopedProviders,
+    [{ scopeKey: 'agent:b', providerId: 'plugin.b' }],
+    '★ 摘除后的明细必须立刻反映现状 —— 残留即幽灵'
+  );
+  assert.equal(svc().scopedProviderCount, 1);
+});
+
+test('★ 私有作用域的 Symbol 键在诊断面【渲染成串】，不可回用', async () => {
+  const host = makeHost();
+  let ctxRef = null;
+  host.registerPlugin(
+    { id: 'plugin.p', version: '1.0.0', apiVersion: '1.0.0', provides: [SERVICE] },
+    { async activate(ctx) { ctxRef = ctx; } }
+  );
+  await host.boot();
+  ctxRef.privateScope().provideService(SERVICE, { who: () => 'priv' });
+
+  // ★ 删掉投影里的 String() ⇒ Symbol 进断言即抛 TypeError，本用例变红（判别点）
+  const entry = host.getDiagnostics().services.find(s => s.name === SERVICE).scopedProviders[0];
+  assert.equal(typeof entry.scopeKey, 'string', '★ Symbol 必须【渲染成串】才出诊断面 —— 裸 Symbol 进 JSON 会变 undefined');
+  assert.match(entry.scopeKey, /^Symbol\(/, '私有作用域的渲染串可识别（只供观察）');
+  assert.equal(entry.providerId, 'plugin.p');
+  // 渲染串【不是】可用键：拿它 scoped() 得到的是【新】顶层作用域，与本格无关 —— 「不可回用」的边界由语义保证
+});
+
 test('★ 两套记账同步归零：停用后作用域服务桶与作用域表一起清空（含私有作用域、嵌套作用域），重新激活后一起回来', async () => {
   const host = makeHost();
   host.registerPlugin(

@@ -29,3 +29,6 @@ export { parseRange, isValidSemVer, compareSemVer, satisfiesSemVer } from './sem
 export { CordiumError, ErrorCode } from './errors.mjs';
 // Node setTimeout 上限：内核动作超时与 plugins 的 callWithTimeout / callIsolated 同一口径
 export { MAX_TIMER_MS, describeValue, describeError, errorDetails, firstFrame, summarizeCause, readOptions, runWithTimeout, measureValue } from './host-util.mjs';
+// ★ 深冻结：内核交付 manifest 与 plugins 冻结清单 config 是同一件事，共用一份实现
+//   —— 两份手写实现会漂移（plugins 那份此前用 Object.values，漏掉 symbol 键与不可枚举属性）
+export { deepFreeze } from './host-util.mjs';

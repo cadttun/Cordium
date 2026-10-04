@@ -1,6 +1,6 @@
 {
   "name": "@cordium/kernel",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Cordium 微内核：契约、生命周期、服务交付、轻量通知（零业务、零外部依赖）",
   "license": "MIT",

@@ -62,6 +62,34 @@ function assertUniqueIds(loaded) {
   }
 }
 
+/**
+ * 撤销顺序：**依赖方在前、被依赖方在后**（拓扑逆序）。
+ *
+ * ⚠️ 不能只写 `registered.reverse()` —— 那按的是**清单顺序**，不是依赖顺序。
+ *   宿主 `unregisterPlugin` 在「还有依赖方在册」时抛 `plugin_has_dependents`，
+ *   而它的判定**只看 manifest.dependencies，不看生命周期状态** ⇒
+ *   「已注册但从未激活的依赖方」照样算数。
+ *   实测（清单 A 依赖 B，第三个条目注册失败触发回滚）：
+ *     按清单逆序撤 ⇒ 撤 B 时 A 还在册且依赖 B ⇒ 抛错被吞 ⇒ **B 残留**，
+ *     宿主留下半装状态 —— 与文件头「不留半装状态」的承诺相反。
+ *   ⇒ 按依赖拓扑逆序，保证撤每个插件时它的依赖方都已先撤掉。
+ */
+function rollbackOrder(loaded) {
+  const byId = new Map(loaded.map((l) => [l.plugin.manifest.id, l]));
+  const out = [];
+  const seen = new Set();
+  const visit = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const item = byId.get(id);
+    if (!item) return;
+    for (const depId of Object.keys(item.plugin.manifest.dependencies || {})) visit(depId);
+    out.push(id);              // 被依赖的先入列 ⇒ 撤销时从末尾取，依赖方先撤
+  };
+  for (const l of loaded) visit(l.plugin.manifest.id);
+  return out.reverse();
+}
+
 async function registerAll(host, loaded) {
   const registered = [];
   try {
@@ -73,13 +101,30 @@ async function registerAll(host, loaded) {
       if (disabled) await host.deactivatePlugin(plugin.manifest.id);
     }
   } catch (err) {
-    await unregisterAll(host, registered.reverse());
+    await unregisterAll(host, registered, loaded);
     throw err;
   }
 }
 
-async function unregisterAll(host, ids) {
-  for (const id of ids) {
-    try { await host.unregisterPlugin(id); } catch { /* 依赖方同批注册、同批撤销，逆序撤不会被拒 */ }
+/**
+ * 回滚已注册的插件。**失败不再静默吞掉。**
+ *
+ * ★ 此前是 `catch { /* 逆序撤不会被拒 *\/ }` —— 一句**未经运行时验证的注释**，
+ *   而它恰恰是错的（见 rollbackOrder 的实测）。更严重的是：即使失败，
+ *   调用方也拿不到任何信号，会以为「已回滚干净」。
+ * ⇒ 现在：能撤的都撤；若有撤不掉的，**抛出带名单的错误**，
+ *   让调用方知道宿主里可能留有半装状态（这比「静默干净」安全得多）。
+ */
+async function unregisterAll(host, ids, loaded) {
+  const failed = [];
+  for (const id of rollbackOrder(loaded)) {
+    if (!ids.includes(id)) continue;              // 只撤本次真的注册成功的
+    try { await host.unregisterPlugin(id); }
+    catch (err) { failed.push(`${id}(${err?.code ?? 'unknown'})`); }
+  }
+  if (failed.length > 0) {
+    throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+      `loadPlugins: rollback incomplete — could not unregister ${failed.join(', ')}; `
+      + `the host may be left with partially registered plugins`);
   }
 }

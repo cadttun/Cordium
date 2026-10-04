@@ -4,19 +4,11 @@
  *
  * 每个函数都带 `fn`（调用方公开函数名）用作报错前缀，报文里点名是哪个入口出的错。
  */
-import { CordiumError, ErrorCode, describeError, MAX_TIMER_MS } from '@cordium/kernel/internal';
+import { CordiumError, ErrorCode, describeError, MAX_TIMER_MS, deepFreeze } from '@cordium/kernel/internal';
 import { toModuleHref } from './module-href.mjs';
 import { locateSyntaxError } from './syntax-location.mjs';
 
 const ENTRY_KEYS = new Set(['module', 'config', 'disabled', 'group', 'lifecycleTimeoutMs']);
-
-function deepFreeze(value) {
-  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const v of Object.values(value)) deepFreeze(v);
-  }
-  return value;
-}
 
 /**
  * 校验并规范化一个清单条目。
@@ -38,10 +30,16 @@ export function normalizeEntry(entry, where) {
   if (t !== undefined && (typeof t !== 'number' || Number.isNaN(t) || t > MAX_TIMER_MS)) {
     throw fail(`lifecycleTimeoutMs must be a number ≤ ${MAX_TIMER_MS} (0 or negative = unlimited)`);
   }
-  let config;
-  try { config = deepFreeze(structuredClone(entry.config ?? {})); } catch (err) {
+  // ★ 克隆与冻结是两件事，归因必须分开（此前合成一条 try，把冻结失败也说成「不可克隆」）：
+  //   实测 `config: new Uint8Array(3)` 能被 structuredClone 成功克隆，却因
+  //   Object.freeze 对**非空 TypedArray** 抛 TypeError 而报成 "must be structured-cloneable" ——
+  //   报文把调用方指向了错误的排查方向（输入没问题，是本层的冻结策略）。
+  //   现在：克隆失败 ⇒ 是输入的错；冻结走 deepFreeze，对视图类型一律跳过，不再抛。
+  let cloned;
+  try { cloned = structuredClone(entry.config ?? {}); } catch (err) {
     throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `${where} config must be structured-cloneable`, { cause: err });
   }
+  const config = deepFreeze(cloned);
   return { href: toModuleHref(entry.module, `${where}.module`), config, disabled: entry.disabled === true, group: entry.group ?? null, lifecycleTimeoutMs: t };
 }
 

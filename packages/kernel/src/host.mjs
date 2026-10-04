@@ -9,6 +9,8 @@
 
 import {
   LifecycleState, ServiceAccess, validateManifest, diffManifestFields, PLUGIN_ID_PATTERN,
+  // ★ 诊断快照的 manifest 投影由它派生（唯一真相源）—— 见 snapshotManifestForDiagnostics
+  MANIFEST_FIELD_TABLE,
   // ★ 服务契约的「白名单重建丢字段」判定 —— 与 manifest 共用同一条知识
   diffServiceContractFields,
   // ★ access 成员校验（拼错值 ⇒ 静默 fail-open，必须挡在写表之前）
@@ -53,6 +55,37 @@ function assertStringArg(method, name, value) {
   if (typeof value !== 'string') {
     throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `CordiumHost.${method}: ${name} must be a string, got ${describeValue(value)}`);
   }
+}
+
+/**
+ * 把 manifest 投影成诊断快照里的那一段 —— **字段集由契约表派生，不手列**。
+ *
+ * ── 为什么这样写 ────────────────────────────────────────────────────
+ * 手列清单会漏，且**漏了不会有人发现**：本项目同形已踩 4 次
+ * （`optionalDependencies` / `optionalProvider` / 契约未知键 / `kind`+`displayName`+`description`）。
+ * 每次的形状都一样：字段加进了 manifest 与 `MANIFEST_FIELD_TABLE`，投影忘了跟。
+ *
+ * ⚠️ 更隐蔽的是：**门禁也救不了手工清单**。若门禁自己手列一份期望清单，
+ *    新字段同时被实现与门禁忽略 ⇒ 照常全绿。
+ *    ⇒ 唯一能自我维护的写法是**从真相源派生**（本函数 + 同名的门禁测试）。
+ *
+ * ── 拷贝策略（照 `freezeManifestForPlugin` 的既有口径）──────────────
+ * 诊断是**只读快照**，不是宿主持有物的引用出口：数组 / 对象逐层拷贝，
+ * 否则调用方 `diagnostics.plugins[0].provides.push(...)` 就能改到内核的登记表。
+ * 标量（字符串 / 布尔 / null）按值传，无需特殊处理。
+ *
+ * @param {object} manifest 已由 validateManifest 归一化的 manifest
+ * @returns {object} 只读快照片段（字段集 == MANIFEST_FIELD_TABLE.kernel）
+ */
+function manifestSnapshot(manifest) {
+  const out = {};
+  for (const field of MANIFEST_FIELD_TABLE.kernel) {
+    const value = manifest[field];
+    out[field] = Array.isArray(value) ? [...value]
+      : (value !== null && typeof value === 'object') ? { ...value }
+      : value;
+  }
+  return out;
 }
 
 export class CordiumHost {
@@ -985,8 +1018,22 @@ export class CordiumHost {
         await runWithTimeout(() => record.entry.activate(ctx), budget, () => new CordiumError(ErrorCode.LIFECYCLE_TIMEOUT,
           `Plugin '${pluginId}' activate() did not finish within ${budget}ms (it may still be running; its scope is released, so later registrations are rejected)`,
           { pluginId }));
-        // ★ 防御纵深：scope.dispose 已要求宿主令牌（插件调用会直接抛错），
-        //   这里仍保留检查，以防将来有别的路径把 scope 关掉。
+        // ★ 防御纵深 —— **本检查在当前代码路径上不可达**，保留是刻意的。按本仓既有口径，
+        //   纵深防御要标清【防什么 / 代价 / 不可达的证据】三者（见 design/ 与测试目录里另外四处同形记录）：
+        //
+        //   ① 防什么：将来出现**宿主侧**的新路径，在 activate() 在途时把 scope 关掉
+        //      （例如某种「取消启动」或并发 teardown）。**不是**防插件 ——
+        //      插件根本关不掉：`EffectScope.dispose()` 要求出示 `#scopeReleaseKey`，
+        //      那是宿主私有 symbol（见本文件 #scopeReleaseKey 与 scope.mjs 的令牌门）。
+        //   ② 代价：每次成功激活多一次布尔读，**代价为零**。
+        //   ③ 不可达的证据（实测，非推断）：
+        //      · 五条伪造令牌路径（无参 / 伪 symbol / undefined / null / 字符串）全部被
+        //        `scope_owned_by_host` 挡在 dispose 之前，scope 仍 active；
+        //      · 宿主侧唯一的 scope.dispose 调用点 `#deactivatePluginNow` 先要求
+        //        `state === ACTIVE`，而此刻是 ACTIVATING ⇒ 被 `#serializeLifecycle` 串行化挡住；
+        //      · 删除本段的变异体：全量测试仍然全绿 —— 即**没有任何测试能判别它**。
+        //   ⇒ 前身是「事后检测 scope.active」，令牌机制落地后它被**取代**；此处保留为新防线，
+        //     而非旧防线残留。若将来 ① 那类路径确实出现，本检查会自动生效。
         if (!scope.active) {
           throw new CordiumError(ErrorCode.SCOPE_OWNED_BY_HOST,
             `Plugin '${pluginId}' disposed its own scope during activate() — `
@@ -1944,20 +1991,23 @@ export class CordiumHost {
       hostVersion: this.#hostVersion,
       booted: this.#booted,
       totalPlugins: this.#plugins.size,
-      plugins: Array.from(this.#plugins.entries()).map(([id, p]) => ({
-        id,
-        version: p.manifest.version,
+      // ⚠️ 不再解构 `id`：它已在 MANIFEST_FIELD_TABLE.kernel 里，由下面的投影带出。
+      //    留着会成为一个「与 id 同值但来源不同」的第二真相源。
+      plugins: Array.from(this.#plugins.values()).map((p) => ({
+        // ★★ manifest 字段由【契约表】派生，不手列。
+        //
+        //   为什么：手列会漏。本项目已同形踩了 4 次（optionalDependencies /
+        //   optionalProvider / 契约未知键 / 本处的 kind+displayName+description）——
+        //   每次都是「字段加进了 manifest 与 MANIFEST_FIELD_TABLE，投影忘了跟」。
+        //   而手工清单的门禁救不了它：门禁也只检查它自己列的那几个，新字段
+        //   **同时被实现和门禁忽略**，照常全绿。
+        //
+        //   ⇒ 判据取自唯一真相源：往契约表加字段 ⇒ 这里自动带出、门禁自动要求。
+        //      **不需要任何人记得改两处。**
+        ...manifestSnapshot(p.manifest),
         state: p.state,
-        // ★ 交【副本】：此前直接交出 record.manifest 的活数组/对象 ——
-        //   调用方往 provides 里 push 一个服务名，registerService 的 provides 校验就被绕过。
-        //   诊断是只读快照，不是宿主记录的写入口（同一性质）。
-        provides: [...p.manifest.provides],
-        dependencies: { ...p.manifest.dependencies },
-        permissions: [...p.manifest.permissions],
         error: p.state === LifecycleState.FAILED ? describeError(p.error) : null,
-        activationMs: p.activationMs,
-        // 插件自报可进程内热重载（开发期重载器据此放行）
-        hotReload: p.manifest.hotReload
+        activationMs: p.activationMs
       })),
       services: Array.from(this.#serviceContracts.entries()).map(([name, s]) => ({
         name,
@@ -1971,7 +2021,16 @@ export class CordiumHost {
         providerCount: s.providers.size,
         // ★ 上面两项只看【全局槽】—— 只注册了作用域实现的服务此前显示「0 个提供者」，
         //   与「确实没人提供」不可区分。作用域实现单独计数（各作用域桶之和），不混进全局口径。
-        scopedProviderCount: Array.from(s.scopedProviders.values()).reduce((n, bucket) => n + bucket.size, 0)
+        scopedProviderCount: Array.from(s.scopedProviders.values()).reduce((n, bucket) => n + bucket.size, 0),
+        // ★ 计数是聚合口径，明细是排障口径（「哪个作用域由谁提供」）—— 两者分立，互不替代。
+        //   与数据源同构：scopedProviders 是 Map<scopeKey, Map<providerId, entry>>，
+        //   桶内单提供者（#registerService 撞名即拒）⇒ 每桶恰出一条；空桶注销即收，这里不会看到空桶。
+        //   ★ scopeKey 可能是 Symbol（privateScope）⇒ 一律 String() 渲染，只供观察、不可回用
+        //     （同 channel.scopes 的既定口径，见下方）。
+        scopedProviders: Array.from(s.scopedProviders, ([scopeKey, bucket]) => ({
+          scopeKey: String(scopeKey),
+          providerId: bucket.keys().next().value ?? null
+        }))
       })),
       actionsCount: this.#actionHandlers.size,
       permissions: [...this.#permissions].sort(),
