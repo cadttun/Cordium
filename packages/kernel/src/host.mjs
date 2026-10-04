@@ -2041,11 +2041,7 @@ export class CordiumHost {
         }))
       })),
       actionsCount: this.#actionHandlers.size,
-      // ★ 显式比较器 = 码元序，与不带参数的默认行为逐位相同（权限名受 PLUGIN_ID_PATTERN 约束，
-      //   纯 ASCII ⇒ 既无本地化也无 Unicode 代理对的问题）。写出来只为把「这里要的就是码元序」
-      //   钉在代码里：将来元素类型若变成数字，默认 sort() 会静默按字符串排（[10,9,1] → [1,10,9]），
-      //   显式比较器会立刻给出数字序。
-      permissions: [...this.#permissions].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+      permissions: [...this.#permissions].sort(),
       uiContributionsCount: this.#uiContributions.size,
       // ★ 条目逐个浅拷贝：此前交出的是审计日志条目本身，外部改 message 即篡改审计记录。
       //   details 是嵌套对象，浅拷贝仍共享它 ⇒ 再克隆一层。
