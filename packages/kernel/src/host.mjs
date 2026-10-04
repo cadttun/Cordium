@@ -878,6 +878,10 @@ export class CordiumHost {
       //   后果：调用方在「装配插件」之后紧跟的同步代码读到的是**旧状态**，
       //   据此判断「该停用的停用」—— 会误判插件启停。
       //   ⇒ 改造必须是「只在真的有重叠时才排队」，而不是「给每次调用都加一跳」。
+      // ★ 这里的 promise 不被 await 是【有意】的：try/catch 抓的是 task() 的【同步抛出】，
+      //   而 run 要交出去 —— 拒绝的接收者是本方法末尾 return 出去的那个调用方，
+      //   队列尾另有 .then(clear, clear) 兜底。改成 await 会把「同步进入任务体」变成异步，
+      //   正好破坏上面那条设计。（静态检查看不见「promise 被交出去」，报的是误报。）
       try {
         run = Promise.resolve(task());
       } catch (err) {
@@ -2037,7 +2041,11 @@ export class CordiumHost {
         }))
       })),
       actionsCount: this.#actionHandlers.size,
-      permissions: [...this.#permissions].sort(),
+      // ★ 显式比较器 = 码元序，与不带参数的默认行为逐位相同（权限名受 PLUGIN_ID_PATTERN 约束，
+      //   纯 ASCII ⇒ 既无本地化也无 Unicode 代理对的问题）。写出来只为把「这里要的就是码元序」
+      //   钉在代码里：将来元素类型若变成数字，默认 sort() 会静默按字符串排（[10,9,1] → [1,10,9]），
+      //   显式比较器会立刻给出数字序。
+      permissions: [...this.#permissions].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
       uiContributionsCount: this.#uiContributions.size,
       // ★ 条目逐个浅拷贝：此前交出的是审计日志条目本身，外部改 message 即篡改审计记录。
       //   details 是嵌套对象，浅拷贝仍共享它 ⇒ 再克隆一层。

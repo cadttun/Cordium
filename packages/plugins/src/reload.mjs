@@ -142,6 +142,9 @@ export function watchPlugins(host, entries, options) {
         } catch (err) {
           safeCall(onError, err, t.entry);
         }
+      // ★ closed 不在这里赋值 —— 它在下面的 closeAll 里被置 true，而 closeAll 作为 close()
+      //   暴露给外部；循环体里有 await，外部能在 await 期间调 close() 把它置 true。
+      //   ⇒ 循环条件在迭代之间是【会变的】。（静态检查看不见闭包外部的赋值，报的是误报。）
       } while (t.again && !closed);
     } finally {
       t.running = false;

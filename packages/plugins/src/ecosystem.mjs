@@ -74,8 +74,10 @@ function assertSameAsExisting(existing, validated) {
       { pluginId: validated.id }
     );
   }
-  // ★ 权限是集合语义：比较前排序（此前 ['y','x'] 与 ['x','y'] 被判为实现冲突）
-  const perms = m => JSON.stringify([...(m.permissions || [])].sort());
+  // ★ 权限是集合语义：比较前排序（此前 ['y','x'] 与 ['x','y'] 被判为实现冲突）。
+  //   这里显式写出比较器（= 码元序，与默认行为逐位相同）：顺序归一**是这段判断的正确性前提**，
+  //   不该依赖读者记得 sort() 的默认行为是什么。权限名纯 ASCII，不受本地化 / Unicode 影响。
+  const perms = m => JSON.stringify([...(m.permissions || [])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
   // ★ 此处曾比较 implementationId —— validatePluginManifest 的白名单不保留该字段，
   //   validated.implementationId 恒为 undefined ⇒ 那一支永远不成立（死代码），已删。
   //   需要按实现来源区分时，先把字段加进插件层 schema（MANIFEST_FIELD_TABLE.plugin）再恢复比较。
