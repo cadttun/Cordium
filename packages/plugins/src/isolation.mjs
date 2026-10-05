@@ -150,7 +150,7 @@ const PERMISSION_FLAG = '--permission';
  * @throws {CordiumError} `isolation_busy`：排队已满或在途字节超限（见 configureIsolation）—— 未起任何环境，可重试
  */
 export async function callIsolated(module, exportName = 'default', args = [], options) {
-  const { mode = 'worker', timeoutMs = 3000, pluginId = 'unknown', allowFsRead = [], allowFsWrite = [], transfer = [], maxMemoryMb = 1024 } = readOptions(options, 'callIsolated');
+  const { mode = 'worker', timeoutMs = 3000, pluginId = 'unknown', allowFsRead = [], allowFsWrite = [], transfer = [], maxMemoryMb = 1024 } = readOptions(options, 'callIsolated', ['mode', 'timeoutMs', 'pluginId', 'allowFsRead', 'allowFsWrite', 'transfer', 'maxMemoryMb']);
   // ★ pluginId 先验：它会被拼进每条报错；非字符串（如 toString 抛错的对象）此前在子环境回消息的
   //   事件回调里拼报文时抛出 ⇒ 未捕获异常直接打崩宿主进程（实测）。
   if (typeof pluginId !== 'string') {

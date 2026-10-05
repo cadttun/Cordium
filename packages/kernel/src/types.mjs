@@ -226,17 +226,18 @@ function setOwn(obj, key, value) {
 
 export function normalizeDependencyMap(value, { field = 'dependencies', pluginId = null } = {}) {
   // ★ 类型错误一律抛 invalid_manifest（此前宽容退化：`{ p: 2 }` ⇒ `'*'` 任意版本放行、
-  //   `'oops'` ⇒ `{}` 依赖整体消失、数组里的非字符串项被静默丢掉 —— 版本门禁的输入错了却 fail-open）。
-  //   只拒【类型】：空串 / 纯空白仍按「未写」处理（范围 ⇒ `'*'`，与 npm 一致；数组项 ⇒ 跳过）。
+  //   `'oops'` ⇒ `{}` 依赖整体消失 —— 版本门禁的输入错了却 fail-open）。
+  //   只拒【类型】：空串 / 纯空白仍按「未写」处理（范围 ⇒ `'*'`，与 npm 一致）。
   const fail = detail => new CordiumError(ErrorCode.INVALID_MANIFEST, `${field} ${detail}`, { pluginId });
   if (value === undefined || value === null) return {};
   if (Array.isArray(value)) {
-    const result = {};
-    for (const dep of value) {
-      if (typeof dep !== 'string') throw fail(`entries must be strings, got ${typeof dep}`);
-      if (dep.trim()) setOwn(result, dep.trim(), '*');
-    }
-    return result;
+    // ★★ 数组形式【已取消】。理由不是「生产代码没人用」，而是它**结构上写不下版本范围**：
+    //   数组项没有位置放 range，只能一律当 `'*'` ⇒ 「用数组声明依赖」= **自动放弃版本约束**，且零提示。
+    //   与已修的「非法范围字符串」「空串」同源 —— `'*'` 是那几条 fail-open 路径共同的兜底值。
+    //   ★ 依据（规范层）：RFC 9413《Maintaining Robust Protocols》推翻了「宽进」的鲁棒性原则，
+    //     并点名对早期实现尤其有害；一个字段只留一种形态，解析分支才不会重叠。
+    throw fail("must be an object mapping plugin id to a SemVer range (e.g. { 'plugin.a': '^1.0.0' }), "
+      + 'got an array (the array form cannot express a version range and is no longer accepted)');
   }
   if (typeof value === 'object') {
     const result = {};
@@ -256,7 +257,7 @@ export function normalizeDependencyMap(value, { field = 'dependencies', pluginId
     }
     return result;
   }
-  throw fail(`must be an object or an array, got ${typeof value}`);
+  throw fail(`must be an object mapping plugin id to a SemVer range (e.g. { 'plugin.a': '^1.0.0' }), got ${typeof value}`);
 }
 
 /**

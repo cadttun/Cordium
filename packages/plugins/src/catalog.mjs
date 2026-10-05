@@ -36,7 +36,7 @@ function stripEntryFields(input) {
  *   此前 catalog 静默丢字段，且 exportIndex 把丢失写进索引 ⇒ 不可逆。
  */
 export function createPluginCatalog(options) {
-  const { apiVersion = PLUGIN_API_VERSION, onDiagnostic } = readOptions(options, 'createPluginCatalog');
+  const { apiVersion = PLUGIN_API_VERSION, onDiagnostic } = readOptions(options, 'createPluginCatalog', ['apiVersion', 'onDiagnostic']);
   const entries = new Map();
   const report = diagnosticSink(onDiagnostic);
 

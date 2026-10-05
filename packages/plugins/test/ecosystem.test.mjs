@@ -6,9 +6,9 @@ import { resolvePluginDependencies, callWithTimeout, normalizeDependencies } fro
 
 test('resolvePluginDependencies 按拓扑序返回（依赖先于被依赖者）', () => {
   const order = resolvePluginDependencies([
-    { id: 'plugin-c', name: 'Plugin C', version: '1.0.0', dependencies: ['plugin-b'] },
-    { id: 'plugin-a', name: 'Plugin A', version: '1.0.0', dependencies: [] },
-    { id: 'plugin-b', name: 'Plugin B', version: '1.0.0', dependencies: ['plugin-a'] }
+    { id: 'plugin-c', name: 'Plugin C', version: '1.0.0', dependencies: { 'plugin-b': '*' } },
+    { id: 'plugin-a', name: 'Plugin A', version: '1.0.0', dependencies: {} },
+    { id: 'plugin-b', name: 'Plugin B', version: '1.0.0', dependencies: { 'plugin-a': '*' } }
   ]).map(m => m.id);
   assert.equal(order.length, 3);
   assert.ok(order.indexOf('plugin-a') < order.indexOf('plugin-b'));
@@ -17,14 +17,14 @@ test('resolvePluginDependencies 按拓扑序返回（依赖先于被依赖者）
 
 test('resolvePluginDependencies 检出循环依赖', () => {
   assert.throws(() => resolvePluginDependencies([
-    { id: 'cycle-1', name: 'Cycle 1', version: '1.0.0', dependencies: ['cycle-2'] },
-    { id: 'cycle-2', name: 'Cycle 2', version: '1.0.0', dependencies: ['cycle-1'] }
+    { id: 'cycle-1', name: 'Cycle 1', version: '1.0.0', dependencies: { 'cycle-2': '*' } },
+    { id: 'cycle-2', name: 'Cycle 2', version: '1.0.0', dependencies: { 'cycle-1': '*' } }
   ]), err => err.code === 'cyclic_dependency');
 });
 
 test('resolvePluginDependencies 检出缺失依赖与版本不满足', () => {
   assert.throws(() => resolvePluginDependencies([
-    { id: 'lonely', name: 'L', version: '1.0.0', dependencies: ['ghost'] }
+    { id: 'lonely', name: 'L', version: '1.0.0', dependencies: { 'ghost': '*' } }
   ]), err => err.code === 'missing_dependency');
   assert.throws(() => resolvePluginDependencies([
     { id: 'base', name: 'B', version: '1.0.0' },
@@ -58,8 +58,10 @@ test('resolvePluginDependencies：候选与已装 registry 同 id 冲突 ⇒ ver
     [{ id: 'p', name: 'P', version: '1.0.0', permissions: ['x'] }], { existingRegistry: installed }));
 });
 
-test('normalizeDependencies：数组归一为 {id:*}，非对象输入 fail-loud', () => {
-  assert.deepEqual(normalizeDependencies(['a', 'b']), { a: '*', b: '*' });
+test('normalizeDependencies：只收对象形式（数组写法已取消），非对象输入 fail-loud', () => {
+  // 数组项写不下版本范围 ⇒ 一律拒，而不是「归一成 *」把约束悄悄吞掉
+  assert.deepEqual(normalizeDependencies({ a: '^1.0.0' }), { a: '^1.0.0' });
+  assert.throws(() => normalizeDependencies(['a', 'b']), err => err.code === 'invalid_manifest' && /got an array/.test(err.message));
   assert.throws(() => normalizeDependencies('a'), err => err.code === 'invalid_dependencies');
 });
 

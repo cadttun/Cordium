@@ -390,7 +390,7 @@ test('★ 非法依赖范围串两层都在校验期拒绝（invalid_manifest）
 
 test('ecosystem 深依赖链不栈溢出（迭代 DFS）', () => {
   const chain = Array.from({ length: 20000 }, (_, i) =>
-    ({ id: `p${i}`, name: 'P', version: '1.0.0', dependencies: i ? [`p${i - 1}`] : [] }));
+    ({ id: `p${i}`, name: 'P', version: '1.0.0', dependencies: i ? { [`p${i - 1}`]: '*' } : {} }));
   assert.equal(resolvePluginDependencies(chain.reverse()).length, 20000);
 });
 

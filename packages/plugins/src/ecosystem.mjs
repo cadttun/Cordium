@@ -13,8 +13,11 @@ import { satisfiesSemVer, normalizeDependencyMap, CordiumError, ErrorCode, MAX_T
 // 能力词表属于上层应用，不在 cordium（已删除 `PERMITTED_CAPABILITIES` / `checkPluginPermission`，见 design/removed-apis.md §7 / §8）
 
 /**
- * 规范化依赖映射：支持 Object ({ 'plugin.id': '^1.0.0' }) 或 Array (['plugin.id'])
- * @param {object|string[]} dependencies
+ * 规范化依赖映射（**只收 Object**：`{ 'plugin.id': '^1.0.0' }`）
+ *
+ * ★ 数组形式已取消 —— 数组项写不下版本范围，只能一律当 `'*'`，等于**静默放弃版本约束**。
+ *   它与「非法范围字符串」「空串」同源 fail-open；一个字段只留一种形态，解析分支才不会重叠。
+ * @param {object} dependencies
  * @returns {Record<string, string>}
  */
 export function normalizeDependencies(dependencies) {
@@ -23,7 +26,8 @@ export function normalizeDependencies(dependencies) {
   //    本模块既有的码 `invalid_dependencies` —— 它是独立入口，调用方传的不一定是 manifest。
   if (dependencies !== undefined && dependencies !== null
       && typeof dependencies !== 'object') {
-    throw new CordiumError(ErrorCode.INVALID_DEPENDENCIES, 'dependencies must be an object or an array');
+    throw new CordiumError(ErrorCode.INVALID_DEPENDENCIES,
+      "dependencies must be an object mapping plugin id to a SemVer range (e.g. { 'plugin.a': '^1.0.0' })");
   }
   return normalizeDependencyMap(dependencies);
 }
@@ -39,7 +43,7 @@ export function normalizeDependencies(dependencies) {
  * @returns {Array<object>} 拓扑排序后的 Manifest 列表
  */
 export function resolvePluginDependencies(manifests = [], options) {
-  const { existingRegistry = null, onDiagnostic } = readOptions(options, 'resolvePluginDependencies');
+  const { existingRegistry = null, onDiagnostic } = readOptions(options, 'resolvePluginDependencies', ['existingRegistry', 'onDiagnostic']);
   if (!Array.isArray(manifests)) {
     throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'resolvePluginDependencies: manifests must be an array');
   }
@@ -183,7 +187,7 @@ function topologicalOrder(candidateIds, allMap) {
  *   此前传 Infinity / NaN / 过大值会被 Node 静默改成 1ms ⇒ 立即超时（实测）。
  */
 export async function callWithTimeout(fn, args = [], options) {
-  const { timeoutMs = 3000, pluginId = 'unknown' } = readOptions(options, 'callWithTimeout');
+  const { timeoutMs = 3000, pluginId = 'unknown' } = readOptions(options, 'callWithTimeout', ['timeoutMs', 'pluginId']);
   if (typeof fn !== 'function') {
     throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'callWithTimeout: fn must be a function', { pluginId });
   }

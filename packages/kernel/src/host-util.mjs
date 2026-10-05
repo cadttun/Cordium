@@ -143,22 +143,42 @@ export function summarizeCause(err) {
  * ★ 此前各入口写 `options ?? {}` 后直接解构：传 `'abc'` / `[1]` / `5` **静默通过**，所有选项落回默认值，
  *   调用方以为设了超时 / 回调，其实一个都没生效（实测：两包 7 个入口全部如此）。
  * ★ 读一次落成快照：抛错的 getter 在这里转成带码错误；之后只看快照（同一个值不会读出两种结果）。
+ * ★★ 未知键一律拒（与 `loadPlugins` 清单条目同一口径，见 `entry.mjs`）。此前是**静默忽略**：
+ *   把 `apiVersion` 拼成 `apiVersio`、`maxMemoryMb` 拼成 `maxMemoryMB`，调用照常成功、
+ *   却悄悄用了默认值 —— 声明没生效、零报错，正是反复踩过的那个坑。
+ *   依据（规范层）：RFC 9413《Maintaining Robust Protocols》已推翻「宽进」的鲁棒性原则，
+ *   并点名**对早期实现尤其有害** —— 现在容忍下来的写法，会被后来的调用方照着抄。
+ *   ★ `allow` 缺省为空数组 ⇒ **fail-closed**：新增调用点若忘了声明允许键，
+ *     任何带选项的调用都会响亮失败，而不是悄悄退回宽容模式。
+ *
+ *   ★★ `null` 与 `[]` **不是一回事**，别混：`[]` = 一个键都不收（缺省，fail-closed）；
+ *     `null` = **此处不筛**，明确表示「未知键由下游自己负责」——目前只有声明式字段表用（见 host 的契约表）。
  *
  * @param {unknown} options
  * @param {string} where 报错前缀
+ * @param {string[] | null} [allow=[]] 本入口允许的选项名；不在其中的键一律拒；`null` ⇒ 不筛（须在下游另有归属）
  * @param {string} [code=ErrorCode.INVALID_ARGUMENT]
  * @returns {Record<string, any>}
  */
-export function readOptions(options, where, code = ErrorCode.INVALID_ARGUMENT) {
+export function readOptions(options, where, allow = [], code = ErrorCode.INVALID_ARGUMENT) {
   if (options === undefined || options === null) return {};
   if (typeof options !== 'object' || Array.isArray(options)) {
     throw new CordiumError(code, `${where}: options must be an object, got ${Array.isArray(options) ? 'array' : typeof options}`);
   }
+  let copy;
   try {
-    return { ...options };
+    copy = { ...options };
   } catch (err) {
     throw new CordiumError(code, `${where}: options could not be read (${describeError(err)})`, { cause: err });
   }
+  if (allow !== null) {
+    const unknown = Object.keys(copy).filter((k) => !allow.includes(k));
+    if (unknown.length) {
+      throw new CordiumError(code,
+        `${where}: unknown option(s): ${unknown.join(', ')} (allowed: ${allow.length ? allow.join(', ') : 'none'})`);
+    }
+  }
+  return copy;
 }
 
 /**

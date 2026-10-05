@@ -68,7 +68,7 @@ function assertHotReloadable(running, manifest, force) {
  * @returns {Promise<{ id: string, version: string, previousVersion: string }>}
  */
 export async function reloadPlugin(host, entry, options) {
-  const { force = false, importModule = defaultImport } = readOptions(options, 'reloadPlugin');
+  const { force = false, importModule = defaultImport } = readOptions(options, 'reloadPlugin', ['force', 'importModule']);
   assertHost(host, 'reloadPlugin');
   if (typeof importModule !== 'function') throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'reloadPlugin: importModule must be a function');
   const e = readEntry(entry, 'reloadPlugin: entry');
@@ -108,7 +108,7 @@ export async function reloadPlugin(host, entry, options) {
 export function watchPlugins(host, entries, options) {
   const {
     onReload = () => {}, onError = err => console.error(err), debounceMs = 100, force = false, importModule = defaultImport
-  } = readOptions(options, 'watchPlugins');
+  } = readOptions(options, 'watchPlugins', ['onReload', 'onError', 'debounceMs', 'force', 'importModule']);
   assertHost(host, 'watchPlugins');
   if (!Array.isArray(entries)) throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'watchPlugins: entries must be an array');
   for (const [name, fn] of [['onReload', onReload], ['onError', onError], ['importModule', importModule]]) {

@@ -105,7 +105,7 @@ function parseVersionBase(value, field, label, issues) {
 //   并使用它，而不是在插件层重写。
 
 export function validatePluginManifest(input, options) {
-  const { apiVersion = PLUGIN_API_VERSION } = readOptions(options, 'validatePluginManifest');
+  const { apiVersion = PLUGIN_API_VERSION } = readOptions(options, 'validatePluginManifest', ['apiVersion']);
   assert(input && typeof input === 'object', 'plugin manifest is required');
   // ★★★ 入口快照：**先把顶层字段读一次落成普通对象，之后全程只看这份快照**。
   //

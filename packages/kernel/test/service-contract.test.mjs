@@ -176,25 +176,24 @@ test('反例：未注入 sink 时，描述符层校验行为与改动前完全�
 // 数组依赖静默损坏修复 / 诊断分级 / 共享规范化 / 跨入口一致性
 // ============================================================================
 
-test('★ 数组形式 dependencies 不得被静默展开成 {0:…}（内核层静默数据损坏）', () => {
-  // 缺陷背景：`typeof x === 'object' ? { ...x } : {}` 会放行数组，
-  // 而【官方】MDN《Spread syntax》：对象展开枚举数组下标 ⇒ `{...['a']}` ⇒ `{0:'a'}`。
-  // 后果：boot() 抛 `Missing dependency '0'`，且鉴权快照被污染成 Set(['0'])
-  //       ⇒ 合法的数组写法会伪装成 Security Violation。
-  const manifest = validateManifest({
-    id: 'plugin.arr',
-    version: '1.0.0',
-    apiVersion: '1.0.0',
-    dependencies: ['plugin.parent'],
-    optionalDependencies: ['plugin.opt']
-  });
-
-  assert.deepEqual(manifest.dependencies, { 'plugin.parent': '*' }, '数组依赖必须归一成 {id:*}，绝不能是 {0:…}');
-  assert.deepEqual(manifest.optionalDependencies, { 'plugin.opt': '*' }, '可选依赖同形，必须一并修');
-  assert.ok(!('0' in manifest.dependencies), '★ 不得出现下标键 —— 那是数组被展开的特征');
+test('★ 数组形式 dependencies 一律拒 —— 一个字段只留一种形态', () => {
+  // 为什么取消：数组项**没有位置写版本范围**，只能一律当 `'*'`
+  //   ⇒ 「用数组声明依赖」= 自动放弃版本约束，且**零提示**。
+  //   它与已修的「非法范围字符串」「空串」同源 —— `'*'` 是那几条 fail-open 路径共同的兜底值。
+  //   （历史上数组还会被对象展开成 `{0:'a'}` 污染鉴权快照；现在这条路径整个不存在了。）
+  const base = { id: 'plugin.arr', version: '1.0.0', apiVersion: '1.0.0' };
+  assert.throws(() => validateManifest({ ...base, dependencies: ['plugin.parent'] }),
+    hasCode('invalid_manifest', /got an array/), 'dependencies 传数组必须被拒（且理由是「数组」本身，不是落到对象分支被误拒）');
+  assert.throws(() => validateManifest({ ...base, optionalDependencies: ['plugin.opt'] }),
+    hasCode('invalid_manifest', /got an array/), '可选依赖同形，必须一并拒');
+  // ★ 正向对照：对象形式仍然收下 —— 否则上面两条可能是「一律拒绝」伪装成判别
+  assert.deepEqual(
+    validateManifest({ ...base, dependencies: { 'plugin.parent': '^1.0.0' } }).dependencies,
+    { 'plugin.parent': '^1.0.0' }
+  );
 });
 
-test('★ 反例：数组依赖的插件必须能通过 boot，且鉴权快照不得含下标键', async () => {
+test('★ 依赖键必须是真实依赖名（不得被压成下标），鉴权快照随之正确', async () => {
   const host = new CordiumHost({ hostVersion: '1.0.0' });
   const got = {};
   host.declareServiceContracts({ 'service.parent': { access: ServiceAccess.DECLARED } });
@@ -203,7 +202,7 @@ test('★ 反例：数组依赖的插件必须能通过 boot，且鉴权快照�
     { async activate(ctx) { ctx.provideService('service.parent', { ok: () => true }); } }
   );
   host.registerPlugin(
-    { id: 'plugin.child', version: '1.0.0', apiVersion: '1.0.0', dependencies: ['plugin.parent'] },
+    { id: 'plugin.child', version: '1.0.0', apiVersion: '1.0.0', dependencies: { 'plugin.parent': '*' } },
     { async activate(ctx) { got.svc = ctx.getService('service.parent'); } }
   );
 
@@ -264,13 +263,20 @@ test('★ 依赖归一化是【共享实现】—— 三处入口产出必须逐
   const eco = await import('@cordium/plugins/ecosystem');
 
   const inputs = [
-    ['数组形式', ['plugin.a', 'plugin.b']],
     ['对象形式', { 'plugin.a': '^1.0.0' }],
     ['键值带空格', { ' plugin.a ': ' ^1.0.0 ' }],
     ['范围为空串（⇒ *，与 npm 一致）', { 'plugin.a': '' }],
-    ['数组含空串', ['  ', 'plugin.a']],
     ['空输入', undefined]
   ];
+
+  // ★ 数组形式已取消 —— 三处入口必须【一致地拒】，而不是各自为政（这才是「共享实现」的含义）
+  for (const [label, deps] of [['数组形式', ['plugin.a', 'plugin.b']], ['数组含空串', ['  ', 'plugin.a']]]) {
+    const km = { id: 'p', version: '1.0.0', apiVersion: '1.0.0', dependencies: deps };
+    const pm = { id: 'p', name: 'n', version: '1.0.0', apiVersion: '1.0.0', dependencies: deps };
+    assert.throws(() => validateManifest({ ...km }), hasCode('invalid_manifest', /got an array/), `★ [${label}] 内核层必须拒`);
+    assert.throws(() => runtime.validatePluginManifest({ ...pm }), hasCode('invalid_manifest', /got an array/), `★ [${label}] 插件层必须拒`);
+    assert.throws(() => eco.normalizeDependencies(deps), hasCode('invalid_manifest', /got an array/), `★ [${label}] ecosystem 必须拒`);
+  }
 
   for (const [label, deps] of inputs) {
     const kernelOut = validateManifest({ id: 'p', version: '1.0.0', apiVersion: '1.0.0', dependencies: deps }).dependencies;
@@ -288,7 +294,7 @@ test('★ 两层【共享字段】的 canonical 形状必须一致（拼写错�
   const inputs = [
     { id: 'p', name: 'n', version: '1.0.0', apiVersion: '1.0.0' },
     { id: 'p', name: 'n', version: '1.0.0', apiVersion: '1.0.0', provides: ['a', 'b'] },
-    { id: 'p', name: 'n', version: '1.0.0', apiVersion: '1.0.0', dependencies: ['plugin.a'] }
+    { id: 'p', name: 'n', version: '1.0.0', apiVersion: '1.0.0', dependencies: { 'plugin.a': '^1.0.0' } }
   ];
 
   for (const input of inputs) {

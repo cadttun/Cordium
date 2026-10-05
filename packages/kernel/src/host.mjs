@@ -175,7 +175,7 @@ export class CordiumHost {
    */
   constructor(options) {
     // null / undefined 视同不传；字符串 / 数组 / 数字 ⇒ invalid_option（此前静默展开后全部落回默认值）
-    options = readOptions(options, 'CordiumHost', ErrorCode.INVALID_OPTION);
+    options = readOptions(options, 'CordiumHost', ['hostVersion', 'maxLogSize', 'maxErrorLogSize', 'actionTimeoutMs', 'lifecycleTimeoutMs', 'maxInFlightActions', 'maxManifestDiagnostics'], ErrorCode.INVALID_OPTION);
     // ★ 构造参数校验 —— 此前 `maxLogSize: -1` 之类被原样收下，日志缓冲行为失常而无报错。
     //   缺省（undefined）仍取默认值；显式传入非法值 ⇒ 响亮失败。
     const positiveInt = (name, value, fallback) => {
@@ -432,7 +432,11 @@ export class CordiumHost {
     }
     // ★ null / 非对象 options 此前在下一行读 .access 时抛引擎 TypeError（无码）；
     //   数组此前被当成对象静默收下
-    options = readOptions(options, `Service Violation: contract '${serviceName}'`, ErrorCode.INVALID_CONTRACT);
+    // ★★ 这里【刻意不传】允许键集 —— 与「选项袋」的硬拒是两种输入、两种口径：
+    //   契约表是**声明式字段表**，未知键走【丢弃 + 诊断】（diffServiceContractFields ⇒
+    //   manifestDiagnostics + 日志点名）。上层若比内核新、多带了字段，不该被内核打死，
+    //   但也绝不能静默 —— 拼错的键会在诊断里被点名。见 service-contract.test.mjs 两处用例。
+    options = readOptions(options, `Service Violation: contract '${serviceName}'`, null, ErrorCode.INVALID_CONTRACT);
     // ★★ 门禁必须在【写表之前】（同形已出现三次：registerAction / registerService /
     //    ctx.ui.registerContribution —— 都是「先写表后 addDisposer」留下的幽灵条目）。
     //
@@ -571,7 +575,7 @@ export class CordiumHost {
    * @param {{ lifecycleTimeoutMs?: number }} [options] 宿主侧对【这一个】插件的设置（装配方写，不是插件自己写）
    */
   registerPlugin(rawManifest, entry = null, options) {
-    const { lifecycleTimeoutMs } = readOptions(options, 'CordiumHost.registerPlugin', ErrorCode.INVALID_OPTION);
+    const { lifecycleTimeoutMs } = readOptions(options, 'CordiumHost.registerPlugin', ['lifecycleTimeoutMs'], ErrorCode.INVALID_OPTION);
     assertTimeoutOption("registerPlugin option 'lifecycleTimeoutMs'", lifecycleTimeoutMs);
     const manifest = validateManifest(rawManifest);
     // ★★ 白名单重建会【静默丢弃】未列出的字段 —— 本项目已因此踩过两次坑。
@@ -676,7 +680,7 @@ export class CordiumHost {
    * @param {{ lifecycleTimeoutMs?: number }} [options]
    */
   replacePlugin(rawManifest, entry = null, options) {
-    const { lifecycleTimeoutMs } = readOptions(options, 'CordiumHost.replacePlugin', ErrorCode.INVALID_OPTION);
+    const { lifecycleTimeoutMs } = readOptions(options, 'CordiumHost.replacePlugin', ['lifecycleTimeoutMs'], ErrorCode.INVALID_OPTION);
     assertTimeoutOption("replacePlugin option 'lifecycleTimeoutMs'", lifecycleTimeoutMs);
     const manifest = validateManifest(rawManifest);
     const id = manifest.id;

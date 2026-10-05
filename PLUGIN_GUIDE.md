@@ -59,7 +59,7 @@ export function deactivate() {
 | `version` | ✅ | string | 插件自身版本，合法 SemVer，如 `1.2.0` |
 | `apiVersion` | ✅ | string | 插件面向的内核接口版本。主版本号必须等于内核的 `KERNEL_API_VERSION`（当前 `1.0.0`，所以写 `1.x.y`） |
 | `provides` | | string[] | 本插件会提供的服务名。**不在这里的服务名不能 `provideService`** |
-| `dependencies` | | object | 必需依赖：`{ '插件id': 'SemVer 范围' }`，如 `{ 'demo.counter': '^1.0.0' }`。也可写成数组 `['demo.counter']`，等同范围 `*` |
+| `dependencies` | | object | 必需依赖：`{ '插件id': 'SemVer 范围' }`，如 `{ 'demo.counter': '^1.0.0' }`。**只收这一种形态**（数组写法已取消：它写不下范围，只能一律当 `*`，等于静默放弃版本约束） |
 | `optionalDependencies` | | object | 可选依赖，写法同上。缺席时不影响本插件激活 |
 | `permissions` | | string[] | 本插件申请的权限名。必须是装配方登记过的名字 |
 | `kind` | | `'core'` \| `'business'` | 插件类别，默认 `business`。只是描述，「core 能否被用户停用」由应用决定 |

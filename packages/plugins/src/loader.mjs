@@ -35,7 +35,7 @@ import { normalizeEntry, loadOne, hostEntry, assertHost, defaultImport } from '.
  * @returns {Promise<Array<{ id: string, group: string|null, disabled: boolean }>>} 按清单顺序
  */
 export async function loadPlugins(host, entries, options) {
-  const { importModule = defaultImport } = readOptions(options, 'loadPlugins');
+  const { importModule = defaultImport } = readOptions(options, 'loadPlugins', ['importModule']);
   assertLoadArgs(host, entries, importModule);
   // ① 全部校验清单
   const normalized = entries.map((e, i) => normalizeEntry(e, `loadPlugins: entries[${i}]`));
