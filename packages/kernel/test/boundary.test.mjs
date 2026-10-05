@@ -121,6 +121,61 @@ test('★ 版本同步（lockstep）：两包 version 相等，plugins 对 kerne
   assert.equal(p.dependencies?.['@cordium/kernel'], k.version, 'plugins 依赖的 kernel 版本必须等于 kernel 自身版本');
   assert.equal(k.private, true, '不发公开 registry（防手滑 npm publish）');
   assert.equal(p.private, true, '不发公开 registry（防手滑 npm publish）');
+  // ★ 根（private，从不发布）也纳入 —— 此前它漂到 0.2.0 无人管（lockstep 只管两包）。
+  assert.equal(readPkg('.').version, k.version, '根版本随两包同步 —— 防再次漂移（0.2.1 前它停在 0.2.0）');
+});
+
+test('★ 运行时零依赖：两包 dependencies 不得含第三方（devDependencies 不受限）', () => {
+  // 「零依赖」是**发布面**的性质：`npm pack` 会带上 dependencies、不带 devDependencies。
+  // lint 工具落进 devDependencies（拿 lockfile 的 integrity），
+  // 故这条门禁把「零依赖」的范围**钉死在运行时**，而不是靠一句文档声明。
+  const k = readPkg('packages/kernel');
+  const p = readPkg('packages/plugins');
+  assert.equal(k.dependencies, undefined, '内核不得有运行时依赖');
+  assert.deepEqual(
+    Object.keys(p.dependencies ?? {}), ['@cordium/kernel'],
+    '插件包运行时只允许依赖内核（workspace 链接）'
+  );
+});
+
+// ─────────── 发布面文档的版本声明随包版本同步 ───────────
+
+test('★ 发布面文档的版本声明随包版本同步（徽章 / 正文 / 产物名 / 依赖 pin / 支持版本线 / CI 同款命令）', () => {
+  // 版本号此前只在三处 package.json 与 lockfile 之间钉住，文档里的版本声明无人管 ——
+  // 结果是 README 的徽章、正文、产物名、安装示例的依赖 pin 四类声明一起停在旧版本，
+  // 读者照抄安装示例会指向一个【不存在的 tgz】。这条给那一类补上机械防线。
+  const v = readPkg('packages/kernel').version;
+  const minorLine = v.split('.').slice(0, 2).join('.') + '.x';
+  const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+  const bad = [];
+
+  const readme = read('README.md');
+  const claims = [
+    [/badge\/version-([0-9][\w.-]*)-/, '徽章'],
+    [/当前为 ([0-9][\w.-]*)，/, '正文「当前为 X」'],
+    [/dist\/cordium-kernel-([0-9][\w.-]*)\.tgz/, 'pack 产物名（kernel）'],
+    [/dist\/cordium-plugins-([0-9][\w.-]*)\.tgz/, 'pack 产物名（plugins）'],
+    [/@cordium\/kernel@([0-9][\w.-]*)/, '安装示例的依赖 pin']
+  ];
+  for (const [re, label] of claims) {
+    const found = [...readme.matchAll(new RegExp(re.source, 'g'))].map(m => m[1]);
+    // ★「没匹配到」与「检查通过」必须分开报：判据本身失效不是绿灯。
+    if (found.length === 0) bad.push(`${label}：README 里找不到该声明的判据 —— 判据失效，请更新本测试，不要当作通过`);
+    for (const got of found) if (got !== v) bad.push(`${label}：README 写 ${got}，包版本是 ${v}`);
+  }
+
+  const security = read('SECURITY.md');
+  if (!security.includes(`| ${minorLine} | ✅ |`)) bad.push(`SECURITY 支持版本表未把当前版本线 ${minorLine} 标为受支持`);
+
+  // CONTRIBUTING 自称「CI 同款」的静态检查命令：必须与 CI 里跑的那条逐字一致
+  const ciLine = read('.github/workflows/test.yml').split(/\r?\n/).find(l => l.includes('oxlint --deny-warnings'));
+  if (!ciLine) bad.push('CI 里找不到 oxlint 命令行 —— 判据失效，请更新本测试，不要当作通过');
+  else {
+    const cmd = ciLine.trim().replace(/^-\s*run:\s*/, '');
+    if (!read('CONTRIBUTING.md').includes(cmd)) bad.push(`CONTRIBUTING 的静态检查命令与 CI 不一致，CI 实跑的是：${cmd}`);
+  }
+
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
 });
 
 // ─────────── 硬边界 ③：kernel/src 与 plugins/src 不得出现产品装配清单 ───────────

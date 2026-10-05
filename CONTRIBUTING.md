@@ -3,7 +3,7 @@
 ## 开发环境
 
 - Node.js ≥ 22.13（CI 覆盖 22 / 24 / 26）
-- 零第三方依赖；`npm install` 只建立两个 workspace 的链接（`@cordium/plugins` 依赖同仓的 `@cordium/kernel`，不是外部包）
+- 运行时零第三方依赖；`npm install` 建立两个 workspace 的链接（`@cordium/plugins` 依赖同仓的 `@cordium/kernel`，不是外部包），并装一个**开发期**依赖 `oxlint`（见下方静态检查；不进发布物）
 
 ```bash
 npm test               # 两包全部测试
@@ -11,10 +11,10 @@ npm run test:coverage  # 测试 + 覆盖率
 npm run pack           # 打包到 dist/（不入库）
 ```
 
-静态检查（CI 同款，需在 bash / Git Bash 下运行）：
+静态检查（CI 同款，需在 bash / Git Bash 下运行；先 `npm install` 装上开发期依赖）：
 
 ```bash
-npx --yes oxlint@1.86.0 --deny-warnings --import-plugin -D import/no-cycle packages/*/src
+./node_modules/.bin/oxlint --deny-warnings --import-plugin -D import/no-cycle packages/*/src
 ```
 
 ## Git hooks（可选，启用一次长期有效）

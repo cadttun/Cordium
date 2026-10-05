@@ -1,7 +1,7 @@
 {
   "name": "cordium",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "通用插件基座（微内核）：契约、生命周期、服务交付、轻量消息",
   "license": "MIT",
@@ -16,6 +16,9 @@
   ],
   "engines": {
     "node": ">=22.13.0"
+  },
+  "devDependencies": {
+    "oxlint": "1.86.0"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",

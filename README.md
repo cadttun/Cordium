@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Node.js >= 22.13](https://img.shields.io/badge/node-%3E%3D22.13-339933.svg)
 ![Third-party deps: 0](https://img.shields.io/badge/third--party_deps-0-brightgreen.svg)
-![Version 0.2.0](https://img.shields.io/badge/version-0.2.0-orange.svg)
+![Version 0.2.1](https://img.shields.io/badge/version-0.2.1-orange.svg)
 
 **通用插件基座（微内核）**：负责插件的契约、生命周期、服务交付和轻量消息。模型、记忆、工具、业务等上层能力都以插件形式装进来，内核本身不含任何业务。
 
@@ -12,7 +12,7 @@
 - **防失控**：生命周期钩子有时限，动作派发有在途上限；插件抛出的值经统一错误模型带码送达 —— 动作、服务与消息通道的失败抛给调用方（含插件归属），生命周期钩子与后台失败进宿主日志。
 - **可选执行隔离**：把一段可能卡死或吃内存的计算放进 worker 线程或子进程里跑，超时即终止。
 
-> 当前为 0.2.0，接口在 1.0 之前仍可能调整，变更见 [CHANGELOG](CHANGELOG.md)。
+> 当前为 0.2.1，接口在 1.0 之前仍可能调整，变更见 [CHANGELOG](CHANGELOG.md)。
 
 ## 目录
 
@@ -30,20 +30,20 @@
 
 ```sh
 # 在 cordium 目录下
-npm run pack        # 产物：dist/cordium-kernel-0.2.0.tgz、dist/cordium-plugins-0.2.0.tgz
+npm run pack        # 产物：dist/cordium-kernel-0.2.1.tgz、dist/cordium-plugins-0.2.1.tgz
 ```
 
 ```jsonc
 // package.json（下游项目）
 {
   "dependencies": {
-    "@cordium/kernel": "file:../cordium/dist/cordium-kernel-0.2.0.tgz",
-    "@cordium/plugins": "file:../cordium/dist/cordium-plugins-0.2.0.tgz"
+    "@cordium/kernel": "file:../cordium/dist/cordium-kernel-0.2.1.tgz",
+    "@cordium/plugins": "file:../cordium/dist/cordium-plugins-0.2.1.tgz"
   }
 }
 ```
 
-- 用到 `@cordium/plugins` 时，两个包都要写进依赖：它的 `dependencies` 钉的是 `@cordium/kernel@0.2.0`，registry 上没有这个包。
+- 用到 `@cordium/plugins` 时，两个包都要写进依赖：它的 `dependencies` 钉的是 `@cordium/kernel@0.2.1`，registry 上没有这个包。
 - 联调时也可以直接指向源码目录（`file:../cordium/packages/kernel` 与 `file:../cordium/packages/plugins`）。这种写法装进来的是符号链接，Node 按真实路径解析，`@cordium/plugins` 会到 cordium 自己的 `node_modules` 里找 `@cordium/kernel`。所以要先在 cordium 目录下运行一次 `npm install`，否则报 `ERR_MODULE_NOT_FOUND`。
 
 ## 快速上手
