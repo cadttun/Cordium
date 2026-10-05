@@ -7,6 +7,22 @@
 破坏兼容的改动必须走 minor —— 0.x 的 patch 位会被下游的 `^0.x.0` 自动纳入，承载不了破坏性变更。
 `KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
 
+## [0.2.2] - 2026-10-05
+
+### Fixed
+
+- 释放回调抛错不再**短路其余释放**：`EffectScope` 拆卸时「注销服务」与「注销 UI 贡献」两段循环此前是裸调，任一条回调抛错都会中断其后**所有**释放，并让 `dispose()` 拒绝。宿主是在 `await dispose()` **之后**才把插件状态置为 `disabled` 的，所以一条释放回调抛错就足以让插件**永久停在 `stopping`**（既不再 `active`，也到不了 `disabled`）。现在两段各自隔离、抛错经既有上报口记录，`dispose()` 必定走完 —— 该状态不再有产生路径。
+  （依据是 JS 显式资源管理的既定语义：处置期的异常不得短路其余资源的处置，而应汇总上报。当前代码并无真实抛出路径，属防御纵深；此处按「消除唯一可失败的路径」处理，而非另加一层兜底。）
+- README 安装说明里的版本号与 pack 产物名此前停在 `0.2.0`：照抄示例会指向**不存在的 tarball**。现随版本同步，并新增门禁防止再次漂移。
+- 测试：`assert.rejects` 补上遗漏的 `await`（全仓同类断言中唯一一处裸调用，裸调用时断言失败会归因到文件、该用例仍显示通过）。
+
+### Changed
+
+- `SECURITY.md` 的支持版本口径写准：只列当前版本线与「更早的版本线」，并明确「不接收修复」的含义是**不做回移植**，不是「那个版本存在已知漏洞」；补「拿不准就直接报」。
+- 静态检查工具 `oxlint` 改由 `devDependencies` 提供（版本精确，摘要进 lockfile），CI 与本地跑同一份二进制，不再 `npx` 现拉 —— 版本号钉死挡不住注册表投毒，摘要才能。**运行时零依赖不变**，并新增门禁钉住（两包 `dependencies` 不得含第三方）。
+- 内部修正：CI 的 `npm ci` / `npx` 补 `--ignore-scripts`（对当前依赖链拦截不到任何东西，为将来引入依赖预留）；诊断快照的权限列表与权限集合比对写出显式比较器（行为逐位不变）；`#providerInScope` 的作用域分支改为与全局槽同一取法（逐字等价）。
+- 版本同步门禁扩展到根 `package.json`（此前只覆盖两个包，根曾静默停在旧版本）。
+
 ## [0.2.1] - 2026-10-04
 
 ### Changed
@@ -74,6 +90,8 @@
 - CI：Ubuntu 与 Windows × Node 20 / 22 / 24 测试与打包，oxlint 静态检查（含模块环检测 `import/no-cycle`）；workflow 只读权限、action 锁提交 SHA，dependabot 每月提升级 PR。
 - 安全策略（SECURITY.md）：私密漏洞报告渠道与范围说明。
 
-[Unreleased]: https://github.com/cadttun/cordium/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/cadttun/cordium/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/cadttun/cordium/releases/tag/v0.2.2
+[0.2.1]: https://github.com/cadttun/cordium/releases/tag/v0.2.1
 [0.2.0]: https://github.com/cadttun/cordium/releases/tag/v0.2.0
 [0.1.0]: https://github.com/cadttun/cordium/releases/tag/v0.1.0

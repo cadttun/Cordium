@@ -1,7 +1,7 @@
 {
   "name": "cordium",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "通用插件基座（微内核）：契约、生命周期、服务交付、轻量消息",
   "license": "MIT",
