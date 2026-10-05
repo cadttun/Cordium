@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hasCode } from './fixtures/errors.mjs';
-import { MessageChannel, CordiumHost } from '../src/index.mjs';
+import { MessageChannel, CordiumHost, EffectScope } from '../src/index.mjs';
 import { listenerCount } from './fixtures/inspect.mjs';
 
 const tick = () => new Promise(r => setTimeout(r, 0));
@@ -541,4 +541,37 @@ test('★ 两层 manifest 版本判定一致：宽松写法与越界数字两层
   }
   const c = createPluginCatalog();
   assert.throws(() => c.add({ id: 'big', name: 'B', version: '9007199254740992.0.0' }), hasCode('invalid_manifest'));
+});
+
+// ─────────── 释放回调抛错不得短路其余释放 ───────────
+
+test('★ 一条释放回调抛错 ⇒ 其余释放照常走完、dispose 不 reject（状态永久停在 STOPPING 的那条路被堵死）', async () => {
+  // 为什么这条要紧：宿主侧是 `await scope.dispose(...)` 之后才置 DISABLED。
+  // 只要 dispose 能 reject，一条释放回调抛错就能让插件状态既回不到 ACTIVE、也到不了 DISABLED。
+  // 判别性：撤掉 scope.mjs 第 3 步的 try/catch ⇒ 本用例在 `await scope.dispose()` 处变红。
+  const released = [];
+  const reported = [];
+  const scope = new EffectScope('plugin.release-throws', {
+    releaseService: (name) => {
+      released.push(`service:${name}`);
+      if (name === 'svc.first') throw new Error('release boom');
+    },
+    releaseUIContribution: (id) => {
+      released.push(`ui:${id}`);
+      if (id === 'ui.two') throw new Error('ui boom');
+    },
+    onDisposeError: (ownerId, err) => reported.push(`${ownerId}|${err.message}`)
+  });
+  scope.trackService('svc.first');      // 两段循环各埋一个会抛的，两处的隔离都得被测到
+  scope.trackService('svc.second');
+  scope.trackUIContribution('ui.one');
+  scope.trackUIContribution('ui.two');
+
+  await scope.dispose();
+
+  assert.deepEqual(released, ['service:svc.first', 'service:svc.second', 'ui:ui.one', 'ui:ui.two'],
+    '抛错的那条不得短路其后的一切释放');
+  assert.deepEqual(reported, ['plugin.release-throws|release boom', 'plugin.release-throws|ui boom'],
+    '两处抛错都要上报，不是被吞掉');
+  assert.equal(scope.active, false, 'dispose 走完 ⇒ 已停活');
 });

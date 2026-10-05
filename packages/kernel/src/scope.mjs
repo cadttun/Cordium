@@ -248,15 +248,22 @@ export class EffectScope {
     //   所有者记录，而不是相信一个可以被改写的字符串。
     //   这样即使有人绕过私有字段，也无法借刀注销别人的实现；
     //   同时因为反查是"按 scope 摘除"，自己的实现也必然被摘干净，不会留幽灵。
+    // ★★ 逐个隔离（与上方宿主自有释放同一口径）：一条释放回调抛错，不得【短路】其余释放。
+    //   JS 显式资源管理（`Symbol.dispose` / `DisposableStack`）的语义本就是如此 ——
+    //   处置期的异常被收集进 `SuppressedError` 汇总抛出，而不是让剩下的资源干脆不处置。
+    //   ★ 这两段此前是裸调，因而成了 #doDispose 唯一能 reject 的路径；而宿主侧
+    //     `await scope.dispose(...)` 之后才置 DISABLED ⇒ 一条释放回调抛错，
+    //     插件状态就永久停在 STOPPING（既不再 ACTIVE，也到不了 DISABLED）。
+    //     下面的隔离使 dispose 成为【一定会走完】的操作：这个状态再没有别的卡法。
     const { releaseService, releaseUIContribution } = this.#release;
     for (const s of this.#services) {
-      releaseService?.(s, this);
+      try { releaseService?.(s, this); } catch (err) { this.#reportDisposeError(err); }
     }
     this.#services.clear();
 
     // UI 贡献沿用字符串 ownerId，但这里读的是私有字段，插件无法改写。
     for (const c of this.#uiContributions) {
-      releaseUIContribution?.(c, this.#ownerId);
+      try { releaseUIContribution?.(c, this.#ownerId); } catch (err) { this.#reportDisposeError(err); }
     }
     this.#uiContributions.clear();
 
