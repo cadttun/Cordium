@@ -20,6 +20,8 @@
 - `DIAGNOSTICS_CONTRACT`：诊断快照的**稳定性契约**（`@cordium/kernel` 的导出）。按**路径**逐层分区 —— `stable` 点名「不删 / 不改名 / 不改类型」的字段（枚举值可增不可改），`unstable` 显式列出**不承诺**的那些。快照随附 `schemaVersion`（结构版本；发生**不兼容**改动时递增，增字段不算）。
   （**未点名的路径/键一律不承诺** —— 不是「大概稳定」，是明确不承诺。消费方契约：**只读稳定面、忽略未知字段**。依据：allowlist 形态，与 k6 的措辞同一口径；分两档的形态取自 Kubernetes 指标（Alpha「no stability guarantees」/ Stable）与 OpenTelemetry（`/incubating` 子入口）。）
 
+- **`boot()` 的失败半径**写进指南（`PLUGIN_GUIDE` §10）：静态装配期是**原子**的 —— 任一插件的必需依赖不满足，`boot()` 在**激活任何插件之前**就抛错，**整份清单都不启动**（含依赖齐备的插件），宿主停在 `booted === false`，不存在「半启动」；`boot()` **之后**加载的插件则是**隔离**的 —— 只有它自己进 `failed`，宿主照常运行。两个世界不同是有意的：静态清单由装配方自己写，依赖写错启动时就暴露最省事；动态插件来自外部，不该拖垮已经跑起来的宿主。同时给出「装配方要隔离谁」的做法（`boot` 之前读 `unresolvedDependencies` 纯查询一次拿全 —— `boot()` 自身一次只报碰到的第一个 —— 再 `unregisterPlugin`，有必需依赖方时从叶子往上摘）。`boot-failure-radius.test.mjs` 把两侧**一起**钉住：只测一侧的话，把任一侧改成另一侧的语义都照样全绿。
+
 ### Changed
 
 - `activate(ctx, config)` 的第二参**只有一种形状**：`host.registerPlugin` 路径此前完全不传（`undefined`），与 `loadPlugins` 路径（已冻结对象）不一致。现在没配置时传冻结的 `{}`。

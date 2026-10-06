@@ -495,6 +495,41 @@ const tail = diag.recentLogs.slice(-5).map(l => l.message);
 反过来，读了不稳定面就得自己承担内核改它的后果。★ 判活跃请用 `LifecycleState.ACTIVE` 常量，
 不要写字面量 `'active'`（拼错是静态值，不会报错，只会静默判错）。
 
+### 一个插件起不来时，会连累谁
+
+`boot()` 是**原子**的：任一已登记插件的必需依赖不满足（缺失 / 版本不符），它在**激活任何插件之前**就抛错
+（`missing_dependency` / `dependency_version_mismatch`），宿主停在 `booted === false`，
+**所有**插件（包括依赖齐备的那些）保持 `discovered` —— 不存在「半启动」：要么整份清单起来，要么一个都不起。
+
+`boot()` **之后**再登记 / 激活的插件不受此限：同样的 manifest 错误只让那一个插件进 `failed`，
+宿主仍 `booted === true`，已经跑起来的插件不受影响。
+
+| 插件从哪来 | 一个坏 manifest 的后果 |
+|---|---|
+| `boot()` 之前登记的（内置、清单里写死的） | **整份清单都不启动** |
+| `boot()` 之后加载的（外部插件、热插拔） | **只有它自己 `failed`** |
+
+★ 为什么两个世界不同：静态期那份清单是装配方自己写的，依赖写错是装配错误，启动时就暴露最省事；
+动态期的插件来自外部，一个外来 manifest 打错字不该把已经跑起来的宿主整个拖垮。
+
+**装配方要自己决定隔离谁**（内核只给事实，不给策略）：
+
+```js
+// ① boot 之前：纯查询、零副作用，一次列出【全部】有问题的插件
+//    （boot() 自身一次只报它碰到的第一个）
+const guilty = host.getDiagnostics().plugins
+  .filter(p => p.unresolvedDependencies.length > 0)
+  .map(p => p.id);
+
+// ② 放弃它们。有必需依赖方的要先摘依赖方 —— 从叶子往上
+for (const id of guilty) await host.unregisterPlugin(id);
+
+await host.boot();
+```
+
+- `unresolvedDependencies` 在稳定面里（见上一节），形状 `[{ id, reason }]`，`reason` 是 `'missing'` 或 `'version_mismatch'`。
+- ⚠️ `unregisterPlugin` 的**入口**拒绝（插件不存在 / 有必需依赖方）是**同步抛出**，排队后复验失败的才是 Promise 拒绝 —— 用 `try/catch` 包住 `await` 即可统一处理两者。
+
 ### 按目录加载
 
 内核不扫描目录，只加载清单里写明的文件：会执行哪些代码一目了然，每一条还能带 `config` 等参数。想「把插件丢进一个目录就加载」，由应用自己扫描后生成清单：
