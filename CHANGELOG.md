@@ -42,6 +42,11 @@
   此前内核 `KERNEL_API_VERSION = '1.0.0'` 时，插件写 `'1.99.0'` 会被**静默放行** —— 作者以为前置要求被检查了，其实没有。
   ★ **零迁移（实测）**：真实 manifest 的 `apiVersion` 声明共 **33 处**（本仓 14 + 消费方仓 19），取值**全部**是 `'1.0.0'` —— 逐处过两层校验全数放行，行为逐字不变。
   ⚠️ **行为变更**：插件若声明一个**高于内核**的版本（如 `'1.0.1'`），从此会被拒 —— 这正是修的目的。
+- ★ `ctx.registerAction(name, options)` 的 `options` 改为**白名单**（`requiredPermission` / `handler` / `timeoutMs`），未知键在注册时抛 `invalid_option`。
+  此前是裸解构 ⇒ 未知键被**静默丢弃**：`requiredPermission` 拼错会让**权限门直接消失**，`timeoutMs` 拼成 `timeout` 会静默回退宿主默认值。
+  （口径取自本仓自己的分界线：**选项袋硬拒、声明式字段表才丢弃+诊断** —— 与 `CordiumHost` 构造 / `registerPlugin` / `replacePlugin` 同族。）
+  ★ **零迁移（实测）**：消费方 4 处 `registerAction` 全部只传 `requiredPermission` + `handler`。
+  ⚠️ **行为变更**：插件若传了未知键（含拼错的键），从此会在 `activate` 期被拒 —— 这正是修的目的。
 
 ### Removed
 
@@ -58,6 +63,10 @@
 - ★ `deactivatePlugin` 对一个**从未启动过**（`discovered`）的插件只打 `disabledByUser` 标记、**不改状态** ⇒ 装配方用加载清单的 `disabled: true` 登记后，快照里它显示 `discovered`，与「等着启动」**长得一模一样**。现在这类插件落 `disabled`（`LifecycleState.DISABLED` 本就是为这个存在的）。⚠️ 只挂**用户显式停用**这条路径：回滚与级联停用复用内部路径，在那里落 `disabled` 会把「本次没启动它」说成「用户停用了它」。
 - `deactivatePlugin` 对一个等待触发的懒插件**完全无效**（内部路径只认 `ACTIVE`）⇒ 用户根本停不掉它。现在 `ready` 的插件可直接停为 `disabled`。
 - 存活态判定此前以 `state === ACTIVE || state === ACTIVATING` 的形状散落在 5 处；引入第三种存活态后逐处修改必漏，现抽为共用的单一判定。
+- ★★ **`registerAction` 的 `requiredPermission` 是假值 fail-open**：`if (requiredPermission)` 让 `''` / `0` / `false` 直接跳过声明校验，而落表时 `requiredPermission || null` 又把它变成「无门」—— **一个变量传了空串，权限门就悄悄没了**。
+  现在与同函数 `timeoutMs` 的口径对齐（它早已是「不写 = 缺省，写了就全校验」）：只有**不写**才是「无门」，写了就必须是**非空字符串**，否则抛 `invalid_argument`；落表改用 `??`，派发侧改用 `!== null`，本文件里不再有 fail-open 形态。
+  ★ **不另加 pattern**：权限名的形状已由 `declarePermissions` 的 `PLUGIN_ID_PATTERN` 保证（一处定义、插件 id / 服务名 / 权限名三处复用），再加一遍是冗余且必漂。
+  ★ **零迁移（实测）**：消费方 4 处 `requiredPermission` 全是非空字符串。
 - `@cordium/plugins` 六个入口的**导出面此前零门禁**（只钉了子路径键名，没钉每个入口里导出什么）：加一个 `export` ⇒ **全量测试全绿、无人拦**；而改名会红（既有测试在调它）—— 即**改名有人管、加导出无人管**，导出面可以无声膨胀。现补 `packages/plugins/test/public-surface.test.mjs` 逐字钉死（与内核侧 `public-surface.test.mjs` 同一口径）。
 
 ## 契约演进约定（服务契约的 `methods`）

@@ -260,13 +260,21 @@ test('★ 选项 / pluginId / 模块 URL 的怪值 ⇒ 入口处带码拒绝（�
 
 // ★ 兜底定位：隔离端的原始栈跨线程 / 进程带回，报文附插件位置
 for (const mode of ['worker', 'process']) {
-  test(`${mode}：插件抛错 ⇒ 报文带插件文件行号，cause.stack 是隔离端原始栈`, async () => {
+  test(`${mode}：插件抛错 ⇒ 报文带插件文件行号，cause 保留语义码与隔离端原始栈`, async () => {
     const err = await callIsolated(TARGET, 'boom', [], { mode }).then(() => null, e => e);
     assert.equal(err?.code, 'isolated_call_failed');
     assert.match(err.message, /\(at file:.*targets\.mjs:6:\d+\)$/);
     assert.match(err.cause.stack, /targets\.mjs:6/);
+    // ★★ 与 action 路径【同一口径】：底层语义码必须在 cause 里原样保留，不得被信封吞掉。
+    //   这条此前只钉在进程内那条路径（action / service 的信封）上，隔离路径**漏了** ——
+    //   而隔离路径恰恰是唯一跨边界的：`code` 能活着回来，靠的正是隔离端把它抽成普通对象
+    //   （真 Error 过 structuredClone 会丢自定义属性）。所以这一行是「DTO 形态」的判别性证据。
+    assert.equal(err.cause.code, 'plugin_boom', '★ 底层语义码必须在 cause 里原样保留（与 action 路径同一口径）');
+    assert.equal(err.cause.name, 'Error');
+    assert.equal(err.cause.message, 'boom');
     const notFn = await callIsolated(TARGET, 'notAFunction', [], { mode }).then(() => null, e => e);
     assert.equal(notFn.cause.stack, null);
+    assert.equal(notFn.cause.code, 'not_a_function', '★ 隔离端自产的码同样要带回来');
     assert.doesNotMatch(notFn.message, /\(at /);
   });
 }

@@ -10,7 +10,7 @@
  */
 
 import { CordiumError, ErrorCode } from './errors.mjs';
-import { runWithTimeout, MAX_TIMER_MS, summarizeCause } from './host-util.mjs';
+import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause } from './host-util.mjs';
 
 /**
  * @typedef {object} ActionRegistryQueries
@@ -48,7 +48,17 @@ export class ActionRegistry {
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
         `Action '${action}' registered by plugin '${ownerId}' requires an options object with a handler function`);
     }
-    const { requiredPermission, handler, timeoutMs } = options;
+    // ★ 选项白名单 —— 与 CordiumHost 构造 / registerPlugin / replacePlugin 同一口径
+    //   （`host-util.mjs` 的 readOptions 注释把分界线写死了：**选项袋硬拒、声明式字段表才丢弃+诊断**；
+    //    见 host.mjs 的 declareServiceContract 那段自述，以及 registerPlugin 一个方法里两套口径的对照）。
+    //   ⚠️ 此前直接解构 ⇒ 未知键被**静默丢弃**：`requiredPermission` 拼错 = **权限门直接消失**；
+    //   `timeoutMs` 拼成 `timeout` = 静默回退宿主默认 30s。拼错必须响亮，不能静默放宽。
+    const { requiredPermission, handler, timeoutMs } = readOptions(
+      options,
+      `Action '${action}' registered by plugin '${ownerId}'`,
+      ['requiredPermission', 'handler', 'timeoutMs'],
+      ErrorCode.INVALID_OPTION
+    );
     // 单条上限：不写 = 用宿主默认；写了就必须是 (0, MAX_TIMER_MS] —— 此前非法值静默回退默认值，
     // 而 > 2³¹-1 会被 Node 改成 1ms ⇒ 该动作每次立即超时（实测）
     if (timeoutMs !== undefined && !(Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= MAX_TIMER_MS)) {
@@ -67,7 +77,17 @@ export class ActionRegistry {
       );
     }
 
-    if (requiredPermission) {
+    // ★ 此前是【假值 fail-open】：`if (requiredPermission)` 让 '' / 0 / false 直接跳过声明校验，
+    //   而下面 `requiredPermission || null` 又把它落成 null（= 无门）—— **一个变量传了空串，
+    //   权限门就悄悄没了**。与同函数 `timeoutMs` 的口径对齐（它早已是「不写 = 缺省，写了就全校验」）：
+    //   只有【不写】才是「无门」；写了就必须是【非空字符串】，再交给词表门。
+    //   ★ 这里【不另写 pattern】—— 权限名的形状由 `declarePermissions` 的 PLUGIN_ID_PATTERN 保证
+    //   （host.mjs:594），凡通过词表门的值必然已匹配；同一条规则两层各写一遍必漂（types.mjs:691）。
+    if (requiredPermission !== undefined) {
+      if (typeof requiredPermission !== 'string' || requiredPermission.length === 0) {
+        throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+          `Action '${action}' registered by plugin '${ownerId}': requiredPermission must be a non-empty string, got ${String(requiredPermission)}`);
+      }
       this.#q.assertPermissionDeclared(requiredPermission, `Action '${action}' of plugin '${ownerId}'`);
     }
     if (typeof handler !== 'function') {
@@ -87,7 +107,9 @@ export class ActionRegistry {
     this.#entries.set(action, {
       action,
       ownerId,
-      requiredPermission: requiredPermission || null,
+      // ★ `??` 而非 `||`：经上方类型门后二者等价，但 `??` 把「只有 nullish 才落成 null」的意图写显，
+      //   将来若有人放松上面的门，`''` 也不会再被这里悄悄吞成「无门」。
+      requiredPermission: requiredPermission ?? null,
       // 单条动作的执行上限（已在上方校验）；null ⇒ dispatch 时回退到 defaultTimeoutMs
       timeoutMs: timeoutMs ?? null,
       handler
@@ -126,7 +148,9 @@ export class ActionRegistry {
       throw new CordiumError(ErrorCode.ACTION_NOT_FOUND, `Action '${action}' has no registered handler`);
     }
 
-    if (entry.requiredPermission) {
+    // ★ `!== null` 而非真值判断：把「无门 ⇔ 恰好是 null」这条不变量写死，
+    //   与 register() 的类型门同口径 —— 消灭本文件里最后一处 fail-open 形态。
+    if (entry.requiredPermission !== null) {
       // ★ 读【宿主持有的权限快照】，不读 caller.manifest ——
       //   后者正是交给插件的那个对象，插件往里 push 一个字符串就能给自己提权。
       if (!this.#q.hasPermission(callerPluginId, entry.requiredPermission)) {

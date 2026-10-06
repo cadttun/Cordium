@@ -7,12 +7,19 @@
  * | mode | 原语 | 解决什么 | 不解决什么 |
  * |---|---|---|---|
  * | `'worker'`  | `worker_threads` | 故障隔离：同步死循环 / 长计算**真的能被超时打断**（`worker.terminate()`） | 同进程：代码仍能碰 FS / 网络 / 环境变量 |
- * | `'process'` | `child_process.fork` + Node 权限模型 | 权限隔离的一步：独立进程 + 默认**禁读写文件系统、禁子进程、禁 worker**（按 `allowFsRead` / `allowFsWrite` 显式放行） | ⚠️ **不是安全沙箱** —— 见下 |
+ * | `'process'` | `child_process.fork` + Node 权限模型 | 权限隔离的一步：独立进程 + 默认**禁读写文件系统、禁子进程、禁 worker**（按 `allowFsRead` / `allowFsWrite` 显式放行） | ⚠️ **不是安全沙箱，也不断网** —— 见下 |
  *
  * ⚠️⚠️ Node 官方文档（permissions.html）原话：权限模型「**does not protect against malicious code**」，
  *   「Malicious code can bypass the permission model」。⇒ `'process'` 档防的是**第一方插件的越权与失误**，
  *   不是恶意第三方代码。真正的恶意代码隔离（容器 / WASM）仍按其开工条件（第三方插件出现）另议。
  *   `node:vm` / `vm2` 一律不用（Node 官方：vm 不是安全机制；vm2 有 RCE CVE）。
+ *
+ * ⚠️ **别把 `'process'` 档读成「断网档」**：Node 权限模型在**受支持 LTS 线（v22 / v24）上没有网络这一维** ——
+ *   本机 v24.16.0 的 `--allow-*` 只有 7 个（addons / child-process / fs-read / fs-write / inspector /
+ *   wasi / worker），**没有 `--allow-net`**（它是 v25.0.0 才引入的，而 v25 已经 EOL）。
+ *   ⇒ 这一档的边界是「**文件系统 / 子进程 / worker 的越权与失误**」，**不含网络**：插件在 `'process'` 档里
+ *   仍可任意发起连接。要断网只能靠操作系统层（容器 / 防火墙 / 独立用户 / seccomp）。
+ *   （v25+ 上不传 `--allow-net` 确实会默认禁网，但那是**宿主 Node 版本的偶然结果**，不是本仓的保证 —— 别依赖它。）
  *
  * 形状约束（这就是边界声明说的「异步化」）：
  *   · 调用一律返回 Promise；
@@ -242,6 +249,16 @@ async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId }) {
       channel.once('message', (msg) => {
         if (msg?.ok) return resolve(msg.value);
         // ★ 隔离端回来的栈指向插件文件：报文里带上源头位置，cause.stack 保留全栈（跨进程也能定位到行）
+        // ★★ `cause` 是【wire DTO】不是活体 Error：`{ ok, name, code, message, stack }`，每个字段都是
+        //   隔离端 `field()` 强制过的**原始字符串**（非字符串回退默认值）。**这不是不一致，是有意的形态** ——
+        //   · 进程内那两条路径（action / service）的 cause 是**活体 Error**，因为那个对象没跨过边界；
+        //   · 跨边界时，**Error 的原型本就带不过来**，能带过来的只有值。而 `structuredClone` 对 Error
+        //     只保证 `name` / `message` / `stack` —— **自定义属性 `code` 会丢**（Node 实测）。
+        //     所以隔离端**主动把 `code` 抽成普通对象**：**DTO 才是能无损携带 `code` 的形态**。
+        //   ⇒ 消费方读 `cause.code` / `cause.message` / `cause.stack`，**不要用 `instanceof Error` 判**。
+        //   ⇒ `errorDetails()`（本仓唯一的通用 cause 消费者）走的是鸭子类型 `readField`，两种形状**逐字段等价**。
+        //   ⚠️ 安全：只搬运已清洗的原始字符串，**绝不把 wire 上的对象引用挂成 cause**
+        //     （vm2 CVE-2026-47686：未清洗的 `Error.cause` 可遍历到宿主对象 ⇒ 沙箱逃逸 RCE）。
         const at = firstFrame(msg?.stack);
         reject(new CordiumError(ErrorCode.ISOLATED_CALL_FAILED,
           `Plugin '${pluginId}' isolated call failed: ${msg?.name ?? 'Error'}${msg?.code ? ` [${msg.code}]` : ''}: ${msg?.message ?? ''}${at ? ` (at ${at})` : ''}`,

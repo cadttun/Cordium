@@ -116,6 +116,75 @@ test('★ 契约声明了 methods，实现是查方法就抛错的 Proxy ⇒ inv
     hasCode('invalid_implementation', /trap/));
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// ★★ registerAction 的选项：白名单 + 类型门
+//    此前**两处 fail-open**，都是「静默」形态 —— 不报错、不崩，只是门悄悄没了：
+//      ① 裸解构 ⇒ 未知键被静默丢弃：`requiredPermission` 拼错 = **权限门直接消失**；
+//         `timeoutMs` 拼成 `timeout` = 静默回退宿主默认 30s；
+//      ② `if (requiredPermission)` + `|| null` ⇒ '' / 0 / false 落成「无门」。
+//    ★ 白名单口径取自本仓自己的分界线（`host-util.mjs` readOptions 注释 +
+//      `host.mjs` declareServiceContract 那段自述）：**选项袋硬拒、声明式字段表才丢弃+诊断**。
+//      `registerAction` 的第三参是纯选项袋 ⇒ 与 CordiumHost 构造 / registerPlugin / replacePlugin 同族。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 起一个宿主，在 activate 里注册一个动作，返回它抛的错（不抛则 null）。 */
+async function tryRegisterAction(options) {
+  const host = new CordiumHost();
+  host.declarePermissions(['perm.ok']);
+  let caught = null;
+  host.registerPlugin(
+    { id: 'p.reg', version: '1.0.0', apiVersion: '1.0.0', permissions: ['perm.ok'] },
+    { activate(ctx) { try { ctx.registerAction('a.x', options); } catch (err) { caught = err; } } }
+  );
+  await host.boot();
+  return caught;
+}
+
+test('★ registerAction 未知选项键 ⇒ invalid_option（此前静默丢弃：拼错 requiredPermission = 权限门消失）', async () => {
+  for (const [label, options] of [
+    ['未知键', { handler: () => 1, bogus: 1 }],
+    ['requiredPermission 拼错', { handler: () => 1, requirdPermission: 'perm.ok' }],
+    ['timeoutMs 拼成 timeout', { handler: () => 1, timeout: 5 }]
+  ]) {
+    const err = await tryRegisterAction(options);
+    assert.equal(err?.code, 'invalid_option', `${label}：必须响亮失败，不能静默丢键`);
+    assert.match(err.message, /unknown option\(s\)/, label);
+  }
+});
+
+test('★ registerAction 的 requiredPermission 假值 / 非字符串 ⇒ invalid_argument（此前静默无门）', async () => {
+  for (const v of ['', 0, false, null, 123, {}, []]) {
+    const err = await tryRegisterAction({ handler: () => 1, requiredPermission: v });
+    assert.equal(err?.code, 'invalid_argument', `requiredPermission = ${describeValue(v)} 必须被拒，不能悄悄变成「无门」`);
+    assert.match(err.message, /requiredPermission must be a non-empty string/, describeValue(v));
+  }
+});
+
+test('★ registerAction 正向对照：不写 requiredPermission 仍是「无门」、写了合法值仍生效（证明不是「什么都不让过」）', async () => {
+  // ① 不写 ⇒ 无门放行
+  const open = await tryRegisterAction({ handler: () => 1 });
+  assert.equal(open, null, '不写 requiredPermission = 无门，必须注册成功');
+
+  // ② 写了已声明的 ⇒ 注册成功，且**门真的生效**（无权限的调用方被拒）
+  const host = new CordiumHost();
+  host.declarePermissions(['perm.ok']);
+  host.registerPlugin(
+    { id: 'p.owner', version: '1.0.0', apiVersion: '1.0.0', permissions: ['perm.ok'] },
+    { activate(ctx) { ctx.registerAction('a.gated', { requiredPermission: 'perm.ok', handler: () => 'secret' }); } }
+  );
+  host.registerPlugin(
+    { id: 'p.without', version: '1.0.0', apiVersion: '1.0.0' },
+    { activate() {} }
+  );
+  await host.boot();
+  await assert.rejects(host.dispatchAction('p.without', 'a.gated'), hasCode('access_denied'),
+    '★ 门必须真的生效 —— 只断言「注册成功」不足以证明门还在');
+
+  // ③ 未声明的权限名 ⇒ 仍是 undeclared_permission（既有码不变）
+  const undeclared = await tryRegisterAction({ handler: () => 1, requiredPermission: 'perm.nope' });
+  assert.equal(undeclared?.code, 'undeclared_permission');
+});
+
 test('describeError：任何被抛出的值都给出一句话，自身绝不抛', async () => {
   const { describeError } = await import('../src/internal.mjs');
   assert.equal(describeError(new Error('m')), 'm');

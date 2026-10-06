@@ -14,6 +14,7 @@
 - [10. 装配方要做的事](#10-装配方要做的事)
 - [11. 执行隔离（可选）](#11-执行隔离可选)
 - [12. 约束速查](#12-约束速查)
+- [13. 测试与调试](#13-测试与调试)
 
 ---
 
@@ -57,7 +58,7 @@ export function deactivate() {
 |---|---|---|---|
 | `id` | ✅ | string | 全局唯一。小写字母和数字组成的段，段之间用 `.` `_` `-` 连接，如 `acme.search-index` |
 | `version` | ✅ | string | 插件自身版本，合法 SemVer，如 `1.2.0` |
-| `apiVersion` | ✅ | string | 语义是「**至少需要哪个**内核接口版本」。两条判据同时成立才放行：**主版本号等于**内核的 `KERNEL_API_VERSION`（当前 `1.0.0`），且**内核不低于**你声明的号 ⇒ 现在写 `'1.0.0'`。★ 写一个**高于内核**的号（如 `'1.0.1'`）会被拒 —— 内核还没有那个 API。 |
+| `apiVersion` | ✅ | string | 语义是「**至少需要哪个**内核接口版本」—— ★ **只是一个下界**：放行只保证宿主内核**不低于**它，**不承诺宿主行为从此稳定**（`KERNEL_API_VERSION` 冻结的是接口的**形状**，行为仍可在 minor 里收紧/改变；内核自身尚未到 1.0）。判据两条：**最左非零位相同**（当前 `1.0.0` ⇒ 主版本必须相同），且**内核 ≥ 你声明的号**。⇒ 现在写 `'1.0.0'`；写**高于内核**的号（如 `'1.0.1'`）会被拒 —— 内核还没有那个 API。 |
 | `provides` | | string[] | 本插件会提供的服务名。**不在这里的服务名不能 `provideService`** |
 | `dependencies` | | object | 必需依赖：`{ '插件id': 'SemVer 范围' }`，如 `{ 'demo.counter': '^1.0.0' }`。**只收这一种形态**（数组写法已取消：它写不下范围，只能一律当 `*`，等于静默放弃版本约束） |
 | `optionalDependencies` | | object | 可选依赖，写法同上。缺席时不影响本插件激活 |
@@ -653,3 +654,224 @@ const result = await callIsolated('/abs/path/heavy.mjs', 'crunch', [data], {
 - 停用后不要再用旧 `ctx`；重新激活时 `activate` 会拿到新的 `ctx`。
 - 热重载只在开发时用；插件持有外部资源时，要么在 `deactivate` / `ctx.scope` 里释放干净并声明 `hotReload: true`，要么改完重启进程。
 - 读 `getDiagnostics()` **只读稳定面**（`DIAGNOSTICS_CONTRACT.stable`），并**忽略未知字段**；`state` 用 `LifecycleState.ACTIVE`，不写字面量。
+
+---
+
+## 13. 测试与调试
+
+本节讲怎么把插件跑起来看、怎么给它写自动化测试。
+
+★ 先说结论：**本仓不提供测试替身** —— 两个包的 `exports` 里没有 `./testing`，`files: ["src"]` 又把 `test/` 挡在包外，连内核自己那个「只走公开 API」的观察工具外部也拿不到。但**宿主本身就是测试工具**：`CordiumHost` 可以直接 `new`（零参数），插件可以用内联 `entry` 注册，**不起任何文件**就能测。
+
+### 最小装配
+
+`new CordiumHost()` 零参数即可；不声明 `provides` / `permissions` 时，装配只有三行：
+
+```js
+import { CordiumHost } from '@cordium/kernel';
+
+const host = new CordiumHost();
+host.registerPlugin(
+  { id: 'demo.greeter', name: 'Greeter', version: '1.0.0', apiVersion: '1.0.0' },
+  { activate(ctx) { ctx.log('info', `hello from ${ctx.pluginId}`); } }
+);
+await host.boot();
+console.log(host.getDiagnostics().plugins.map(p => `${p.id}=${p.state}`).join(' '));
+```
+
+★ `registerPlugin(manifest, entry)` 的第二个参数就是 `{ activate, deactivate }` 对象 —— 这是「单元测试插件逻辑」的官方路径，**不必先落一个 `.mjs` 文件**。这样注册时 `config` 是空对象 `{}`；要传配置就用 `loadPlugins` 的清单条目（见 [§10](#10-装配方要做的事)）。
+
+### 单元测试一个插件逻辑
+
+用 Node 自带的 `node:test`（`node --test` 运行）。把 `activate` 写成内联对象，起一个宿主，断言服务行为：
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { CordiumHost, LifecycleState } from '@cordium/kernel';
+
+test('counter 服务：调用一次加一', async () => {
+  const host = new CordiumHost();
+  host.declareServiceContract('counter', { access: 'public' });
+  host.registerPlugin(
+    { id: 'demo.counter', name: 'Counter', version: '1.0.0', apiVersion: '1.0.0', provides: ['counter'] },
+    { activate(ctx) { let n = 0; ctx.provideService('counter', { next: () => ++n }); } }
+  );
+  await host.boot();
+
+  const p = host.getDiagnostics().plugins.find(p => p.id === 'demo.counter');
+  assert.equal(p.state, LifecycleState.ACTIVE);
+  const counter = host.getInternalService('counter');
+  assert.equal(counter.next(), 1);
+  assert.equal(counter.next(), 2);
+});
+```
+
+★ 几条要点：
+
+- 服务契约必须在 `activate` 跑之前用 `declareServiceContract` 声明，否则 `provideService` 抛 `undeclared_service`。
+- `boot()` 是异步的，且**原子**：清单里任一插件的必需依赖不满足，整份清单都不启动（见 [§10](#10-装配方要做的事)）。测单个插件时，宿主里只放它一个最省心。
+- 想在「插件内部视角」断言，就在 `activate(ctx)` 里把 `ctx` 存进闭包变量；想从「装配方视角」断言，用 `host.getInternalService(name)`（`internal` 级契约只有这条路能取）。
+
+### 断言状态与错误
+
+插件状态从 `host.getDiagnostics().plugins[].state` 读，**判活跃用 `LifecycleState` 常量，不写字面量**。错误分两类，断言方式不同：
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { CordiumHost, CordiumError, ErrorCode, DIAGNOSTICS_CONTRACT, LifecycleState } from '@cordium/kernel';
+
+test('activate 抛裸错：状态 failed，按码分支前先判 instanceof', async () => {
+  const host = new CordiumHost();
+  host.registerPlugin(
+    { id: 'demo.boom', name: 'Boom', version: '1.0.0', apiVersion: '1.0.0' },
+    { activate() { throw new Error('boom'); } }
+  );
+
+  let caught;
+  try { await host.boot(); } catch (err) { caught = err; }
+
+  // ⚠️ 插件钩子抛出的原始值【原样透传】：不是 CordiumError，也没有 code
+  assert.equal(caught instanceof CordiumError, false);
+  assert.equal(caught.code, undefined);
+  assert.equal(caught.message, 'boom');
+
+  const diag = host.getDiagnostics();
+  assert.equal(diag.schemaVersion, DIAGNOSTICS_CONTRACT.schemaVersion);
+  assert.equal(diag.plugins.find(p => p.id === 'demo.boom').state, LifecycleState.FAILED);
+
+  // 没有调用方接的后台失败进 recentErrors，自带插件 id 与源头位置
+  const log = diag.recentErrors.find(e => /demo\.boom.*failed to activate/.test(e.message));
+  assert.ok(log);
+  assert.equal(log.details.pluginId, 'demo.boom');
+  assert.ok(typeof log.details.at === 'string');
+});
+
+test('宿主主动检测到的失败：一定是带码的 CordiumError', () => {
+  const host = new CordiumHost();
+  assert.throws(
+    () => host.registerPlugin({ id: 'demo.x', name: 'X', version: '1.0.0', apiVersion: '2.0.0' }),
+    err => err instanceof CordiumError && err.code === ErrorCode.INCOMPATIBLE_API_VERSION
+  );
+});
+```
+
+- ★ **按码分支前先判类型**：`activate` / `deactivate` 抛的是插件自己的值，`err.code` 会是 `undefined`（见下「两个反直觉点」①）。
+- 读快照**只读稳定面**（`DIAGNOSTICS_CONTRACT.stable`）并忽略未知字段；`recentLogs` / `recentErrors` / `manifestDiagnostics` 属**不稳定面**，测试里可以用来排障，但别把它们的内部形状当成契约。`schemaVersion` 用 `DIAGNOSTICS_CONTRACT.schemaVersion` 比对，不手写数字。
+- 后台失败没有调用方接，只进日志：`emit` 监听器、`deactivate` 钩子抛错是 `warn`（只在 `recentLogs`）；清理回调、`activate` 失败是 `error`（`recentLogs` 与 `recentErrors` 都有）。要在一个地方兜住所有后台失败，查 `recentLogs`。
+
+### 两个反直觉点
+
+**① 钩子抛出的错没有 `code`，先判 `instanceof`。** `catch (err) { if (err.code === …) }` 在 `activate` 抛裸 `Error` 时会静默判错（`undefined === 'xxx'` 恒假），必须写成 `err instanceof CordiumError && err.code === …`。动作、服务、通道这几条路径上宿主会把插件抛的值**包成** `CordiumError`，原始值在 `err.cause`。
+
+**② `callIsolated` 的定位在 `err.cause.stack`，不在 `err.stack` 的帧里。** 实测：
+
+```js
+import { callIsolated } from '@cordium/plugins/isolation';
+
+const url = new URL('./heavy.mjs', import.meta.url).href; // heavy.mjs: export function crunch() { throw new Error('isolated boom'); }
+try {
+  await callIsolated(url, 'crunch', [], { mode: 'worker', pluginId: 'demo.heavy' });
+} catch (err) {
+  console.log(err.code);                              // 'isolated_call_failed'
+  console.log(err.message);                           // 末尾带 "(at file:///…/heavy.mjs:2:9)" —— 位置在这里
+  console.log(err.stack.split('\n')[1].trim());       // ⚠️ 帧指向内核 isolation.mjs，不指向 heavy.mjs
+  console.log(err.cause.stack.split('\n')[1].trim()); // ✅ at crunch (file:///…/heavy.mjs:2:9)（截断到 4KB）
+}
+```
+
+★ 精确说法：`err.stack` 的**首行会回显 `err.message`**，所以对 `err.stack` 做字符串搜索**能**搜到位置；但**帧**不指向插件。要**程序化**取插件栈，用 `err.cause.stack`。
+★ `err.cause` 是**跨边界 DTO**（`{ ok, name, code, message, stack }`），不是活体 `Error` —— 读 `cause.code` / `cause.message` / `cause.stack`，**别用 `instanceof Error` 判**（原因见 [§11](#11-执行隔离可选)）。
+
+### 没有测试替身，照这样自建
+
+★ 本仓**不导出任何测试替身**，所以「官方夹具」是没有的；但测试**不需要**它，因为宿主本身可观察：
+
+- 观察状态：`host.getDiagnostics()`（稳定面）；
+- 观察 UI 贡献：`host.getUIContributions(type)`；
+- 观察内部服务：`host.getInternalService(name)`；
+- 造错误：注册一个会抛的插件、或给宿主喂非法输入。
+
+照内核自己的做法，建一个**只走公开 API** 的观察小工具（不要给宿主加 `__test_*` 访问器 —— 测试能看到的必须是下游也能看到的）：
+
+```js
+// test/helpers/observe.mjs —— 只走宿主公开 API
+export const pluginInfo = (host, id) => host.getDiagnostics().plugins.find(p => p.id === id);
+export const pluginState = (host, id) => pluginInfo(host, id)?.state;
+export const errorText = (host, id) => pluginInfo(host, id)?.error;
+```
+
+两个**可注入的测试缝**，能免掉真实文件系统：
+
+- `loadPlugins(host, entries, { importModule })` —— 传一个返回内存插件对象的加载器，就能在不起文件、不碰磁盘的情况下测加载与装配（默认加载器是动态 `import`）；
+- `validatePluginManifest` / `validatePluginManifestDetailed` —— **离线**单测 manifest，不需要起宿主。
+
+```js
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { CordiumHost, LifecycleState } from '@cordium/kernel';
+import { loadPlugins } from '@cordium/plugins/loader';
+import { validatePluginManifest, validatePluginManifestDetailed } from '@cordium/plugins/runtime';
+
+test('注入 importModule：不碰文件系统，直接喂内存里的插件对象', async () => {
+  const host = new CordiumHost();
+  const fake = {
+    manifest: { id: 'demo.fake', name: 'Fake', version: '1.0.0', apiVersion: '1.0.0' },
+    activate(ctx) { ctx.log('info', 'fake up'); }
+  };
+  await loadPlugins(host, [{ module: new URL('./fake.mjs', import.meta.url) }], { importModule: async () => fake });
+  await host.boot();
+  assert.equal(host.getDiagnostics().plugins[0].state, LifecycleState.ACTIVE);
+});
+
+test('离线单测 manifest：不起宿主', () => {
+  const m = validatePluginManifest({ id: 'demo.m', name: 'M', version: '1.0.0' });
+  assert.equal(m.activation, 'eager');
+  const { manifest, diagnostic } = validatePluginManifestDetailed({ id: 'demo.m', name: 'M', version: '1.0.0', config: {} });
+  assert.equal(manifest.id, 'demo.m');
+  assert.ok(diagnostic, 'config 是未知字段 ⇒ 诊断非空');
+});
+```
+
+★ 说明（避免误解）：`importModule` 注入**绕过**了宿主默认加载器里「用子进程定位语法错误」那一步 —— 自定义加载器可能根本不读文件，宿主不去猜。所以注入加载器适合测装配与逻辑，不适合测真实文件的语法定位。
+
+### 调试
+
+**断点调试（`--inspect`）。** `node --inspect app.mjs` 让进程监听 `127.0.0.1:9229`，用 VS Code 的 "Attach to Node" 或 Chrome 的 `chrome://inspect` 连上。想让进程**在用户代码第一行就停下**（好在 `boot()` 之前设断点），用 `node --inspect-brk app.mjs`；想等调试器连上再跑，用 `node --inspect-wait`。
+
+**改文件自动重启（`node --watch`）。** `node --watch app.mjs` 监视入口及其依赖，改动即重启整个进程。
+
+**不重启进程换插件代码（`reloadPlugin` / `watchPlugins`）。** 这是本仓自己的开发循环，比整进程重启快，但**只对 manifest 写了 `hotReload: true` 的插件生效**（开发时可传 `{ force: true }` 全放行）：
+
+```js
+import { CordiumHost } from '@cordium/kernel';
+import { loadPlugins } from '@cordium/plugins/loader';
+import { reloadPlugin, watchPlugins } from '@cordium/plugins/reload';
+
+const entry = { module: '/abs/path/plugins/greeting.mjs' };
+const host = new CordiumHost();
+await loadPlugins(host, [entry]);
+await host.boot();
+
+await reloadPlugin(host, entry);            // 手动换一次
+const watcher = watchPlugins(host, [entry], {
+  onReload: ({ id, version }) => console.log(`reloaded ${id}@${version}`),
+  onError: (err) => console.error(err.code ?? err.message)  // 语法错 / 激活失败；监视继续
+});
+// watcher.close();
+```
+
+⚠️ 热重载只在开发时用：ESM 没有卸载模块的接口，**内存只增不减**；且只重载入口文件，它 `import` 的其它文件仍是旧的那份（见 [§10](#开发期热重载)）。
+
+**只跑一部分测试。** 按名字过滤用 `node --test --test-name-pattern "…"`；或在测试里标 `{ only: true }`，再用 `node --test --test-only` 运行 —— 不加 `--test-only` 时 `only` 被忽略，防误提交一个「只跑一条」的测试。测试运行器自己的 watch 模式是 `node --test --watch`（实验性；注意与 `node --watch` 不同：后者重启整个进程）。
+
+### 不支持 source map
+
+★ **本仓不做 source map 映射**（全仓零命中；这是明确决定 —— 与「运行时零依赖」冲突）。含义：
+
+- 报错位置（`err.stack` 的帧、日志的 `details.at`、语法错误定位）指向的是**宿主实际加载的那个文件**。插件是**未转译 ESM** 时，那就是你的源码，行号精确到 `:行:列`。
+- 若你**转译**（TS / Babel）后把产物交给宿主，报错指向**产物行号**。Node 自带的 `--enable-source-maps` 只对**带 `sourceMappingURL` 的产物**生效，且宿主自身的语法定位子进程与自定义 `importModule` 都不做映射 —— 别指望它把宿主日志里的 `details.at` 还原回 TS 源。
+- 应对：① **开发期直接用未转译 ESM**（本仓插件本就是 `.mjs`，不需要构建）；② 必须转译时，按产物行号定位，或自己保留产物↔源码的行映射再人工换算。
+
+★ 本节所有代码示例均在 Node v24.16.0 实跑通过（含 `node --test` / `--inspect` / `--watch` / `--test-only` / `--test-name-pattern`）。

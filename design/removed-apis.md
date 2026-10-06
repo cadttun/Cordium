@@ -141,3 +141,50 @@
 ⇒ 换成 `hotReload`（默认 false = 须重启），由开发期重载器据此放行。
   两个字段同时存在会互相矛盾（true / true 是什么意思？），故不保留旧字段。
 ```
+
+## 10. manifest：`config`
+
+原位置：`packages/kernel/src/types.mjs`（字段表）/ `packages/plugins/src/runtime.mjs`（校验与克隆）
+
+```text
+⚠️ manifest 曾有字段 `config`（对象），**已删除**。
+
+它此前被校验（必须是普通对象）、被深克隆产出，却**零读取路径** —— 内核字段表
+（`MANIFEST_FIELD_TABLE`）从不认它，宿主只读加载清单的 `entry.config`。
+⇒ 插件作者把默认配置写进 `manifest.config`，运行时永远拿到 `{}`
+（实测：`CFG received config = {}`、`ctx.manifest.config = undefined`），
+只留一条 `info` 级诊断 —— 而**插件自己读不到诊断**。
+这是「声明了却永不生效」的负资产：它让人以为「config 已经有位置了」。
+更早的根因是：`validateManifest` 按白名单**重建**输出，裸对象在这一步就被静默丢弃。
+
+联网对标（VS Code / OSGi / cordis / OpenClaw）：无一家在清单里放「裸默认配置对象」，
+主流形态是「schema 声明 + 用户覆盖 + 合并」（cordis 的默认值写在插件代码的 schema 里，
+清单只放覆盖值）。唯一相近的 npm `config` 面向脚本环境变量，不在插件运行时这条路径上。
+
+替代方案：真正生效的注入点是**加载清单的 `entry.config`**（`loadPlugins` 的 `config:`）——
+  宿主 `const config = record.entry.config ?? EMPTY_CONFIG;`，经 `activate(ctx, config)`
+  第二参交付（无配置时为冻结的 `{}`）。将来要做「插件自带默认值」，应做 **schema 形态**
+  （对齐 cordis / VS Code），**不是**把裸对象加回来。
+
+现状：manifest 里仍写 `config` 会被 `diffManifestFields` 报成 `unknownFields` ⇒ `warn`
+  —— 响亮可见，这正是我们要的。
+```
+
+## 11. types：`LifecycleState` 的 `VALIDATED` / `WAITING_DEPENDENCIES`
+
+原位置：`packages/kernel/src/types.mjs`
+
+```text
+⚠️ `LifecycleState` 曾有两个枚举成员 `VALIDATED` / `WAITING_DEPENDENCIES`，**已删除**。
+
+**死枚举**：零赋值点、零断言、零下游 —— 随**首次提交**带进来的残留，运行期永不写入。
+
+★ 它们曾经骗过人：调研时一度以为「状态机里已经有这两个状态，懒激活本来就有位置」，
+  从而判断「按需激活不需要新增状态」。**静态阅读被运行时证据推翻**（规矩 52：
+  主判据必须是运行时）—— grep `packages/*/src` 只有定义处命中，没有任何赋值。
+
+★ 懒激活真正落地时**没有复用**它们：那两个名字说的是**别的事**
+  （`VALIDATED` 像是「校验通过」，`WAITING_DEPENDENCIES` 像是「等依赖」），
+  而新状态的语义是「**依赖齐备、等触发**」，故新造 `READY`。名字不许将就 ——
+  语义不同的状态共用一个名字，比多一个名字更贵。
+```
