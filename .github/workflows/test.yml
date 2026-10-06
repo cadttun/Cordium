@@ -57,7 +57,7 @@ jobs:
       #   正确控制是**把摘要钉进 lockfile**」。⇒ 改为 `npm ci` 后跑**本地**二进制。
       #   ★ 与「零依赖」口径的关系：**运行时**零依赖不变（发布面：两包
       #     `dependencies` 为空 / 只有 workspace 链接），此处加的是**开发期**依赖 ——
-      #     `npm pack` 不含 devDependencies ⇒ 发布物零依赖的性质未被触碰。该性质现已由
+      #     消费方 npm install 不会装依赖的 devDependencies ⇒ 发布物零依赖的性质未被触碰。该性质现已由
       #     `boundary.test.mjs` 的**门禁**钉住（此前只是一句声明）。
       # ★ 只扫 src，不扫 test：test 里 `new Array(1_000_000)` 是**故意**造大数组（测预算上限），
       #   报出来的 no-new-array 是噪音。**src 当前零告警** —— 这条基线是有意的：

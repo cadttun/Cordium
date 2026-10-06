@@ -24,6 +24,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CordiumHost, DIAGNOSTICS_CONTRACT, LifecycleState } from '../src/index.mjs';
+import { unfrozenPaths } from './fixtures/deep-frozen.mjs';
 
 /**
  * 造一个「有插件、有服务、有失败者」的宿主 —— 让快照的每一层都真的有内容可查。
@@ -128,8 +129,30 @@ test('★ 契约自检：两张面都非空、且稳定面的每条路径都点�
   assert.ok(DIAGNOSTICS_CONTRACT.unstable.length > 0, '不稳定面必须是非空显式清单');
   assert.ok(Number.isInteger(DIAGNOSTICS_CONTRACT.schemaVersion) && DIAGNOSTICS_CONTRACT.schemaVersion >= 1);
   // 反例：契约对象必须真的是冻结的（否则消费方可以就地改掉内核的承诺）
+  // ★ 逐层版在下面那条专门的测试里（这里只留浅的自检，别把两件事混在一处）
   assert.ok(Object.isFrozen(DIAGNOSTICS_CONTRACT) && Object.isFrozen(DIAGNOSTICS_CONTRACT.stable),
     '契约对象必须冻结 —— 否则下游 `DIAGNOSTICS_CONTRACT.stable = {}` 就能改掉承诺');
+});
+
+// ★★ 冻结自检必须是【递归】的 —— 此前只查了根与 `stable` 两层，**恰好漏掉全部 4 个键集数组**
+//   （`stable['']` / `stable['plugins[]']` / `stable['services[]']` / `unstable`，在第 2~3 层）。
+//   实测缺口：去掉 `stable['']` 的内层 `Object.freeze` 后，本文件 **8/8 全绿**，
+//   而消费方 `DIAGNOSTICS_CONTRACT.stable[''].push('INJECTED')` **真的改穿了内核的承诺**。
+//   依据：契约自己就是「按**路径**逐层分区」的（见文件头）—— 分区是逐层的，冻结也必须逐层，
+//   否则口径在源码层成立、在门禁层不成立。
+test('★★ 契约冻结自检【递归】：每一层容器都必须冻结（否则消费方可就地改内核的承诺）', () => {
+  assert.deepEqual(unfrozenPaths(DIAGNOSTICS_CONTRACT, 'DIAGNOSTICS_CONTRACT'), [],
+    '以下契约容器未冻结 —— 消费方可 `DIAGNOSTICS_CONTRACT.stable[""].push(...)`');
+});
+
+test('★ 门禁自检：递归冻结判据真的能判别浅冻结（否则是恒真假绿）', () => {
+  const shallow = Object.freeze({ stable: { '': ['x'] } });
+  const bad = unfrozenPaths(shallow, 'probe');
+  assert.equal(bad.length, 2, `浅冻结的 stable 与 stable[''] 都必须被判出，实得：${JSON.stringify(bad)}`);
+  const deep = Object.freeze({ stable: Object.freeze({ '': Object.freeze(['x']) }) });
+  assert.deepEqual(unfrozenPaths(deep, 'probe'), [], '逐层冻结不得误报');
+  // 不透明容器：isFrozen 为 true 也必须被拒（freeze 对 Map 的内容无效）
+  assert.equal(unfrozenPaths(Object.freeze(new Map()), 'probe').length, 1);
 });
 
 test('★★ 稳定面点名的每条路径 / 每个键都在【真实快照】里存在（点名即承诺）', async () => {

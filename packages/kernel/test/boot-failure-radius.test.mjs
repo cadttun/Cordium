@@ -63,7 +63,43 @@ test('★ 动态加载期：同一份坏 manifest ⇒ 只有它 failed，宿主�
   assert.equal(stateOf(host, 'plugin.broken'), LifecycleState.FAILED);
 });
 
-test('★★ 判据本身：同一份坏 manifest，两处的爆炸半径必须【不同】', async () => {
+// ★★ 观察向量必须含【错误通道】，不只是状态字段。
+//   实测缺口：把静态预检条件从 `> 0` 改成 `> 999` 后，静态侧改以 `TypeError`（无码）崩，
+//   但它的 `booted` / `healthy` / **连 `broken`** 都仍等于「原子拒绝」的期望值 ⇒
+//   只补 `broken` 的版本**依然全绿**（对 `{booted,healthy,broken}` 这个向量，该变异是**观察等价**的）。
+//   只有把「拒绝走的是哪条通道（`err.code`）」纳入观察，才杀得死它。
+//   ⇒ 这正是「存活变异体 = 缺失的断言」：加宽观察向量，而不是只堆状态字段。
+const codeOf = async fn => { try { await fn(); return null; } catch (err) { return err.code; } };
+const radiusOf = host => ({
+  booted: host.getDiagnostics().booted,
+  healthy: stateOf(host, 'plugin.healthy'),
+  broken: stateOf(host, 'plugin.broken')
+});
+
+test('★★ 判据本身：同一份坏 manifest，两处的爆炸半径（含错误通道）必须【不同】', async () => {
+  const staticHost = new CordiumHost();
+  staticHost.registerPlugin(HEALTHY, entry);
+  staticHost.registerPlugin(BROKEN, entry);
+  const staticCode = await codeOf(() => staticHost.boot());
+
+  const dynamicHost = new CordiumHost();
+  dynamicHost.registerPlugin(HEALTHY, entry);
+  await dynamicHost.boot();
+  dynamicHost.registerPlugin(BROKEN, entry);
+  const dynamicCode = await codeOf(() => dynamicHost.activatePlugin('plugin.broken'));
+
+  // ★ 正反两侧都【逐字段点名】—— 只说「不同」的话，靠别的原因凑出不同也能过
+  assert.deepEqual({ ...radiusOf(staticHost), code: staticCode },
+    { booted: false, healthy: LifecycleState.DISCOVERED, broken: LifecycleState.DISCOVERED, code: 'missing_dependency' },
+    '静态侧必须【以 missing_dependency 拒绝】，而不是以别的错崩掉');
+  assert.deepEqual({ ...radiusOf(dynamicHost), code: dynamicCode },
+    { booted: true, healthy: LifecycleState.ACTIVE, broken: LifecycleState.FAILED, code: 'missing_dependency' },
+    '动态侧必须【以 missing_dependency 拒绝】，且只有它自己 failed');
+  assert.notDeepEqual(radiusOf(staticHost), radiusOf(dynamicHost),
+    '两侧爆炸半径若变得相同，说明有人把其中一个世界改成了另一个的语义');
+});
+
+test('★ 门禁自检：radius 每个字段都取到了值，且两侧在【每一个】字段上都不同', async () => {
   const staticHost = new CordiumHost();
   staticHost.registerPlugin(HEALTHY, entry);
   staticHost.registerPlugin(BROKEN, entry);
@@ -75,12 +111,13 @@ test('★★ 判据本身：同一份坏 manifest，两处的爆炸半径必须�
   dynamicHost.registerPlugin(BROKEN, entry);
   await dynamicHost.activatePlugin('plugin.broken').catch(() => {});
 
-  const radius = (host) => ({ booted: host.getDiagnostics().booted, healthy: stateOf(host, 'plugin.healthy') });
-  // ★ 正反两侧都点名 —— 只说「不同」的话，靠别的原因凑出不同也能过
-  assert.deepEqual(radius(staticHost), { booted: false, healthy: LifecycleState.DISCOVERED });
-  assert.deepEqual(radius(dynamicHost), { booted: true, healthy: LifecycleState.ACTIVE });
-  assert.notDeepEqual(radius(staticHost), radius(dynamicHost),
-    '两侧爆炸半径若变得相同，说明有人把其中一个世界改成了另一个的语义');
+  const a = radiusOf(staticHost);
+  const b = radiusOf(dynamicHost);
+  for (const [k, v] of Object.entries(a)) assert.notEqual(v, undefined, `静态侧 ${k} 取不到值 —— 判据退化`);
+  for (const [k, v] of Object.entries(b)) assert.notEqual(v, undefined, `动态侧 ${k} 取不到值 —— 判据退化`);
+  for (const k of ['booted', 'healthy', 'broken']) {
+    assert.notDeepEqual(a[k], b[k], `字段 ${k} 两侧相同 ⇒ 它没有参与判别，判据被削弱`);
+  }
 });
 
 test('★ 装配方要自己决定隔离谁：boot 前一次拿到【全部】未满足依赖，摘掉后 boot 成功', async () => {

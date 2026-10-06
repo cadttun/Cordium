@@ -235,3 +235,138 @@ test('★ 门禁自检：只认 js 围栏内的示例；Object.freeze 包裹也�
   assert.deepEqual(extractManifests(doc).map(e => e.source),
     ["{ id: 'a.b', version: '1.0.0' }", "{ id: 'c.d' }"]);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// ★★ 第三类扩面：文档 import 的具名符号必须由对应入口**真实导出**。
+//
+//   上面两道门都覆盖不到它：语法合法、`ctx.<名>` 也对，但
+//   `import { nonExistentKernelApi } from '@cordium/kernel'` 里的符号不存在
+//   ⇒ 读者**照抄即** `SyntaxError: … does not provide an export named 'X'`。
+//   实测缺口：加上这样一段后，本文件**全绿**、全量测试也**全绿**，无人拦。
+//   而「照抄文档即崩」在本仓**已经发生过一次**（见 CHANGELOG 里那次 `config.start ?? 0` 的订正）。
+//
+//   ★ 判据取自**运行时真值**（`Object.keys(await import(resolve(spec)))`），
+//     **不手抄导出清单** —— 与上面 `CTX_MEMBERS` 同口径（本仓「手抄清单会漂」的教训，已踩 2 次）。
+//   ★ 为什么不用 oxlint 的 `import/named`：实测它**确实能查具名导出**，但**它不解析 markdown**
+//     （对 .md 报 "No files found to lint"）⇒ 覆盖不到围栏。
+//   ★ 为什么不做「真跑示例」：本仓 `examples/` 目录已有真跑门禁承担「完整可运行」那部分；
+//     文档围栏多为裸片段，真跑要自造 ctx / 插件目录 / 时序，成本远高于它证的性质（符号存在性，静态可判定）。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 本仓可被文档 import 的包名 —— 取自根 `package.json` 的 `workspaces`，不手列（新增 workspace 自动纳入） */
+const WORKSPACE_PKGS = (() => {
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  return (rootPkg.workspaces ?? []).map(w =>
+    JSON.parse(fs.readFileSync(path.join(ROOT, w, 'package.json'), 'utf8')).name);
+})();
+
+/** `{ a, b as c }` → `['a','b']` —— 查的是**导出名**，取 `as` 之前那个 */
+const splitNames = s => s.replace(/[{}]/g, '').split(',')
+  .map(x => x.trim().replace(/\s+as\s+[\s\S]*$/, '').trim()).filter(Boolean);
+
+/** 抽一段围栏代码里的静态 import。★ 行首锚 ⇒ 注释里的 import 不命中；动态 `import(` 不匹配（它没有 `from`） */
+function extractImports(code) {
+  const out = [];
+  for (const m of code.matchAll(/^[ \t]*import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]/gm)) {
+    const clause = m[1].trim();
+    const spec = m[2];
+    if (clause.startsWith('*')) out.push({ spec, kind: 'namespace', named: [] });
+    else if (clause.startsWith('{')) out.push({ spec, kind: 'named', named: splitNames(clause) });
+    else {
+      const brace = clause.match(/\{([\s\S]*)\}/);
+      out.push({ spec, kind: 'default', named: brace ? splitNames(brace[1]) : [] });
+    }
+  }
+  for (const m of code.matchAll(/^[ \t]*import\s+['"]([^'"]+)['"]/gm)) {
+    out.push({ spec: m[1], kind: 'side-effect', named: [] });
+  }
+  return out;
+}
+
+/** 纯函数：failures = 明确不存在；judged = 判据失效；checked = 实际核对了几条 import */
+async function checkDocImports({ texts, resolve }) {
+  const failures = [];
+  const judged = [];
+  let checked = 0;
+  for (const { file, text } of texts) {
+    for (const { line, code } of jsFenceBlocks(text)) {
+      for (const imp of extractImports(code)) {
+        const pkg = imp.spec.startsWith('@') ? imp.spec.split('/').slice(0, 2).join('/') : null;
+        if (!pkg || !WORKSPACE_PKGS.includes(pkg)) continue;   // node: / 相对 / 第三方 —— 不在范围
+        // ★ 文档只用公开入口：`internal` 子路径虽在 exports 里，但明确「不是公开 API」
+        if (imp.spec.endsWith('/internal')) {
+          failures.push(`${file}:${line} 文档不得引 '${imp.spec}' —— 它是内部入口，不是公开 API`);
+          continue;
+        }
+        checked++;
+        let ns;
+        try { ns = await resolve(imp.spec); }
+        catch (err) {
+          failures.push(`${file}:${line} import '${imp.spec}' 无法解析：${err.code ?? err.message}`);
+          continue;
+        }
+        const keys = Object.keys(ns);
+        if (imp.kind === 'default' && !keys.includes('default')) {
+          failures.push(`${file}:${line} '${imp.spec}' 没有默认导出，不能默认导入`);
+        }
+        for (const name of imp.named) {
+          if (!keys.includes(name)) failures.push(`${file}:${line} '${imp.spec}' 不导出 '${name}'`);
+        }
+      }
+    }
+  }
+  // ★ 规矩 44：「没匹配到」与「检查通过」分开报 —— 一条可核对的 import 都抽不到是**判据失效**，不是通过
+  if (checked === 0) {
+    judged.push('文档里一条可核对的 @cordium/* import 都没抽到 —— 判据失效，请更新本测试，不要当作通过');
+  }
+  return { failures, judged, checked };
+}
+
+const resolveDocSpec = async spec => import(import.meta.resolve(spec));
+
+test('★ 文档 import 的具名符号必须由对应入口真实导出（防「照抄即 does not provide an export named」）', async () => {
+  const texts = DOCS.map(file => ({ file, text: readDoc(file) }));
+  const { failures, judged, checked } = await checkDocImports({ texts, resolve: resolveDocSpec });
+  assert.deepEqual(judged, [], '\n' + judged.join('\n'));   // ★ 先报判据失效，再报不一致
+  assert.deepEqual(failures, [], '\n' + failures.join('\n'));
+  assert.ok(checked >= 10, `可核对 import 数异常（${checked}）—— 判据失效`);
+});
+
+test('★ 门禁自检：抽取器认各形态、别名查导出名；不存在判红 / 存在判绿 / 零命中报判据失效', async () => {
+  const sample = [
+    "import { a, b as c } from '@cordium/kernel';",
+    "import def from '@cordium/plugins/loader';",
+    "import * as ns from '@cordium/kernel';",
+    'import {\n  d,\n  e\n} from \'@cordium/plugins/runtime\';',
+    "import 'side-effect';",
+    "const m = await import('@cordium/kernel');"
+  ].join('\n');
+  assert.deepEqual(extractImports(sample).map(i => [i.kind, i.spec, i.named.join(',')]), [
+    ['named', '@cordium/kernel', 'a,b'],
+    ['default', '@cordium/plugins/loader', ''],
+    ['namespace', '@cordium/kernel', ''],
+    ['named', '@cordium/plugins/runtime', 'd,e'],
+    ['side-effect', 'side-effect', '']
+  ], '★ 动态 import(…) 不得被抽成静态 import');
+  assert.deepEqual(extractImports("import { a as c } from '@cordium/kernel';")[0].named, ['a'],
+    '别名要查【导出名】a，不是本地名 c');
+  assert.deepEqual(extractImports('// import { a } from "@cordium/kernel";'), [], '注释里的不算');
+
+  const fence = body => [{ file: '<mem>', text: '```js\n' + body + '\n```' }];
+  // 负向：不存在的导出必须判红
+  const bad = await checkDocImports({ texts: fence('import { nonExistentKernelApi } from "@cordium/kernel";'), resolve: resolveDocSpec });
+  assert.ok(bad.failures.some(f => f.includes('nonExistentKernelApi')), '不存在的导出必须判红');
+  assert.equal(bad.checked, 1);
+  // 负向：未导出的子路径、内部入口
+  const badPath = await checkDocImports({ texts: fence('import { x } from "@cordium/plugins/nope";'), resolve: resolveDocSpec });
+  assert.ok(badPath.failures.some(f => f.includes('无法解析')), '未导出的子路径必须判红');
+  const badInternal = await checkDocImports({ texts: fence('import { deepFreeze } from "@cordium/kernel/internal";'), resolve: resolveDocSpec });
+  assert.ok(badInternal.failures.some(f => f.includes('内部入口')), '文档引 internal 必须判红');
+  // 正向对照（规矩 42）：真实存在的导出必须判绿
+  const good = await checkDocImports({ texts: fence('import { CordiumHost } from "@cordium/kernel";'), resolve: resolveDocSpec });
+  assert.deepEqual(good.failures, [], '真实存在的导出不得误报');
+  // 判据失效：零命中不是通过
+  const none = await checkDocImports({ texts: fence('const x = 1;'), resolve: resolveDocSpec });
+  assert.equal(none.checked, 0);
+  assert.equal(none.judged.length, 1, '零命中必须报判据失效（规矩 44）');
+});

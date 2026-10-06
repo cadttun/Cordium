@@ -79,6 +79,31 @@ test('★ 跨包引用只走包名：src / test 里不得出现 ../../kernel/…
   assert.deepEqual(hits, [], '\n' + hits.join('\n'));
 });
 
+// ─────────── 两包各存一份的测试夹具必须逐字节相同（防漂）───────────
+
+// ★ 上面那道门禁（跨包只走包名）堵死了「两包共用一份夹具」⇒ 只能各存一份。
+//   而各存一份就是本仓反复踩的「**手抄清单会漂**」的同款形态（两个方向都会无声跑偏）——
+//   所以用这条门禁把它钉死：改了一边忘了另一边，当场红。
+// ★ 判据是**逐字节相同**，不是「大致一样」：夹具里有注释解释口径，注释漂了也会误导读者。
+const MIRRORED_FIXTURES = ['deep-frozen.mjs'];
+
+test('★ 两包各存一份的测试夹具必须逐字节相同（防「改了一边忘另一边」）', () => {
+  const bad = [];
+  for (const name of MIRRORED_FIXTURES) {
+    const a = path.join(ROOT, 'packages/kernel/test/fixtures', name);
+    const b = path.join(ROOT, 'packages/plugins/test/fixtures', name);
+    // ★ 「没找到」与「检查通过」分开报（规矩 44）：任一份不存在 ⇒ 判据失效，不是通过
+    if (!fs.existsSync(a) || !fs.existsSync(b)) {
+      bad.push(`${name}：两份夹具没有同时存在（判据失效，请更新本测试，不要当作通过）`);
+      continue;
+    }
+    if (fs.readFileSync(a, 'utf8') !== fs.readFileSync(b, 'utf8')) bad.push(`${name}：两份内容不一致`);
+  }
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
+  // ★ 非恒真：镜像清单不能是空的，且确实存在（否则本门禁是空扫）
+  assert.ok(MIRRORED_FIXTURES.length > 0, '镜像清单为空 —— 门禁恒真');
+});
+
 // ─────────── ./internal 是不稳定的内部子路径 —— 仓内只有 @cordium/plugins 的 src 能引 ───────────
 
 test('★ @cordium/kernel/internal 只许 plugins/src 引用（kernel 自己的测试走相对路径即可，其余一律不许）', () => {
@@ -125,17 +150,70 @@ test('★ 版本同步（lockstep）：两包 version 相等，plugins 对 kerne
   assert.equal(readPkg('.').version, k.version, '根版本随两包同步 —— 防再次漂移（0.2.1 前它停在 0.2.0）');
 });
 
-test('★ 运行时零依赖：两包 dependencies 不得含第三方（devDependencies 不受限）', () => {
-  // 「零依赖」是**发布面**的性质：`npm pack` 会带上 dependencies、不带 devDependencies。
-  // lint 工具落进 devDependencies（拿 lockfile 的 integrity），
-  // 故这条门禁把「零依赖」的范围**钉死在运行时**，而不是靠一句文档声明。
+// ── 运行时零依赖：判据范围（2026-10 实测 + npm 官方文档）──────────────────
+// ★ 会进【消费方安装树】的字段（实测 npm 11：装完 node_modules 顶层真的出现这些包）：
+//   · dependencies           —— 一直有管
+//   · optionalDependencies   —— **默认安装**（只是安装失败被容忍）；`--omit=optional` 才跳过
+//   · peerDependencies       —— **npm 7 起默认自动安装**；范围无解时消费方**整个装不上**
+// ★ 会【把第三方物理打进 tarball】的字段：bundledDependencies / bundleDependencies
+//   （实测：与匹配的 dependencies 同时存在时，tarball 里出现 `package/node_modules/<第三方>/**`）
+// ★ 声明面字段（npm 对非 root 包忽略，但仍是「声明了第三方」，且换包管理器语义不同）：
+//   overrides / resolutions / packageExtensions
+// ★ devDependencies **明确豁免**：消费方 `npm install` **不会**安装依赖的 devDependencies。
+//   ⚠️ 措辞订正（实测）：`npm pack` 的 package.json **会保留** devDependencies
+//   （`chalk@5.6.2` 的真实发布物就带着 10 条）—— 正确的说法是「**消费方安装树不含**」，
+//   不是「产物清单不含」。豁免的结论不变，但理由以前写错了。
+// ⚠️ 本门禁只看 manifest：源码里 `import` 了未声明的包由硬边界①覆盖；
+//   手动把第三方 vendored 进 `src/`（`files:["src"]` 会照发）文本门禁看不见，属残留风险。
+const FIRST_PARTY = '@cordium/';
+const INSTALL_TREE_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'];
+const BUNDLE_FIELDS = ['bundledDependencies', 'bundleDependencies'];
+const DECLARATION_FIELDS = ['overrides', 'resolutions', 'packageExtensions'];
+
+/** 返回 pkg 里所有「非本仓」的运行时 / 产物面依赖，形如 `optionalDependencies.left-pad` */
+export function runtimeThirdParty(pkg, allow = []) {
+  const ok = name => name.startsWith(FIRST_PARTY) || allow.includes(name);
+  const bad = [];
+  for (const field of INSTALL_TREE_FIELDS) {
+    for (const name of Object.keys(pkg[field] ?? {})) if (!ok(name)) bad.push(`${field}.${name}`);
+  }
+  for (const field of BUNDLE_FIELDS) {
+    const v = pkg[field];
+    if (v === true) bad.push(`${field}: true（会把全部依赖打进产物）`);
+    else if (Array.isArray(v)) for (const name of v) if (!ok(name)) bad.push(`${field}.${name}`);
+  }
+  for (const field of DECLARATION_FIELDS) {
+    for (const name of Object.keys(pkg[field] ?? {})) if (!ok(name)) bad.push(`${field}.${name}`);
+  }
+  return bad.sort();
+}
+
+test('★ 运行时零依赖：消费方安装树 / 产物里不得出现第三方（devDependencies 豁免）', () => {
   const k = readPkg('packages/kernel');
   const p = readPkg('packages/plugins');
-  assert.equal(k.dependencies, undefined, '内核不得有运行时依赖');
-  assert.deepEqual(
-    Object.keys(p.dependencies ?? {}), ['@cordium/kernel'],
-    '插件包运行时只允许依赖内核（workspace 链接）'
-  );
+  const bad = [...runtimeThirdParty(k), ...runtimeThirdParty(p, ['@cordium/kernel'])];
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
+});
+
+test('★ 门禁自检：零依赖谓词能判别各类字段，且不误伤 devDependencies 与同仓依赖', () => {
+  const K = { name: '@cordium/kernel' };
+  const P = { name: '@cordium/plugins', dependencies: { '@cordium/kernel': '0.3.0' } };
+  // 正向对照（规矩 42）：合法现状必须为空
+  assert.deepEqual(runtimeThirdParty(K), []);
+  assert.deepEqual(runtimeThirdParty(P, ['@cordium/kernel']), []);
+  assert.deepEqual(runtimeThirdParty({ ...K, devDependencies: { oxlint: '1.86.0' } }), [],
+    'devDependencies 必须豁免（消费方安装树不含它）');
+  // 负向：每一类第三方写法都必须命中，否则门禁恒真
+  for (const [label, obj] of [
+    ['optionalDependencies', { optionalDependencies: { 'left-pad': '1.3.0' } }],
+    ['peerDependencies', { peerDependencies: { 'left-pad': '*' } }],
+    ['bundleDependencies', { bundleDependencies: ['left-pad'] }],
+    ['bundledDependencies', { bundledDependencies: ['left-pad'] }],
+    ['bundleDependencies: true', { bundleDependencies: true }],
+    ['overrides', { overrides: { 'left-pad': '1.3.0' } }],
+    ['resolutions', { resolutions: { 'left-pad': '1.3.0' } }],
+    ['dependencies', { dependencies: { 'left-pad': '1.3.0' } }]
+  ]) assert.ok(runtimeThirdParty({ ...K, ...obj }).length > 0, `必须命中：${label}`);
 });
 
 // ─────────── 发布面文档的版本声明随包版本同步 ───────────

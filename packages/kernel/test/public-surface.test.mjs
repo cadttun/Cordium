@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as publicApi from '../src/index.mjs';
 import * as internalApi from '../src/internal.mjs';
+import { isAcceptableExport, unfrozenPaths } from './fixtures/deep-frozen.mjs';
 
 test('★ index.mjs 导出清单定稿（显式具名，不得随模块新增 export 自动变大）', () => {
   assert.deepEqual(Object.keys(publicApi).sort(), [
@@ -32,4 +33,26 @@ test('★ 内部共享工具不得出现在主入口', () => {
 
 test('★ internal.mjs 不得导出宿主（plugins 经它取工具时不应牵出 host.mjs）', () => {
   assert.equal('CordiumHost' in internalApi, false);
+});
+
+// ★★ 内核侧此前**完全没有**冻结检查（只有 plugins 侧有，且它还是浅的）—— 公开面校验不对称。
+//   判据与 plugins 侧共用 `test/fixtures/deep-frozen.mjs`（两个门禁同一口径）。
+//   ⚠️ **只覆盖 `index.mjs`（公开 API）**，不覆盖 `internal.mjs`：后者明确「不是公开 API」，
+//      且实测它导出的 `PLUGIN_ID_PATTERN` 是未冻结的 RegExp（RegExp 冻结后行为不变，
+//      但没有理由为一个内部工具强加公开面口径）。`internal.mjs` 由上面的名字清单门禁守。
+test('★ index.mjs 的每个对象导出都必须【逐层】冻结（消费者改了会串给别人）', () => {
+  const bad = [];
+  for (const [name, value] of Object.entries(publicApi)) {
+    if (isAcceptableExport(value)) continue;
+    bad.push(...unfrozenPaths(value, name));
+  }
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
+});
+
+test('★ 门禁自检：逐层判据在内核侧也能判别（否则是恒真假绿）', () => {
+  assert.deepEqual(unfrozenPaths(Object.freeze({ inner: { n: 1 } }), 'probe'), ['probe.inner —— 未冻结']);
+  assert.deepEqual(unfrozenPaths(publicApi.DIAGNOSTICS_CONTRACT, 'DIAGNOSTICS_CONTRACT'), [],
+    '契约是逐层冻结的 —— 若这里变红，说明源码的冻结层级掉了（诊断契约另有专门门禁再钉一次）');
+  assert.ok(Object.keys(publicApi).some(n => typeof publicApi[n] === 'object'),
+    '内核导出里必须确实有对象，否则本门禁是空扫');
 });

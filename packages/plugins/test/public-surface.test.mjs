@@ -27,6 +27,8 @@ import * as isolation from '../src/isolation.mjs';
 import * as loader from '../src/loader.mjs';
 import * as reload from '../src/reload.mjs';
 import pkg from '../package.json' with { type: 'json' };
+// ★ 判据与内核侧**同源**（两个公开面门禁同一口径）：各包存一份、内容逐字节相同，由 boundary.test.mjs 防漂
+import { isAcceptableExport, unfrozenPaths } from './fixtures/deep-frozen.mjs';
 
 /** 六个入口的导出清单（定稿）。★ 增删改名任何一项 = 有意的 API 变更，必须同时改这里。 */
 const EXPECTED = {
@@ -64,12 +66,40 @@ test('★ 门禁自检：清单本身有内容、且与模块真对得上（否�
   assert.notDeepEqual(Object.keys(runtime).sort(), ['validatePluginManifest'], '清单不能被写成明显更短的版本');
 });
 
-test('★ 每个导出都必须是函数或常量（不得导出可变对象 —— 消费者改了会串给别人）', () => {
+// ★★ 判据是【逐层】冻结，不是 `Object.isFrozen(value)` 单层。
+//   实测缺口：`Object.freeze({ inner: { n: 1 } })` 能通过旧判据，而消费者 `m.inner.n = 999` 真的改穿了 ——
+//   旧判据**比它自己标题宣称的契约更弱**（标题写「消费者改了会串给别人」，浅判据恰好放行这种情况）。
+//   依据：本仓既定口径「`Object.freeze` 是浅冻结 ⇒ 逐层冻结」（`host-util.mjs` 的 `deepFreeze`）；
+//   MDN 对「constant object」的定义要求**整张引用图**都 frozen。
+//   ⚠️ 还多一条：`Object.freeze(new Map())` 的 `isFrozen` 是 `true` 但 `map.set()` 照样生效 ⇒
+//      不透明容器必须**直接拒绝**，不能靠 `isFrozen` 放行。
+test('★ 每个导出都必须是函数 / 字符串 / 【逐层】冻结的常量（消费者改了会串给别人）', () => {
+  const bad = [];
   for (const [entry, mod] of Object.entries(MODULES)) {
     for (const [name, value] of Object.entries(mod)) {
-      const kind = typeof value;
-      assert.ok(kind === 'function' || kind === 'string' || Object.isFrozen(value),
-        `${entry} 的导出 ${name} 是 ${kind} 且未冻结 —— 导出面应交出函数或不可变常量`);
+      if (isAcceptableExport(value)) continue;
+      bad.push(...unfrozenPaths(value, `${entry}#${name}`));
     }
   }
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
+});
+
+test('★ 门禁自检：逐层判据真的能判别（否则是恒真假绿）', () => {
+  // 负向：浅冻结必须被判出（这正是旧判据放行的那一类）
+  assert.deepEqual(unfrozenPaths(Object.freeze({ inner: { n: 1 } }), 'probe'), ['probe.inner —— 未冻结']);
+  // 正向对照（规矩 42）：逐层冻结不得误报
+  assert.deepEqual(unfrozenPaths(Object.freeze({ inner: Object.freeze({ n: 1 }) }), 'probe'), []);
+  // 函数是叶子，不进入（与 deepFreeze 同口径）
+  assert.deepEqual(unfrozenPaths(() => {}, 'probe'), []);
+  // 不透明容器：isFrozen 为 true 也必须被拒
+  assert.equal(unfrozenPaths(Object.freeze(new Map()), 'probe').length, 1, '冻结的 Map 仍可变，必须被拒');
+  assert.deepEqual(unfrozenPaths(Object.freeze(new Set()), 'probe').length, 1);
+  // symbol 键与不可枚举属性也在遍历面内（Reflect.ownKeys）
+  const sym = Symbol('s');
+  const withSym = Object.freeze({ [sym]: { n: 1 } });
+  assert.equal(unfrozenPaths(withSym, 'probe').length, 1, 'symbol 键下的可变对象必须被看到');
+  // 防环：自引用不得无限递归
+  const cyc = { name: 'x' };
+  cyc.self = cyc;
+  assert.deepEqual(unfrozenPaths(Object.freeze(cyc), 'probe'), [], '自引用已冻结对象不得死循环');
 });
