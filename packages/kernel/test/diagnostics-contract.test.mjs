@@ -23,7 +23,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CordiumHost, DIAGNOSTICS_CONTRACT } from '../src/index.mjs';
+import { CordiumHost, DIAGNOSTICS_CONTRACT, LifecycleState } from '../src/index.mjs';
 
 /**
  * 造一个「有插件、有服务、有失败者」的宿主 —— 让快照的每一层都真的有内容可查。
@@ -46,6 +46,44 @@ async function richHost() {
 }
 
 const ROOT = '';
+
+/**
+ * ★★ 稳定面的**类型签名锁** —— 契约承诺「不改类型」，这张表就是那句话的机械形态。
+ * ⚠️ 它是一把**锁**（改实现就要显式改这里），不是「与实现同源的第二份副本」——
+ *   正因为要挡「实现悄悄改了类型」，它必须**独立于实现**。
+ * 生成方式：把本文件那条类型签名测试的期望值临时置空，跑一次读实际输出即可。
+ */
+const STABLE_TYPE_SIGNATURE = [
+  '<root>.actionsCount = number',
+  '<root>.booted = boolean',
+  '<root>.hostVersion = string',
+  '<root>.plugins = array',
+  '<root>.services = array',
+  '<root>.totalPlugins = number',
+  '<root>.uiContributionsCount = number',
+  'plugins[].activation = string',
+  'plugins[].activationMs = number',
+  'plugins[].apiVersion = string',
+  'plugins[].dependencies = object',
+  'plugins[].description = string',
+  'plugins[].displayName = string',
+  'plugins[].error = null|string',
+  'plugins[].hotReload = boolean',
+  'plugins[].id = string',
+  'plugins[].kind = string',
+  'plugins[].optionalDependencies = object',
+  'plugins[].permissions = array',
+  'plugins[].provides = array',
+  'plugins[].state = string',
+  'plugins[].unresolvedDependencies = array',
+  'plugins[].version = string',
+  'services[].access = string',
+  'services[].activeProvider = null',
+  'services[].methods = null',
+  'services[].name = string',
+  'services[].providerCount = number',
+  'services[].requiredPermission = null'
+];
 
 /**
  * 在【真实快照】里解析点分路径（`''` = 根；`plugins[]` = 逐元素）。
@@ -154,6 +192,37 @@ test('★★ 门禁有判别力：加一个未分类字段 / 写错一个稳定�
   const misnamed = DIAGNOSTICS_CONTRACT.stable[ROOT].filter(k => !Object.hasOwn(snapshot, k));
   assert.deepEqual(misnamed, [], '前提：当前稳定面没有错名');
   assert.ok(!Object.hasOwn(snapshot, 'hostVerison'), '反例：拼错的键确实不存在于快照');
+});
+
+test('★★ 契约承诺「不改类型」—— 稳定面每个键的【类型签名】逐字钉住', async () => {
+  // ★ 为什么必须有这条：契约文本承诺稳定面「不删、**不改名、不改类型**」，
+  //   而上面几条只验「键存在」—— 实测把 `totalPlugins` 从 number 改成 string，
+  //   本文件**六条全绿**（全量里有三条红是别的测试偶然兜住的，不是门禁）。
+  //   ⇒ 承诺了类型就得有东西守类型。
+  const snapshot = (await richHost()).getDiagnostics();
+  const sigOf = v => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+  const lines = [];
+  for (const [path, keys] of Object.entries(DIAGNOSTICS_CONTRACT.stable)) {
+    for (const key of [...keys].sort()) {
+      const types = [...new Set(resolvePath(snapshot, path).map(n => sigOf(n[key])))].sort();
+      lines.push(`${path || '<root>'}.${key} = ${types.join('|')}`);
+    }
+  }
+  assert.deepEqual(lines, STABLE_TYPE_SIGNATURE,
+    '★ 稳定面的类型签名变了 —— 契约承诺「不改类型」，真要改就必须同步改契约文本与这里的锁');
+});
+
+test('★ 契约承诺枚举值「可增不可改」—— 既有取值逐字钉住（允许新增）', () => {
+  // ⚠️ 守它的**不是** `Object.freeze`：冻结只挡运行时改对象，**挡不住改源码里的字面量**。
+  //   这条只对【既有】取值断言 —— 新增一个 state 是允许的（契约明说「可增不可改」）。
+  const pinned = {
+    DISCOVERED: 'discovered', READY: 'ready', ACTIVATING: 'activating', ACTIVE: 'active',
+    STOPPING: 'stopping', DISABLED: 'disabled', FAILED: 'failed'
+  };
+  const bad = Object.entries(pinned).filter(([k, v]) => LifecycleState[k] !== v)
+    .map(([k, v]) => `LifecycleState.${k} = ${JSON.stringify(LifecycleState[k])}，契约承诺的是 ${JSON.stringify(v)}`);
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
+  assert.ok(Object.isFrozen(LifecycleState), '运行时也必须冻结（这是另一件事，两条都要）');
 });
 
 test('★ schemaVersion 随快照交出，且与契约表同源（不是第二份字面量）', async () => {

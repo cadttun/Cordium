@@ -207,7 +207,17 @@ test('★ 依赖懒插件的 eager 插件在 boot 时被跳过（依赖没跑过
   });
   await host.boot();
   assert.equal(eagerRan, false, '★ 依赖没上线，急切插件不得抢先跑');
-  assert.equal(stateOf(host, 'p.eager'), 'discovered', '停在原地等依赖被触发');
+  // ⚠️ 断言消息此前写的是「停在原地**等依赖被触发**」—— 那句话**没有任何机制兑现**：
+  //   懒依赖后来被触发时，**没有任何东西会把这个急切插件拉起来**
+  //   （`#resumeCascaded` 只管「被级联停用」的，`#activateAllReady` 只扫 `ready`，而它是 `discovered`）。
+  //   要它上线必须显式 `activatePlugin` —— 见下面那条回归①b 的注释。
+  //   ⇒ 这里如实写成「停在 discovered，且不会自动上线」，并把「为什么」交给诊断面回答
+  //     （`unresolvedDependencies` 会报 `{ id: <懒依赖>, reason: 'not_running' }`）。
+  assert.equal(stateOf(host, 'p.eager'), LifecycleState.DISCOVERED,
+    '停在 discovered，且**不会**在懒依赖被触发时自动上线（要显式 activatePlugin）');
+  assert.deepEqual(host.getDiagnostics().plugins.find(p => p.id === 'p.eager').unresolvedDependencies,
+    [{ id: 'p.lazy', reason: 'not_running' }],
+    '★ 「它为什么没起来」必须能从快照里读出来，而不是只躺在日志里');
 });
 
 // ═══════════════ 诊断 ═══════════════

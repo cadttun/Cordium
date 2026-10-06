@@ -22,8 +22,18 @@
 
 - **`boot()` 的失败半径**写进指南（`PLUGIN_GUIDE` §10）：静态装配期是**原子**的 —— 任一插件的必需依赖不满足，`boot()` 在**激活任何插件之前**就抛错，**整份清单都不启动**（含依赖齐备的插件），宿主停在 `booted === false`，不存在「半启动」；`boot()` **之后**加载的插件则是**隔离**的 —— 只有它自己进 `failed`，宿主照常运行。两个世界不同是有意的：静态清单由装配方自己写，依赖写错启动时就暴露最省事；动态插件来自外部，不该拖垮已经跑起来的宿主。同时给出「装配方要隔离谁」的做法（`boot` 之前读 `unresolvedDependencies` 纯查询一次拿全 —— `boot()` 自身一次只报碰到的第一个 —— 再 `unregisterPlugin`，有必需依赖方时从叶子往上摘）。`boot-failure-radius.test.mjs` 把两侧**一起**钉住：只测一侧的话，把任一侧改成另一侧的语义都照样全绿。
 
+- 诊断字段 `unresolvedDependencies` 的 `reason` 从 2 类扩到 4 类：新增 `'cycle'`（与这个依赖**互相**可达 ⇒ 拓扑排序必然失败）与 `'not_running'`（依赖在、版本也对，但**此刻它跑不起来**：等触发的懒插件 / 被停用 / 已失败 / 它自己也被上游的环挡住）。
+  （此前只有 `'missing'` / `'version_mismatch'` ⇒ **环依赖**与**依赖没跑起来**这两种情况下，插件同样停在 `discovered`、`error: null`，而这一项是**空数组** —— 与当初立这个字段要修的症状一模一样，换了个成因又回来了。★ 前两类与 `boot()` 的拒绝同源；后两类**不会**让 `boot()` 抛错，它们回答的是「它为什么没起来」。⚠️ `'not_running'` 只在宿主启动过之后才可能出现 —— `boot()` 之前人人都是 `discovered`，那不是「跑不起来」，否则 boot 前那份纯查询会误报。）
+
 ### Changed
 
+- ★ `apiVersion` 判据的**破坏边界**改为「版本号里**最左的非零位**」（node-semver 对 caret 的定义原话）：
+  major ≥ 1 比 major、`0.x`（x ≥ 1）比 minor、`0.0.x` 比 patch。此前 `0.x` 一律按 major 比，
+  **比业界更宽松**（node-semver 与 VS Code 运行时都把 0.x 的 minor 当破坏边界，VS Code 甚至强制作者写出 minor）。
+  ⚠️ 当前 `KERNEL_API_VERSION = '1.0.0'` 下两种写法**判定结果完全相同**，差异只在 0.x —— 但 0.x 是**可测的**
+  （`isApiVersionCompatible` 是通用判据，描述符层还带 `options.apiVersion` 入口）。
+- ★ 上述判据从「两层各写一遍」改为**一份实现共用**（内核 `types.mjs` 的 `isApiVersionCompatible`，经 `internal.mjs` 交给插件包）。
+  此前两层各写一遍、靠测试逐值比对兜住；现在这条不变量是**结构上**成立的。
 - `activate(ctx, config)` 的第二参**只有一种形状**：`host.registerPlugin` 路径此前完全不传（`undefined`），与 `loadPlugins` 路径（已冻结对象）不一致。现在没配置时传冻结的 `{}`。
   （依据是语言规范：`function activate(ctx, config = {})` 的默认参数在传 `undefined` 时同样生效 ⇒ 两种形状对遵循语言约定的插件逐字等价。）
 - `log.level` 改为**成员校验**：只收 `debug` / `info` / `warn` / `error`，其余（含 `'Error'` / `'err'` 这类拼法）在写表之前抛 `invalid_argument`。此前拼错的值照收，后果是**不进专用错误缓冲、不带栈、零报错** —— 出错证据就这么消失了。
@@ -41,6 +51,11 @@
 
 ### Fixed
 
+- ★★ **诊断契约门禁只验「键存在」，不验「类型」** —— 而契约文本明写承诺稳定面「不删、不改名、**不改类型**」。实测把 `totalPlugins` 从 number 改成 string，契约门禁**六条全绿**（全量里那几条红是别的测试偶然兜住的，不是门禁）。现补**类型签名锁**：稳定面每个键的类型逐字钉住，改类型必须显式改锁与契约文本。
+  同处补上**枚举取值锁**：契约承诺 `LifecycleState` 取值「可增不可改」，而守它的**不是** `Object.freeze`（冻结只挡运行时改对象，挡不住改源码里的字面量）—— 现在既有取值逐字钉住、允许新增。
+- ★★ **拓扑预检不认「被显式停用」的插件** ⇒ 外壳最顺手的隔离原语形同虚设：`deactivatePlugin` 停用一个依赖缺失的插件后再 `boot()`，**仍会因它抛 `missing_dependency`**，整个宿主起不来。而 `boot()` 的激活循环**是**认 `disabledByUser` 的 —— 同一件事两处判定不一致。
+  现在拓扑预检同样跳过被显式停用的插件 ⇒ 「boot 前读 `unresolvedDependencies` → `deactivatePlugin` → `boot`」成为一条**非破坏性**的隔离路径（不必用会移除登记的 `unregisterPlugin`）。
+- ★ `deactivatePlugin` 对一个**从未启动过**（`discovered`）的插件只打 `disabledByUser` 标记、**不改状态** ⇒ 装配方用加载清单的 `disabled: true` 登记后，快照里它显示 `discovered`，与「等着启动」**长得一模一样**。现在这类插件落 `disabled`（`LifecycleState.DISABLED` 本就是为这个存在的）。⚠️ 只挂**用户显式停用**这条路径：回滚与级联停用复用内部路径，在那里落 `disabled` 会把「本次没启动它」说成「用户停用了它」。
 - `deactivatePlugin` 对一个等待触发的懒插件**完全无效**（内部路径只认 `ACTIVE`）⇒ 用户根本停不掉它。现在 `ready` 的插件可直接停为 `disabled`。
 - 存活态判定此前以 `state === ACTIVE || state === ACTIVATING` 的形状散落在 5 处；引入第三种存活态后逐处修改必漏，现抽为共用的单一判定。
 - `@cordium/plugins` 六个入口的**导出面此前零门禁**（只钉了子路径键名，没钉每个入口里导出什么）：加一个 `export` ⇒ **全量测试全绿、无人拦**；而改名会红（既有测试在调它）—— 即**改名有人管、加导出无人管**，导出面可以无声膨胀。现补 `packages/plugins/test/public-surface.test.mjs` 逐字钉死（与内核侧 `public-surface.test.mjs` 同一口径）。

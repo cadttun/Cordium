@@ -301,6 +301,16 @@ const DIAGNOSTICS_SCHEMA_VERSION = 1;
  *       **may be subject to breaking changes.**」
  *   ⇒ 本仓取 **allowlist 形态**（最省事、最诚实）：**点名即承诺，没点名的一律不承诺**。
  *
+ * ★★ 上面三条各给了一半，**强制性那一半来自另一处**（此前误记在 k6 名下）：
+ *   k6 的 allowlist 只说「没点名的不覆盖」，**不含「没点名就报错」**。
+ *   「必须显式选边、否则门禁变红」这一半的依据是 **API Extractor**（官方逐字）：
+ *   「API Extractor uses release tags to track the maturity of your API. **By default, it
+ *   requires every declaration in your API to have a release tag.**」——
+ *   其官方文档把理由写得比本仓还清楚：「When adding a new API, choosing a release tag requires
+ *   the person to **stop and think about visibility**」。
+ *   ⇒ 本仓 = **k6 的 allowlist 语义 + API Extractor 的强制分类**，两者缺一不可：
+ *     只有 allowlist ⇒ 新字段静默「不被承诺」，没人需要做决定；只有强制分类 ⇒ 没有「不承诺」这一档。
+ *
  * ⚠️ **一处已撤回的引用**：此前这里引过一句英文，声称是 `kubectl describe` 的原文。
  *   独立复核（含本仓自查）在 **kubernetes.io 一手页面找不到那句话** —— 它只出现在第三方转述里。
  *   意思在 K8s 官方确有（机器读 `-o json`、人读文本），但**那句英文不是官方原文**，
@@ -313,7 +323,9 @@ const DIAGNOSTICS_SCHEMA_VERSION = 1;
  *   ⇒ 同一把尺子量到底，门禁才能**机械判定**（见 `diagnostics-contract.test.mjs`）。
  *
  * ★ 枚举值**可增不可改**（与 OTel / K8s 一致）—— 新增一个 `state` 取值不算破坏，
- *   改掉既有取值的字面量才是（`LifecycleState` 的成员在门禁里另有 `Object.freeze` 守）。
+ *   改掉既有取值的字面量才是。
+ *   ⚠️ 守它的**不是** `Object.freeze`：冻结只挡运行时改对象，**挡不住改源码里的字面量**。
+ *   真正守它的是 `diagnostics-contract.test.mjs` 里那条「既有取值逐字钉住、允许新增」的断言。
  *
  * ★★ **消费方契约**：只读 `stable` 里点名的路径，**忽略未知字段**（Tolerant Reader）——
  *   这样内核**加**字段不会打到它。反过来，消费方读了 `unstable` 里的东西，
@@ -566,6 +578,52 @@ export function diffManifestFields(path, input, output, pluginId) {
 /** 内核插件 API 版本：插件 manifest.apiVersion 的主版本必须与之相同 */
 export const KERNEL_API_VERSION = '1.0.0';
 
+/**
+ * ★★ `apiVersion` 兼容判据的**唯一实现** —— 内核层（运行时契约）与描述符层（上架契约）共用。
+ *
+ * 语义 = 「**内核满足插件声明的最低要求**」= 该值的 caret 范围。判据两条：
+ *
+ * ```
+ *   ① 破坏边界相同   ② 内核版本 ≥ 插件要求的版本
+ * ```
+ *
+ * ★ **破坏边界 = 版本号里最左的那个非零位**（node-semver 对 caret 的定义就是这句：
+ *   "Allows changes that do not modify the left-most non-zero element in the
+ *   `[major, minor, patch]` tuple."）。所以：
+ *
+ * ```
+ *   ^1.4.2  = >=1.4.2 <2.0.0      边界 = major
+ *   ^0.9.0  = >=0.9.0 <0.10.0     边界 = minor（0.x 是初始开发期，minor 就是破坏位）
+ *   ^0.0.3  = >=0.0.3 <0.0.4      边界 = patch
+ * ```
+ *
+ * ★ 依据：SemVer §4「Major version zero (0.y.z) is for initial development.
+ *   Anything MAY change at any time.」；node-semver README 的 caret 三例逐字；
+ *   VS Code 运行时同样按 minor 判 0.x，并**强制**作者为 0.x 写出 minor
+ *   （"for 0.X.Y, that means up to 0.X must be specified"）。
+ *
+ * ★ 为什么写成显式判据而不是构造 `^${pluginApiVersion}` 交给范围匹配：
+ *   两条读出来就是这句话本身，不经过范围字符串的解析。**判据与 caret 等价** ——
+ *   测试里有一条逐值比对 `satisfiesSemVer(kernel, '^' + plugin)` 的等价性断言钉住这点。
+ *
+ * ★ 为什么必须只有一份实现：两层各写一遍必漂 —— 而漂的表现是「内核拒、描述符层放行」
+ *   （或反过来），同一份 manifest **按读哪一层给出不同结论**。此前两层确实是各写一遍。
+ *
+ * @param {string} kernelApiVersion 内核的 `KERNEL_API_VERSION`
+ * @param {string} pluginApiVersion 插件 manifest 声明的 apiVersion
+ * @returns {boolean} 合法且兼容 ⇒ true；版本号非法也返回 false（由调用方映射成错误码）
+ */
+export function isApiVersionCompatible(kernelApiVersion, pluginApiVersion) {
+  if (!isValidSemVer(kernelApiVersion) || !isValidSemVer(pluginApiVersion)) return false;
+  // 只看 base（去掉 -prerelease / +build）—— 边界是数值位，不该被预发布后缀干扰
+  const base = v => v.split('-')[0].split('+')[0];
+  const k = base(kernelApiVersion).split('.');
+  const p = base(pluginApiVersion).split('.');
+  const boundary = p[0] !== '0' ? 1 : p[1] !== '0' ? 2 : 3;   // 最左非零位
+  if (k.slice(0, boundary).join('.') !== p.slice(0, boundary).join('.')) return false;
+  return compareSemVer(kernelApiVersion, pluginApiVersion) >= 0;
+}
+
 /** 插件 id 字符集（与插件层 runtime.mjs 的 ID_PATTERN 同一规则） */
 export const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
@@ -619,28 +677,20 @@ function validateManifestSnapshot(manifest) {
   //   为什么不是「只比 major」（此前实现）：那样 `'1.99.0'` 在 1.0.0 的内核上**静默放行** ——
   //   插件要求一个还不存在的 API，作者以为前置要求被检查了，**其实没有**（实测）。
   //   为什么不是「完整 SemVer 范围」：本仓是**同仓分发、一并 bump**，不存在「旧内核 + 新插件」
-  //   的组合矩阵 ⇒ 让作者写范围只会诱导他写**虚假上界**（0.x 期更甚，SemVer §4 明说 0.y.z 不承诺稳定）。
+  //   的组合矩阵 ⇒ 让作者写范围只会诱导他写**虚假上界**。
   //   为什么不是「新增 minKernelVersion 字段」：那要改全仓**真实** manifest（实测 33 处），
   //   而语义**已有一个函数能直接表达**。
   //
   //   ★ 依据（VS Code 官方逐字）：`1.8.0`（无 caret）表示「**只**兼容 1.8.0」；
-  //     `^1.8.0` 表示「1.8.0 及以后」。我们的语义是后者 —— 所以判据就该写成 `^值`。
+  //     `^1.8.0` 表示「1.8.0 及以后」。我们的语义是后者。
   //
-  //   ★★ 向后兼容：★ 实测【真实 manifest】33 处（本仓 14 + 消费方仓 19）写的**全是** `'1.0.0'`
-  //      ⇒ 在 1.0.0 内核上**照旧放行**，
-  //     **零迁移**。被拒的只有「声明高于内核版本」这类**本就该拒**的（此前在静默放行）。
-  // ★ 判据（两条同时成立才算兼容）：
-  //   ① **主版本相同** —— 主版本不同意味着 API 有过破坏性变更，插件可能已经跑不动；
-  //   ② **内核不低于插件要求** —— 插件写 `1.4.2` 是「我需要 1.4.2 起的 API」，
-  //      内核算 1.0.0 ⇒ 不满足，应当拒绝（此前只比 major，`1.99.0` 也静默放行）。
-  //   ⚠️ 不用 caret 表达式（`^${apiVersion}`）：它在 **0.x** 上是 **patch-only** 语义
-  //      （`^0.9.0` = `>=0.9.0 <0.10.0`），与「至少」的意图不符 —— 实测 0.9.0 的插件
-  //      在 1.0.0 内核上会被它误拒。**显式两条**才与这里承诺的语义逐字对应。
-  if (!isValidSemVer(manifest.apiVersion)
-      || compareSemVer(
-        `${manifest.apiVersion.split('.')[0]}.0.0`,
-        `${KERNEL_API_VERSION.split('.')[0]}.0.0`) !== 0
-      || compareSemVer(KERNEL_API_VERSION, manifest.apiVersion) < 0) {
+  //   ★★ 向后兼容：实测【真实 manifest】33 处（本仓 14 + 消费方仓 19）写的**全是** `'1.0.0'`
+  //      ⇒ 在 1.0.0 内核上**照旧放行**，**零迁移**。被拒的只有「声明高于内核版本」这类
+  //      **本就该拒**的（此前在静默放行）。
+  //
+  //   ★ 判据本体在 `isApiVersionCompatible`（本文件上方）—— 与描述符层**共用同一份**，
+  //     不在这里再写一遍（两层各写一遍必漂）。
+  if (!isApiVersionCompatible(KERNEL_API_VERSION, manifest.apiVersion)) {
     throw new CordiumError(ErrorCode.INCOMPATIBLE_API_VERSION,
       `Plugin ${manifest.id} targets apiVersion '${manifest.apiVersion}', incompatible with kernel API ${KERNEL_API_VERSION}`
     );

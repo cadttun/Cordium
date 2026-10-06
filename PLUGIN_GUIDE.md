@@ -81,6 +81,12 @@ export function deactivate() {
   ⇒ 用户会看到一个缺了这块的界面，而且不报错。
 - **纯响应式的业务插件**（只有被调用时才干活）才适合 `'lazy'`。
 
+★ 反过来说：**急切插件依赖一个懒插件时，那个急切插件在 `boot()` 时会被跳过**（依赖没跑过 `activate`，
+不能上线），而且**懒依赖后来被触发也不会把它自动拉起来** —— 要它上线得显式 `activatePlugin`。
+它的诊断快照会报 `unresolvedDependencies: [{ id: <懒依赖>, reason: 'not_running' }]`，
+所以这件事**看得出来**，但不会有任何报错。这个组合基本总是写错了：要么把被依赖的那个改成 `eager`，
+要么把依赖方也改成 `'lazy'`。
+
 ★ 这三条是**本内核自己的约定**，不是外部规范 —— 外部只有正向指引（如 VS Code 建议慎用 `*`），
 没有「哪些扩展应当 eager」的官方清单。
 
@@ -517,17 +523,34 @@ const tail = diag.recentLogs.slice(-5).map(l => l.message);
 ```js
 // ① boot 之前：纯查询、零副作用，一次列出【全部】有问题的插件
 //    （boot() 自身一次只报它碰到的第一个）
-const guilty = host.getDiagnostics().plugins
-  .filter(p => p.unresolvedDependencies.length > 0)
-  .map(p => p.id);
+const blocked = host.getDiagnostics().plugins
+  .filter(p => p.unresolvedDependencies.length > 0);
 
-// ② 放弃它们。有必需依赖方的要先摘依赖方 —— 从叶子往上
-for (const id of guilty) await host.unregisterPlugin(id);
+// ② 隔离它们 —— 用 deactivatePlugin
+for (const p of blocked) await host.deactivatePlugin(p.id);
 
 await host.boot();
 ```
 
-- `unresolvedDependencies` 在稳定面里（见上一节），形状 `[{ id, reason }]`，`reason` 是 `'missing'` 或 `'version_mismatch'`。
+★ **为什么是 `deactivatePlugin` 而不是 `unregisterPlugin`**：前者**非破坏性** —— 插件标成「停用」
+（`state: 'disabled'`），登记、manifest 与 `unresolvedDependencies` **都还在**，运维者事后查得到
+「它为什么被摘」；后者把插件整个移出宿主，那是升级 / 卸载才该用的动作。
+⚠️ `unregisterPlugin` 在**有必需依赖方时会拒绝**（`plugin_has_dependents`），所以用它就得自己按依赖序
+从叶子往上摘；`deactivatePlugin` 会**级联**停掉依赖方，不必自己排 —— 但被级联停的那些，等提供者回来时会被自动拉起。
+
+- `unresolvedDependencies` 在稳定面里（见上一节），形状 `[{ id, reason }]`，`reason` 有四种：
+
+| `reason` | 含义 | `boot()` 之前就能查到？ |
+|---|---|---|
+| `missing` | 依赖没登记 | ✅ |
+| `version_mismatch` | 版本范围不满足 | ✅ |
+| `cycle` | 与这个依赖**互相**可达 ⇒ 拓扑排序必然失败 | ✅ |
+| `not_running` | 依赖在、版本也对，但**此刻它跑不起来**（等触发的懒插件 / 被停用 / 已失败 / 它自己也被上游的环挡住） | ❌ |
+
+★ 前两类与 `boot()` 的拒绝**同源**（同一份判定）；后两类**不会**让 `boot()` 抛错 ——
+它们回答的是「**它为什么没起来**」，不是「这次启动为什么失败」。
+⚠️ `not_running` **只在宿主启动过之后**才可能出现：`boot()` 之前所有插件都是 `discovered`，
+那不是「跑不起来」，所以那时查询不会误报。
 - ⚠️ `unregisterPlugin` 的**入口**拒绝（插件不存在 / 有必需依赖方）是**同步抛出**，排队后复验失败的才是 Promise 拒绝 —— 用 `try/catch` 包住 `await` 即可统一处理两者。
 
 ### 按目录加载

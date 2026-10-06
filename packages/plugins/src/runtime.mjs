@@ -1,7 +1,7 @@
 // Strict manifest validation (descriptor layer) for plugin catalogs and markets; never executes plugin code.
 // ★ 统一走 internal.mjs（不直连内核实现文件，也不走会牵出 host.mjs 的 index.mjs）
 import {
-  normalizeStringList, normalizeDependencyMap, isValidSemVer, compareSemVer,
+  normalizeStringList, normalizeDependencyMap, isValidSemVer, isApiVersionCompatible,
   // ★ 类别常量与成员校验 —— 与内核层【共用同一份定义】（同 normalizeStringList 的口径）
   PluginKind, PLUGIN_KIND_VALUES, isValidPluginKind, PLUGIN_ID_PATTERN,
   // ★ 激活时机常量 + 成员校验（与内核层共用同一份定义）
@@ -141,23 +141,18 @@ export function validatePluginManifest(input, options) {
   // 版本判定：**各自独立**收集 —— 这样 version 与 apiVersion 的问题能同时报出，
   // 而不是「先修一个再跑一遍才知道下一个」。
   if (typeof m.version === 'string') parseVersionBase(m.version, 'version', 'plugin version', issues);
-  // ★★ 语义与内核层【逐字对齐】：`apiVersion` = 「**至少需要**哪个 API 版本」。
+  // ★★ 语义与内核层【同一份实现】：`apiVersion` = 「**至少需要**哪个 API 版本」。
   //   ⚠️ 此前本层只比 major，与内核同款漏检（`'1.99.0'` 在内核 1.0.0 上静默放行）。
   //   两层必须同一判定，否则「内核拒、描述符层放行」（或反过来）会按读哪一层给出不同结论。
+  //   ★ 现在判据本体在 `isApiVersionCompatible`（内核 `types.mjs`），**两层共用一份** ——
+  //     原先两层各写一遍，靠测试比对兜住；共用之后这条不变量是**结构上**成立的。
   //   ★ 向后兼容：现有 manifest 写 `'1.0.0'` 照旧放行，零迁移。
-  //   ⚠️ 不用 caret 表达式：它在 **0.x** 上是 patch-only 语义（`^0.9.0` = `>=0.9.0 <0.10.0`），
-  //      会把「要求低于内核」的插件误拒 —— 实测 0.9.0 在 1.0.0 内核上被它挡下。
-  //   ★ 比较一律走 `compareSemVer`（本仓 semver 的唯一实现，见下方注释），不手写数值比较。
   const requiredApi = (typeof m.apiVersion === 'string' ? m.apiVersion : apiVersion);
   if (parseVersionBase(requiredApi, 'apiVersion', 'plugin apiVersion', issues) !== null && issues.ok('apiVersion')) {
     // 先单独验 host 侧格式（它不该出错，但出错要能看见）
-    if (parseVersionBase(apiVersion, 'host apiVersion', 'host apiVersion', issues) !== null) {
-      const sameMajor = compareSemVer(
-        `${requiredApi.split('.')[0]}.0.0`, `${apiVersion.split('.')[0]}.0.0`) === 0;
-      const kernelMeetsRequirement = compareSemVer(apiVersion, requiredApi) >= 0;
-      if (!sameMajor || !kernelMeetsRequirement) {
-        issues.add('apiVersion', 'plugin api version is incompatible');
-      }
+    if (parseVersionBase(apiVersion, 'host apiVersion', 'host apiVersion', issues) !== null
+        && !isApiVersionCompatible(apiVersion, requiredApi)) {
+      issues.add('apiVersion', 'plugin api version is incompatible');
     }
   }
   // ★ 类别成员校验 —— 拼错值（`'Core'`）若静默落成 business，

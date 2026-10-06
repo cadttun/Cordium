@@ -27,7 +27,7 @@ export {
 export { PluginKind, PLUGIN_KIND_VALUES, ActivationPolicy, ACTIVATION_POLICY_VALUES } from './types.mjs';
 export { LogLevel, LOG_LEVEL_VALUES } from './types.mjs';
 // ★ 插件层的 API 版本由此派生（不再各写一份字面量，两层不可能漂移）
-export { KERNEL_API_VERSION } from './types.mjs';
+export { KERNEL_API_VERSION, isApiVersionCompatible } from './types.mjs';
 export { parseRange, isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';
 export { CordiumError, ErrorCode } from './errors.mjs';
 // Node setTimeout 上限：内核动作超时与 plugins 的 callWithTimeout / callIsolated 同一口径

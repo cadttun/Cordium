@@ -765,7 +765,12 @@ export class CordiumHost {
    *   ④ 原来 ACTIVE ⇒ 用新代码激活；失败 ⇒ **换回旧代码并重新激活**，再抛出新代码的原始错误；
    *   ⑤ 恢复被级联停下的依赖方（它们拿到的是新实例：旧服务句柄已失效，须重新 getService）。
    * ★ 原来不是 ACTIVE（未启动 / 已停用 / 失败）⇒ 只换不启，状态与「用户停用」标记原样保留。
-   * ⚠️ 错误通道同 unregisterPlugin：入口校验失败同步抛出；排队后失败是 Promise 拒绝（`await` 即可统一）。
+   * ⚠️ 错误通道同 unregisterPlugin：入口校验失败**同步抛出**；排队后失败是 Promise 拒绝。
+   *   ★ 调用方用 `try { await … } catch` 可统一接住两者 —— 但 `assert.rejects(() => …)` **接不住同步抛**：
+   *     Node 官方逐字「If `asyncFn` is a function and it throws an error synchronously, `assert.rejects()`
+   *     will return a rejected `Promise` with that error. … **In both cases the error handler is skipped.**」
+   *     ⇒ 匹配器**根本不会被求值**，测试以原始错误判失败（看不出本来想断言什么）。测试里包一层
+   *     `async () => …` 把同步抛转成拒绝，才走正常断言路径。
    *
    * @param {object} rawManifest
    * @param {{ activate?: Function, deactivate?: Function } | null} [entry]
@@ -832,6 +837,12 @@ export class CordiumHost {
     const inDegree = new Map(allIds.map(id => [id, 0]));
     const adj = new Map(allIds.map(id => [id, []]));
     for (const [id, record] of this.#plugins.entries()) {
+      // ★★ 被**显式停用**的插件不参与装配：它的依赖不满足与宿主无关。
+      //   此前这里不豁免 `disabledByUser` ⇒ 用户停用一个坏插件后再 boot 仍会因它抛错 ——
+      //   而 boot 的激活循环（下面的 `unavailable` 集合）**是认 `disabledByUser` 的**。
+      //   同一件事两处判定不一致，后果是外壳最顺手的那个隔离原语（`deactivatePlugin`）失效，
+      //   只剩破坏性的 `unregisterPlugin` 一条路。
+      if (record.disabledByUser) continue;
       for (const depId of this.#orderingEdges(id, record.manifest)) {
         adj.get(depId).push(id);
         inDegree.set(id, inDegree.get(id) + 1);
@@ -870,14 +881,49 @@ export class CordiumHost {
    * ★ 只收**必需**依赖（`manifest.dependencies`）：可选依赖按「缺席」设计，
    *   缺席是它的正常形态，报出来是噪音。
    *
-   * ★★ 与 `#orderingEdges` **共用同一份判定**（那个抛错，这个返回清单）。
-   *   两份各写一遍必漂 —— 而漂的表现是「诊断说没问题、boot 却拒绝」，最难查的那种。
-   *   ⚠️ 只报 `{ id, reason }`，**不带版本号**：期望范围在 `dependencies` 里、
+   * ⚠️ 只报 `{ id, reason }`，**不带版本号**：期望范围在 `dependencies` 里、
    *     实际版本在对方的 `version` 里，快照里都已有 ⇒ 带上就是造第二真相源。
    *
-   * @returns {{ id: string, reason: 'missing' | 'version_mismatch' }[]}
+   * ── 四类 reason：前两类**静态**，后两类是「**此刻**的事实」────────────────
+   *
+   * | reason | 含义 | boot 之前就能判？ |
+   * |---|---|---|
+   * | `missing` | 依赖没登记 | ✅ |
+   * | `version_mismatch` | 版本范围不满足 | ✅ |
+   * | `cycle` | 与这个依赖**互相**可达 ⇒ 拓扑排序必然失败 | ✅（只看 manifest） |
+   * | `not_running` | 依赖在、版本也对，但**此刻它跑不起来**（见 `#isUnrunnable`） | ❌（依赖的运行态） |
+   *
+   * ★★ 前两类与 `boot()` 的拒绝**同源**（`#staticUnresolved` 一份实现，两处共用）——
+   *   漂的表现是「诊断说没问题、boot 却拒绝」，最难查的那种。
+   * ★ `cycle` / `not_running` **不参与** `boot()` 的抛错判定：环由拓扑排序自己报
+   *   （`CYCLIC_DEPENDENCY`），而「依赖还没跑起来」根本不是错误（见 boot 里 `deferred` 的注释）。
+   *   ⇒ 「诊断非空 ⇔ boot 拒绝」这条只对**静态两类**成立，门禁也是这么断言的。
+   *
+   * @returns {{ id: string, reason: 'missing' | 'version_mismatch' | 'cycle' | 'not_running' }[]}
    */
-  #unresolvedDependencies(manifest) {
+  #unresolvedDependencies(id, manifest) {
+    const out = this.#staticUnresolved(manifest);
+    const already = new Set(out.map(u => u.id));
+    const { reach } = this.#dependencyGraph();
+    const selfInCycle = reach(id).has(id);
+    for (const depId of Object.keys(manifest.dependencies || {})) {
+      if (already.has(depId)) continue;                       // 静态问题优先，不重复报
+      // ★ 环：本插件与这个依赖**互相可达** ⇒ 这条边在环上
+      if (selfInCycle && reach(depId).has(id)) { out.push({ id: depId, reason: 'cycle' }); continue; }
+      // ★ 依赖在**别的**环上 ⇒ 它永远上不了线，本插件被上游的环挡住
+      if (reach(depId).has(depId)) { out.push({ id: depId, reason: 'not_running' }); continue; }
+      if (this.#isUnrunnable(this.#plugins.get(depId)?.state)) out.push({ id: depId, reason: 'not_running' });
+    }
+    return out;
+  }
+
+  /**
+   * 静态可判定的依赖问题：**缺失 / 版本不符**。
+   * ★ 与 `#unresolvedDependencies` 的关系：那个给「全部原因」，这个是其中的静态子集。
+   *   拆开是因为 `#orderingEdges` 只要静态那部分（它决定 boot 抛不抛），
+   *   而算「环」要遍历整张依赖图 —— 不该在 boot 的每条边上都付这个代价。
+   */
+  #staticUnresolved(manifest) {
     const out = [];
     for (const [depId, expectedRange] of Object.entries(manifest.dependencies || {})) {
       const target = this.#plugins.get(depId);
@@ -890,12 +936,63 @@ export class CordiumHost {
   }
 
   /**
+   * 依赖图 —— 纯查询，不改任何状态。
+   * 边集与 `#orderingEdges` **一致**（必需依赖 + 已注册且版本满足的可选依赖），
+   * 否则「诊断说没环、拓扑排序说有环」就成了另一种不同源。
+   * @returns {{ reach: (id: string) => Set<string> }} `reach(id)` = 从 `id` 出发可达的插件集合
+   *   （**不含 `id` 自身**，除非它在环上 —— 这正是判环的用法）。
+   */
+  #dependencyGraph() {
+    const edges = new Map();
+    for (const [id, record] of this.#plugins.entries()) {
+      const out = [];
+      for (const [depId, range] of Object.entries(record.manifest.dependencies || {})) {
+        const t = this.#plugins.get(depId);
+        if (t && satisfiesSemVer(t.manifest.version, range)) out.push(depId);
+      }
+      for (const [depId, range] of Object.entries(record.manifest.optionalDependencies || {})) {
+        const t = this.#plugins.get(depId);
+        if (t && satisfiesSemVer(t.manifest.version, range)) out.push(depId);
+      }
+      edges.set(id, out);
+    }
+    const cache = new Map();
+    const reach = start => {
+      if (cache.has(start)) return cache.get(start);
+      const seen = new Set();
+      const stack = [...(edges.get(start) || [])];
+      while (stack.length > 0) {
+        const n = stack.pop();
+        if (seen.has(n)) continue;
+        seen.add(n);
+        for (const m of edges.get(n) || []) stack.push(m);
+      }
+      cache.set(start, seen);
+      return seen;
+    };
+    return { reach };
+  }
+
+  /**
+   * 这个状态下的依赖「**此刻跑不起来**」吗？
+   * ★ 刻意让 `discovered` 只在 **boot 之后**算数：`boot()` 之前人人都是 `discovered`，
+   *   把它一律算进来，会让 boot 前那份纯查询对**所有**有依赖的插件都报「未满足」——
+   *   而 boot 前查询正是本字段最主要的用法。boot 之后还停在 `discovered` 的，
+   *   才是「它没被启动」（被 `deferred` 跳过，或上游没起来）。
+   */
+  #isUnrunnable(state) {
+    if (state === LifecycleState.DISCOVERED) return this.#booted;
+    return state === LifecycleState.READY || state === LifecycleState.DISABLED
+      || state === LifecycleState.FAILED || state === LifecycleState.STOPPING;
+  }
+
+  /**
    * 一个插件参与排序的依赖边（被依赖方 id 列表）。必选依赖缺失 / 版本不符 ⇒ 抛错。
    * ★ 纯查询：只抛错，不改任何记录的 state（此前这里会把插件标成 FAILED ——
    *   一个看起来只读的公开方法带副作用，诊断里会凭空出现 failed）。
    */
   #orderingEdges(id, manifest) {
-    const unresolved = this.#unresolvedDependencies(manifest);
+    const unresolved = this.#staticUnresolved(manifest);
     if (unresolved.length > 0) {
       // ★ 报文与错误码必须与拆分前【逐字相同】—— 既有调用方按它们断言。
       const { id: depId, reason } = unresolved[0];
@@ -1343,6 +1440,16 @@ export class CordiumHost {
       // ★ 显式停用 = 用户意图：boot() 不得再顺手拉起它；级联恢复也不碰它。
       record.disabledByUser = true;
       record.stoppedByCascade = false;
+      // ★★ 从未启动过的插件（`discovered`）也要落 `disabled`。
+      //   否则装配方用加载清单的 `disabled: true` 登记、或在 boot 之前显式停用一个插件时，
+      //   快照里它显示 `discovered` —— 与「等着启动」**长得一模一样**，
+      //   运维者看不出「它是被有意停用的」；而 `LifecycleState.DISABLED` 本就是为这个存在的。
+      //   ⚠️ 只挂在**用户显式停用**这条路径上：`#deactivatePluginNow` 还被 boot 回滚与级联停用复用，
+      //     在那里落 `disabled` 会把「本次没启动它」说成「用户停用了它」。
+      if (record.state === LifecycleState.DISCOVERED) {
+        this.#setState(record, LifecycleState.DISABLED);
+        return;
+      }
       // ★ 没有活着的依赖方时【同步】进入停用（不多加一跳微任务）——
       //   保持「调用返回那一刻 state 已是 stopping」这条既有契约（见 #serializeLifecycle 注释）。
       const live = this.#dependentsOf(pluginId).some(id => isLiveState(this.#plugins.get(id).state));
@@ -1403,7 +1510,10 @@ export class CordiumHost {
    *   重新注册必然换号，旧句柄不会「复活」。
    * ★ 停用钩子期间若注册了新的必需依赖方 ⇒ 拒绝删除，插件保持【已停用】（不回滚激活）。
    * ⚠️ 错误通道有两种：入口处的 not found / 有依赖方是【同步抛出】（零副作用）；
-   *   排队后在任务体内复验失败的是【Promise 拒绝】。调用方应同时处理两者（`await` 即可统一）。
+   *   排队后在任务体内复验失败的是【Promise 拒绝】。
+   *   ★ 调用方用 `try { await … } catch` 可统一接住两者；但**测试里**写 `assert.rejects(() => …)`
+   *     **接不住同步抛** —— Node 官方逐字「In both cases the error handler is skipped」，
+   *     匹配器不会被求值。包一层 `async () => …` 才走正常断言路径（同 replacePlugin 的注释）。
    *
    * @param {string} pluginId
    */
@@ -2429,7 +2539,9 @@ export class CordiumHost {
       totalPlugins: this.#plugins.size,
       // ⚠️ 不再解构 `id`：它已在 MANIFEST_FIELD_TABLE.kernel 里，由下面的投影带出。
       //    留着会成为一个「与 id 同值但来源不同」的第二真相源。
-      plugins: Array.from(this.#plugins.values()).map((p) => ({
+      // ★ 走 `entries()` 而不是 `values()`：**记录的 id 是 Map 的键，不在记录里**。
+      //   判环要按 id 查图，`p.id` 会是 `undefined`（实测：环被误报成 not_running）。
+      plugins: Array.from(this.#plugins.entries()).map(([id, p]) => ({
         // ★★ manifest 字段由【契约表】派生，不手列。
         //
         //   为什么：手列会漏。本项目已同形踩了 4 次（optionalDependencies /
@@ -2445,7 +2557,7 @@ export class CordiumHost {
         error: p.state === LifecycleState.FAILED ? describeError(p.error) : null,
         activationMs: p.activationMs,
         // ★ 依赖没齐 ⇒「它为什么没起来」只能靠这一项回答（见 #unresolvedDependencies 的注释）
-        unresolvedDependencies: this.#unresolvedDependencies(p.manifest)
+        unresolvedDependencies: this.#unresolvedDependencies(id, p.manifest)
       })),
       services: Array.from(this.#serviceContracts.entries()).map(([name, s]) => ({
         name,
