@@ -20,7 +20,10 @@
 - `DIAGNOSTICS_CONTRACT`：诊断快照的**稳定性契约**（`@cordium/kernel` 的导出）。按**路径**逐层分区 —— `stable` 点名「不删 / 不改名 / 不改类型」的字段（枚举值可增不可改），`unstable` 显式列出**不承诺**的那些。快照随附 `schemaVersion`（结构版本；发生**不兼容**改动时递增，增字段不算）。
   （**未点名的路径/键一律不承诺** —— 不是「大概稳定」，是明确不承诺。消费方契约：**只读稳定面、忽略未知字段**。依据：allowlist 形态，与 k6 的措辞同一口径；分两档的形态取自 Kubernetes 指标（Alpha「no stability guarantees」/ Stable）与 OpenTelemetry（`/incubating` 子入口）。）
 
-- ★ **内存门禁**（`packages/kernel/test/memory-bounds.test.mjs`）：内核经过若干轮「注册 → 使用 → 停用 → 卸载」后**不得保留本应释放的对象**。判据是**对象存活性计数**（`v8.queryObjects`），不是堆字节阈值 —— 计数与 Node 版本 / OS / GC 策略无关，天然免疫 CI 抖动，也不需要「失败重试」（重试会吞掉真回归）。
+- ★ **内存门禁**（`packages/kernel/test/memory-bounds.test.mjs`）：内核经过若干轮「注册 → 使用 → 停用 → 卸载」后**不得保留本应释放的对象**。判据是**对象存活性计数**（`v8.queryObjects`），不是堆字节阈值 —— 免的是「字节阈值随 GC 时机抖动」那类问题，也不需要「失败重试」（重试会吞掉真回归）。
+  ★ 这不是自创野路子：`v8.queryObjects` 正是 Node core 为「泄漏回归测试」这个用途暴露的公共 API（core 内部测试助手用的是同一套计数法），官方文档把用途写死在 API 说明里，且已被标为 stable。它取代的正是 `WeakRef` / `FinalizationRegistry` 那条路 —— 后者官方明说**不宜用来做断言**（回收时机不保证，可能永远不发生）。
+  ⚠️ **不写成「与 GC 策略完全无关」**：计数仍受「`queryObjects` 内置的那次 full GC 收不收得干净」影响 —— V8 在对象创建循环让堆增长过快时，兜底 GC 可能不够彻底 ⇒ 计数偏大、假红。这是该方法**已知**的失败模式。本门禁的对策是每轮对象数很小且轮间 `settle()`；将来调大轮数必须补喘气。
+  ⚠️ **两条结构性盲区如实写明**：① 发现不了「churn 型」问题（反复创建又释放、对象都回收了但 GC 压力大）—— 那一侧由 `long-running.test.mjs` 的预算断言覆盖；② 跨 realm / 跨 isolate 看不见（`queryObjects` 只数当前执行上下文）。
   ★ **不依赖 `--expose-gc`**：`v8.setFlagsFromString('--expose-gc')` + `vm.runInNewContext('gc')` 免改 CI 就拿到 `gc`；拿不到则**模块加载即抛** —— 判据失效不许静默降级成「跳过」。
   ★ 机制要点（本机 Node v24.16.0 实测 + 官方文档）：`queryObjects` 默认返回 **number**；`{ format: 'summary' }` 返回的是**字符串**数组、**不是实例**；它**自带一次 full GC**（官方原文「…search for objects … in the heap after a full garbage collection」）。★ 但探针**不依赖**这一点 —— `settle()`（让出栈 + 显式 `gc()`）是自己保证的那一步，把判据建在实验性 API 的内部行为上，只会让门禁在别的 Node 版本上假红、而红不出任何内核回归。
   ★ **判别力两头都验**：忠实变异体（同一套探针 + 一个额外持有者）必须报出增长、撤掉后回到基线；**内核侧变异体**（`unregisterPlugin` 忘了移除插件记录）下门禁如实变红，且增量恰为「轮数 × 每轮对象数」。
