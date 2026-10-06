@@ -31,7 +31,8 @@
 
 - ★★ **类型声明**（两个包）：`exports` 的各子路径新增 `types` 条件，指向生成出来的 `types/*.d.mts`。消费方的编辑器从此能拿到补全与跳转 —— 此前 TypeScript 会报「找不到声明文件，该模块隐式为 any」，而它**不会**去读源码里现成的 JSDoc（实测：`exports` 里没有 `types` 条件时它解析到 `src/index.mjs`，整包退化成 `any`）。
   ★ **真相源是源码里的 JSDoc**，`types/` 是**产物**。产物之所以能进版本库，是因为「它是不是派的」可以被**机械证明**：每次 `npm test` 重新生成一遍并逐字节比对 —— **手改产物在结构上失效**，漂移在结构上不可能。
-  ★ **为什么非要把产物提交**：消费方经 `file:` + symlink 直连源码，而 `file:` 依赖**不会安装依赖方的 devDependencies** ⇒ 消费方手里没有 `tsc`，自己生成不出来。不提交 = 消费方拿不到任何类型。
+  ★ **为什么非要把产物提交**（这条论据经实测改写，原版说漏了一半）：消费方经 `file:` + symlink 直连源码，而 `file:` 依赖**不安装依赖方的 devDependencies** —— 但它**会跑依赖方的 `prepare` 脚本**（实测）。⇒ 走 `prepare` 生成这条路，`tsc` 只能从**被链接源仓自己的 `node_modules`** 里找（实测：有则找到，没有则 `MODULE_NOT_FOUND`）；源仓干净 clone 或 CI 用 `--omit=dev` 时它必然失败 —— 而 **`prepare` 失败会让消费方的 `npm install` 整单失败**（实测 exit 3）。⇒ 不提交产物、改走 `prepare`，是**把风险从消费方的编辑器挪到消费方的安装**。所以：提交产物。
+  ★ `typescript` **钉死精确版本**（`7.0.2`，不带 caret）：生成器版本漂移会改变声明 emit 的字节，是这道漂移门禁**唯一**的假红来源（与 `oxlint` 同款口径）。
   ★ **顺序是强制的：先补齐 JSDoc，再发布产物**。实测补齐前生成出来几乎全是 `any`（`validateManifest(manifest: any)`、`compareSemVer: (...args: any[]) => any`）—— 那样的产物会把消费方的「找不到声明」**静默消掉**，换来一个看着有类型、实则没有的面，正是本仓反复在抓的「宣称强于实现」。补齐后：`validateManifest(manifest: unknown): PluginManifest`、`compareSemVer: (a: string, b: string) => number`，公开入口 `index.d.mts` **零 `any`**。
   ★ 端到端实测（造一个消费方，经 junction 直连本仓，与消费方的接法一致）：类型解析走 `exports` 的 `types` 条件，枚举字面量精确保留；摘掉该条件后同一次检查**零报错**（全变 `any`）—— 判别力两头都验过。
   ★ `typescript` 落根 `devDependencies`（与 `oxlint` 同款），**不碰运行时零依赖**（该门禁对 devDependencies 豁免）。新增 `npm run typecheck` / `npm run types:emit`；类型检查本身也纳入 `npm test`（当前 0 错）。

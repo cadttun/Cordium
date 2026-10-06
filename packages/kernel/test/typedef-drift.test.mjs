@@ -79,9 +79,40 @@ async function liveCtx() {
   return ctx;
 }
 
-test('★★ 三处手抄的类型字段表都必须与运行时唯一真相源同集', async () => {
+/** 两包 `src` 下的全部 `.mjs`（相对仓库根的路径）。 */
+function srcFiles() {
+  const out = [];
+  for (const pkg of ['kernel', 'plugins']) {
+    const dir = path.join(ROOT, 'packages', pkg, 'src');
+    for (const n of fs.readdirSync(dir)) if (n.endsWith('.mjs')) out.push(`packages/${pkg}/src/${n}`);
+  }
+  return out;
+}
+
+/**
+ * 源码里**全部** `@typedef {object} X` 的声明点。
+ * ★ 用**发现**而不是手列清单：手列的话，下一个新增的 typedef 会**静默漏网** ——
+ *   本仓已因「白名单重建、漏列即静默丢弃」踩过三次。这里反过来：发现到什么，就必须交代什么。
+ * @returns {Map<string, string>} typedef 名 → 相对路径
+ */
+function allTypedefs() {
+  const out = new Map();
+  for (const file of srcFiles()) {
+    for (const m of read(file).matchAll(/@typedef \{object\} ([A-Za-z_$][\w$]*)/g)) {
+      if (!out.has(m[1])) out.set(m[1], file);
+    }
+  }
+  return out;
+}
+
+/**
+ * 被比对的 typedef 及其**唯一真相源**。
+ * ★ 抽成函数而不是写在测试里：下面的覆盖门禁要用**同一份**清单 ——
+ *   两处各列一遍，就又造出一份会漂的手抄清单（那正是本文件要防的东西）。
+ */
+async function typedefCases() {
   const ctx = await liveCtx();
-  const cases = [
+  return [
     { what: 'PluginManifest', file: 'packages/kernel/src/types.mjs',
       truth: MANIFEST_FIELD_TABLE.kernel, from: 'MANIFEST_FIELD_TABLE.kernel' },
     { what: 'PluginDescriptor', file: 'packages/plugins/src/runtime.mjs',
@@ -89,6 +120,22 @@ test('★★ 三处手抄的类型字段表都必须与运行时唯一真相源�
     { what: 'PluginContext', file: 'packages/kernel/src/host.mjs',
       truth: Object.keys(ctx), from: '运行时 ctx 的键' },
   ];
+}
+
+/**
+ * ★ 显式豁免：这些 typedef 描述的形状**没有既有的唯一真相源**（协议报文 / 回调袋 / 查询接口），
+ *   不存在「与谁比对」的问题。豁免必须**显式**并写明理由 ——
+ *   否则「没被覆盖」与「有意不覆盖」在结果里长得一模一样。
+ */
+const NO_TRUTH_SOURCE = new Map([
+  ['ActionRegistryQueries', '宿主内部查询接口，形状没有外部真相源'],
+  ['UIRegistryQueries', '同上'],
+  ['ScopeReleaseCallbacks', '宿主内部回调袋，形状没有外部真相源'],
+  ['IsolationRequest', '隔离端 IPC 报文协议；形状未校验，源码里已注明'],
+]);
+
+test('★★ 手抄的类型字段表都必须与运行时唯一真相源同集', async () => {
+  const cases = await typedefCases();
 
   const judged = [];   // ★ 判据失效 ≠ 检查通过
   const drifted = [];
@@ -106,6 +153,34 @@ test('★★ 三处手抄的类型字段表都必须与运行时唯一真相源�
   }
   assert.deepEqual(judged, [], '\n' + judged.join('\n'));
   assert.deepEqual(drifted, [], '\n' + drifted.join('\n'));
+});
+
+// ★★ 上面那条只比对了**点名的三个** —— 它的文件头却写着「源码里**每个**手抄的字段清单」。
+//   口径比判据宽，就是「宣称强于实现」：下一个新增的 typedef 会**静默漏网**。
+//   这条把口径补齐：**发现**到的每一个 typedef 都必须交代清楚（被比对 / 显式豁免），
+//   并把「点名的东西已经不存在了」也一并报出来（过时的点名会让人以为某个形状「被管着」）。
+test('★ 覆盖完整：src 里每个 `@typedef {object}` 都要么被比对、要么显式豁免', async () => {
+  const found = allTypedefs();
+  assert.ok(found.size > 0, '★ 判据失效：一个 typedef 都没发现 —— 抽取正则失效了，这不是「检查通过」');
+
+  const covered = new Set([...(await typedefCases()).map((c) => c.what), ...NO_TRUTH_SOURCE.keys()]);
+  const uncovered = [...found].filter(([name]) => !covered.has(name))
+    .map(([name, file]) => `${file} 的 \`${name}\` 既没被比对、也没被显式豁免 —— 新加的手抄字段表必须交代清楚`);
+  assert.deepEqual(uncovered, [], '\n' + uncovered.join('\n'));
+
+  const stale = [...covered].filter((n) => !found.has(n));
+  assert.deepEqual(stale, [], '点名的 typedef 在源码里已经不存在了 —— 点名过时（会让人以为某个形状「被管着」）');
+});
+
+test('★ 门禁自检：覆盖门禁真的能发现「新增了一个没人管的 typedef」', () => {
+  const found = allTypedefs();
+  assert.ok(found.has('PluginContext'), '前提：真实源码里确实有 PluginContext');
+  // 负向：假装没覆盖它 ⇒ 覆盖门禁的判据必须能看见
+  const covered = new Set(['PluginManifest', 'PluginDescriptor']);
+  assert.ok([...found].some(([n]) => !covered.has(n)), '未覆盖的 typedef 必须能被看见（否则上面那条恒真）');
+  // 正向对照：全部覆盖时不得误报
+  const all = new Set(found.keys());
+  assert.deepEqual([...found].filter(([n]) => !all.has(n)), [], '全覆盖不得误报');
 });
 
 test('★ 门禁自检：抽取器必须做括号配平、且能判别漂移（否则是恒真假绿）', () => {

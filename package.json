@@ -20,7 +20,7 @@
   "devDependencies": {
     "@types/node": "^26.6.4",
     "oxlint": "1.86.0",
-    "typescript": "^7.0.2"
+    "typescript": "7.0.2"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",

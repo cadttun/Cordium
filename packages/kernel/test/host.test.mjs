@@ -365,6 +365,53 @@ test('★★ PLUGIN_GUIDE §3 的 ctx 成员表与运行时 ctx 同集，且三�
     '§3 的成员表与运行时 ctx 不一致 —— 这张表是插件作者读的第一张表，必须与实现同集');
 });
 
+/**
+ * §3 里**手抄的数字**：总述的「**N 个成员分三档**」与每档标题的「（N 个）」。
+ * ★ 为什么单独一条：上面那条只比对了**成员集合**，数字漂了它看不见 ——
+ *   而「手抄数字会漂」是本仓记录过的形态（同一份知识两处各写一份，两个方向都会错且都无声）。
+ * @returns {{total: number|null, tiers: {name: string, claimed: number, actual: number}[]}}
+ */
+function guideCounts(section) {
+  // ★ 档数在中文文档里是汉字（「分三档」），成员数是阿拉伯数字（「19 个成员」）——
+  //   两者都收。只认阿拉伯数字会误报「判据失效」（本门禁上线时就这么报了一次，是对的）。
+  const totalMatch = /\*\*(\d+)\s*个成员分[\d一二三四五六七八九十]+\s*档\*\*/.exec(section);
+  const tiers = [];
+  const lines = section.split(NL);
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^###\s+3\.\d+\s+(.*?)（(\d+)\s*个）\s*$/.exec(lines[i]);
+    if (!m) continue;
+    let actual = 0;
+    for (let j = i + 1; j < lines.length && !lines[j].startsWith('### '); j++) {
+      if (lines[j].startsWith('| `')) actual++;
+    }
+    tiers.push({ name: m[1], claimed: Number(m[2]), actual });
+  }
+  return { total: totalMatch ? Number(totalMatch[1]) : null, tiers };
+}
+
+test('★ PLUGIN_GUIDE §3 里手抄的成员数字必须与表格实际行数一致（数字也会漂）', async () => {
+  const guide = fs.readFileSync(path.join(ROOT, 'PLUGIN_GUIDE.md'), 'utf8').split('\r\n').join(NL);
+  const section = guideCtxSection(guide);
+  assert.ok(section !== null, '★ 判据失效：找不到 §3 的边界 —— 这不是「检查通过」');
+
+  const { total, tiers } = guideCounts(section);
+  assert.ok(total !== null, '★ 判据失效：§3 总述里找不到「**N 个成员分 N 档**」—— 措辞改了就要同步这条判据');
+  assert.ok(tiers.length >= 2, `★ 判据失效：一档标题都没解析出来（实得 ${tiers.length}）—— 这不是「检查通过」`);
+
+  const sum = tiers.reduce((n, t) => n + t.actual, 0);
+  const bad = tiers.filter((t) => t.claimed !== t.actual)
+    .map((t) => `「${t.name}」标题写 ${t.claimed} 个，表里实际 ${t.actual} 个`);
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
+  assert.equal(total, sum, `总述写「${total} 个成员」，三档表里实际共 ${sum} 个`);
+
+  // 与运行时也对一次：数字错、表格对，一样是错
+  const host = new CordiumHost();
+  let ctx = null;
+  host.registerPlugin({ id: 'plugin.doc', version: '1.0.0', apiVersion: '1.0.0' }, { activate(c) { ctx = c; } });
+  await host.boot();
+  assert.equal(total, Object.keys(ctx).length, '总述的成员数必须等于运行时 ctx 的成员数');
+});
+
 test('★ 门禁自检：§3 的解析与比对真的能判别（否则是恒真假绿）', async () => {
   const host = new CordiumHost();
   let ctx = null;

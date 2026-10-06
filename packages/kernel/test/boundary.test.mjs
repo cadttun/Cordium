@@ -157,10 +157,21 @@ test('★ 每个 exports 目标文件都存在（改名 / 删文件不同步即�
   assert.deepEqual(missing, []);
 });
 
-// ★ 条件对象的**键序**是语义的一部分，不是排版：
-//   Node 官方文档对 `exports` 逐字写着「This condition should always be included first」（`types`）
-//   与「This condition should always come last」（`default`），并强调「key order is significant」。
-//   顺序错了在 Node 侧可能仍然「能跑」（`default` 恰好在后），却会让类型解析拿不到声明 —— 静默失效。
+// ★ 条件对象的**键序**是规范要求的：Node 官方文档对 `exports` 逐字写着
+//   「This condition should always be included first」（`types`）与
+//   「This condition should always come last」（`default`），并强调 key order is significant；
+//   TypeScript 4.7 发行说明同样写「The `"types"` condition should always come first in `"exports"`」。
+//
+// ★★ **但这条门禁守的是「规范一致性」，不是「不守就坏」** —— 实测（Node v24.16.0 + TS 7.0.2）：
+//   · Node 运行时**不认识** `types`（它属社区条件），所以 `types` 的位置对运行时零影响；
+//   · TypeScript 对 `types` 的位置**不敏感**：先匹配到的条件产不出声明时，它会继续往后试。
+//   ⇒ 顺序真正致命的只有**一种**情形：`default` 排在前面、**且它的目标旁边恰好有可解析的声明** ——
+//     那时 TS **命中即停**，静默拿到错的类型（实测过：声明放 `src/` 旁边时就是这个结果）。
+//     本仓把声明生成到 `types/`（远离 `src/`），恰好永久避开了这个陷阱。
+//
+//   保留它的理由：① 符合两级官方规范；② 一旦有人给 `exports` 增加 `import` / `require` / `node`
+//   条件，或把 `default` 改指向带相邻声明的产物，它**立刻**变成硬规则
+//   （Node 侧 `default` 提前会吃掉后续条件 —— 已实测）；③ 成本极低。
 test('★ exports 的条件对象必须 `types` 在前、`default` 在后（顺序是语义，不是排版）', () => {
   const bad = [];
   for (const rel of ['packages/kernel', 'packages/plugins']) {
