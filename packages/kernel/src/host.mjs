@@ -8,7 +8,8 @@
  */
 
 import {
-  LifecycleState, ServiceAccess, validateManifest, diffManifestFields, PLUGIN_ID_PATTERN,
+  LifecycleState, ServiceAccess, validateManifest, diffManifestFields, PLUGIN_ID_PATTERN, HOST_CALLER,
+  UnresolvedReason,
   // ★ 诊断快照的 manifest 投影由它派生（唯一真相源）—— 见 snapshotManifestForDiagnostics
   MANIFEST_FIELD_TABLE,
   // ★ 服务契约的「白名单重建丢字段」判定 —— 与 manifest 共用同一条知识
@@ -155,13 +156,16 @@ export class CordiumHost {
   #serviceContracts = new Map();
   // ★ 动作表抽成内部类 ActionRegistry；鉴权事实（插件状态 / 权限快照）仍留在宿主，只注入窄查询。
   #actionHandlers = new ActionRegistry({
+    // ★ 宿主是**常驻的信任根**（与 getInternalService() 同一口径）：
+    //   它不需要「活着」被检查，也不受 requiredPermission 约束。见 types.mjs 的 HOST_CALLER。
     isCallerLive: (id) => {
+      if (id === HOST_CALLER) return true;
       const caller = this.#plugins.get(id);
       // ★ 用共用判定，不手写 `=== ACTIVE || === ACTIVATING` —— 按需激活引入 `ready` 后
       //   手写版会漏（漏的表现是某一处不认 ready 的插件，见 isLiveState 的注释）
       return !!caller && isLiveState(caller.state);
     },
-    hasPermission: (id, perm) => this.#pluginPermissions.get(id)?.has(perm) ?? false,
+    hasPermission: (id, perm) => id === HOST_CALLER || (this.#pluginPermissions.get(id)?.has(perm) ?? false),
     assertPermissionDeclared: (name, where) => this.#assertPermissionDeclared(name, where),
     defaultTimeoutMs: () => this.#defaultActionTimeoutMs,
     maxInFlight: () => this.#maxInFlightActions,
@@ -341,9 +345,11 @@ export class CordiumHost {
      * 同时在途的动作派发数上限。
      * ★ 处理器异步地派发自己（或两插件互相派发）此前无上限，堆线性上涨直至进程崩溃；
      *   动作超时拦不住它 —— 递归全在微任务里跑，期间计时器一次都没机会触发（实测）。只能按数量判。
-     * ★ 为什么是「在途数」而不是 AsyncLocalStorage 记调用深度：ALS 在 Node 20 / 22 上让整个进程
-     *   每次 await 慢约 3 倍（实测，含宿主应用自己的代码）；在途数只是一个计数器，
-     *   且同一道闸也挡住「深度不大但每层扇出很多」的情形。插件改不了这个计数（宿主私有）。
+     * ★ 为什么是「在途数」而不是 AsyncLocalStorage 记调用深度：ALS 让**整个进程**每次 await 慢约
+     *   3.7 倍，且代价落在**宿主应用自己的代码**上而不只是内核 —— 本机 Node v24.16.0 复测：
+     *   20 万次 await，裸 15.2ms / ALS 包裹 56.4ms ⇒ **3.72×**。
+     *   ⚠️ **别指望「升个 Node 就好了」**：这个倍数最早在 Node 20 / 22 上量得，**24 上复测依旧**。
+     *   在途数只是一个计数器，且同一道闸也挡住「深度不大但每层扇出很多」的情形。插件改不了这个计数（宿主私有）。
      */
     this.#maxInFlightActions = positiveInt('maxInFlightActions', options.maxInFlightActions, 10000);
 
@@ -966,7 +972,7 @@ export class CordiumHost {
    *   （`CYCLIC_DEPENDENCY`），而「依赖还没跑起来」根本不是错误（见 boot 里 `deferred` 的注释）。
    *   ⇒ 「诊断非空 ⇔ boot 拒绝」这条只对**静态两类**成立，门禁也是这么断言的。
    *
-   * @returns {{ id: string, reason: 'missing' | 'version_mismatch' | 'cycle' | 'not_running' }[]}
+   * @returns {{ id: string, reason: (typeof UnresolvedReason)[keyof typeof UnresolvedReason] }[]}
    */
   #unresolvedDependencies(id, manifest) {
     const out = this.#staticUnresolved(manifest);
@@ -976,10 +982,10 @@ export class CordiumHost {
     for (const depId of Object.keys(manifest.dependencies || {})) {
       if (already.has(depId)) continue;                       // 静态问题优先，不重复报
       // ★ 环：本插件与这个依赖**互相可达** ⇒ 这条边在环上
-      if (selfInCycle && reach(depId).has(id)) { out.push({ id: depId, reason: 'cycle' }); continue; }
+      if (selfInCycle && reach(depId).has(id)) { out.push({ id: depId, reason: UnresolvedReason.CYCLE }); continue; }
       // ★ 依赖在**别的**环上 ⇒ 它永远上不了线，本插件被上游的环挡住
-      if (reach(depId).has(depId)) { out.push({ id: depId, reason: 'not_running' }); continue; }
-      if (this.#isUnrunnable(this.#plugins.get(depId)?.state)) out.push({ id: depId, reason: 'not_running' });
+      if (reach(depId).has(depId)) { out.push({ id: depId, reason: UnresolvedReason.NOT_RUNNING }); continue; }
+      if (this.#isUnrunnable(this.#plugins.get(depId)?.state)) out.push({ id: depId, reason: UnresolvedReason.NOT_RUNNING });
     }
     return out;
   }
@@ -994,9 +1000,9 @@ export class CordiumHost {
     const out = [];
     for (const [depId, expectedRange] of Object.entries(manifest.dependencies || {})) {
       const target = this.#plugins.get(depId);
-      if (!target) { out.push({ id: depId, reason: 'missing' }); continue; }
+      if (!target) { out.push({ id: depId, reason: UnresolvedReason.MISSING }); continue; }
       if (!satisfiesSemVer(target.manifest.version, expectedRange)) {
-        out.push({ id: depId, reason: 'version_mismatch' });
+        out.push({ id: depId, reason: UnresolvedReason.VERSION_MISMATCH });
       }
     }
     return out;
@@ -1063,7 +1069,7 @@ export class CordiumHost {
     if (unresolved.length > 0) {
       // ★ 报文与错误码必须与拆分前【逐字相同】—— 既有调用方按它们断言。
       const { id: depId, reason } = unresolved[0];
-      if (reason === 'missing') {
+      if (reason === UnresolvedReason.MISSING) {
         throw new CordiumError(ErrorCode.MISSING_DEPENDENCY, `Missing dependency '${depId}' required by '${id}'`);
       }
       throw new CordiumError(ErrorCode.DEPENDENCY_VERSION_MISMATCH,
@@ -2522,6 +2528,29 @@ export class CordiumHost {
   }
 
   /**
+   * ★ 宿主**以自身身份**派发一个动作 —— `callerPluginId === HOST_CALLER`。
+   *
+   * ── 为什么需要这个入口 ──────────────────────────────────────────────
+   *   `dispatchAction(callerPluginId, …)` 要求宿主**报一个插件 id**，而派发前会查
+   *   `isCallerLive` —— 宿主自己没有插件身份，于是**只能借一个正在跑的插件**，
+   *   审计日志里记下的便是那个**被借的**身份。本入口让「宿主自己干的」有**一条诚实的路**。
+   *   ★ 这与 `getService` / `getInternalService` 的分工**同构**，不再是不对称的一对。
+   *
+   * ── 什么时候**不要**用它 ────────────────────────────────────────────
+   *   需要「**代表某个插件**」时，那是**委派**（delegation），语义不同 —— 审计要能同时看到
+   *   「谁在做」与「代表谁」。用 `dispatchAction(pluginId, …)` 并**如实记录你在代表谁**。
+   *   ⚠️ 别把「代表某插件」做成一个**调用方自由填的字符串**：那等于把归属判据交回调用方，
+   *      正是本仓第一原则①与 CWE-441（confused deputy）的同一形态。
+   *
+   * @param {string} action
+   * @param {any} [payload]
+   * @returns {Promise<any>}
+   */
+  async dispatchActionAsHost(action, payload) {
+    return this.dispatchAction(HOST_CALLER, action, payload);
+  }
+
+  /**
    * ★ 把所有仍在等触发的懒插件拉起来（依赖按递归收拢），返回真正启动了几个。
    *
    * ⚠️ 一次派发里**只调用一次**（调用方保证）：懒插件激活后自己注册动作是常见形态，
@@ -2654,6 +2683,11 @@ export class CordiumHost {
       uiContributionsCount: this.#uiContributions.size,
       // ★ 条目逐个浅拷贝：此前交出的是审计日志条目本身，外部改 message 即篡改审计记录。
       //   details 是嵌套对象，浅拷贝仍共享它 ⇒ 再克隆一层。
+      // ★ 投影条数 20 是**有意的固定值**，不是漏写：快照是给人和运维看「刚才发生了什么」的窗口，
+      //   完整历史在宿主自己的环形缓冲里（`maxLogSize` 默认 500 / `maxErrorLogSize` 默认 100）。
+      //   给投影单独开一个可配旋钮**没有消费者**，只会多一个要维护、要校验、要进文档的选项
+      //   —— 与本仓「没有消费者的能力不预先建设」一致。
+      //   ⚠️ 20 与 500 / 100 之间**没有比例关系**，别按缓冲区大小去推它。
       recentLogs: this.#auditLogs.slice(-20).map(copyLogEntry),
       // ★ 错误单独给一份（带栈）：recentLogs 是共享环形，可能已被 info 冲掉
       recentErrors: this.#errorLogs.slice(-20).map(copyLogEntry),

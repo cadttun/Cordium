@@ -284,7 +284,7 @@ test('★ 公开面门禁：实例字段与原型方法必须与清单一致（�
   assert.equal(methods.filter(k => k.startsWith('__')).length, 0, '不得出现 __test_* 之类的测试专用方法');
   assert.deepEqual(methods.sort(), [
     'activatePlugin', 'boot', 'deactivatePlugin', 'declarePermissions', 'declareServiceContract',
-    'declareServiceContracts', 'declareUIContributionTypes', 'dispatchAction', 'getDiagnostics',
+    'declareServiceContracts', 'declareUIContributionTypes', 'dispatchAction', 'dispatchActionAsHost', 'getDiagnostics',
     'getInternalService', 'getService', 'getUIContributions',
     'log', 'recordManifestDiagnostic', 'registerPlugin', 'replacePlugin', 'unregisterPlugin'
   ]);

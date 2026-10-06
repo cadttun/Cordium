@@ -6,6 +6,7 @@
  * 插件表 → 生命周期 → 插件 ctx → 服务提供 → 服务取用 → 通知 → 动作 / UI → 诊断。
  * 已抽出的独立职责：action-registry / ui-registry / scope-tree / service-handle / host-util（见各文件头）。
  */
+import { UnresolvedReason } from './types.mjs';
 export type PluginContext = {
     pluginId: string;
     /**
@@ -272,6 +273,26 @@ export declare class CordiumHost {
      */
     dispatchAction(callerPluginId: string, action: string, payload: any): Promise<any>;
     /**
+     * ★ 宿主**以自身身份**派发一个动作 —— `callerPluginId === HOST_CALLER`。
+     *
+     * ── 为什么需要这个入口 ──────────────────────────────────────────────
+     *   `dispatchAction(callerPluginId, …)` 要求宿主**报一个插件 id**，而派发前会查
+     *   `isCallerLive` —— 宿主自己没有插件身份，于是**只能借一个正在跑的插件**，
+     *   审计日志里记下的便是那个**被借的**身份。本入口让「宿主自己干的」有**一条诚实的路**。
+     *   ★ 这与 `getService` / `getInternalService` 的分工**同构**，不再是不对称的一对。
+     *
+     * ── 什么时候**不要**用它 ────────────────────────────────────────────
+     *   需要「**代表某个插件**」时，那是**委派**（delegation），语义不同 —— 审计要能同时看到
+     *   「谁在做」与「代表谁」。用 `dispatchAction(pluginId, …)` 并**如实记录你在代表谁**。
+     *   ⚠️ 别把「代表某插件」做成一个**调用方自由填的字符串**：那等于把归属判据交回调用方，
+     *      正是本仓第一原则①与 CWE-441（confused deputy）的同一形态。
+     *
+     * @param {string} action
+     * @param {any} [payload]
+     * @returns {Promise<any>}
+     */
+    dispatchActionAsHost(action: string, payload?: any): Promise<any>;
+    /**
      * 获取当前所有可见的 UI 贡献（副本）
      */
     getUIContributions(type: any): any[];
@@ -322,7 +343,7 @@ export declare class CordiumHost {
             activationMs: any;
             unresolvedDependencies: {
                 id: string;
-                reason: 'missing' | 'version_mismatch' | 'cycle' | 'not_running';
+                reason: (typeof UnresolvedReason)[keyof typeof UnresolvedReason];
             }[];
         }[];
         services: {

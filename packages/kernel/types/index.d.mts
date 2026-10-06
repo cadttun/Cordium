@@ -8,7 +8,7 @@
  *   内部共享的工具（两层 manifest 共用的归一化 / 字段比对等）见 `./internal.mjs`。
  */
 export { CordiumHost } from './host.mjs';
-export { LifecycleState, ServiceAccess, SERVICE_ACCESS_VALUES, PluginKind, PLUGIN_KIND_VALUES, ActivationPolicy, ACTIVATION_POLICY_VALUES, LogLevel, LOG_LEVEL_VALUES, KERNEL_API_VERSION, validateManifest, DIAGNOSTICS_CONTRACT } from './types.mjs';
+export { LifecycleState, ServiceAccess, SERVICE_ACCESS_VALUES, PluginKind, PLUGIN_KIND_VALUES, ActivationPolicy, ACTIVATION_POLICY_VALUES, LogLevel, LOG_LEVEL_VALUES, KERNEL_API_VERSION, HOST_CALLER, UnresolvedReason, UNRESOLVED_REASON_VALUES, validateManifest, DIAGNOSTICS_CONTRACT } from './types.mjs';
 export { isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';
 export { CordiumError, ErrorCode } from './errors.mjs';
 export { MessageChannel, DispatchMode, isBailed } from './channel.mjs';

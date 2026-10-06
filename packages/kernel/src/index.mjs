@@ -20,6 +20,14 @@ export {
   LogLevel,
   LOG_LEVEL_VALUES,
   KERNEL_API_VERSION,
+  // ★ 宿主的调用方身份（`dispatchActionAsHost` 用的就是它）。导出是**承重的**：
+  //   消费方要靠它从审计日志里认出「这条是宿主自己干的」，而不是某个插件。
+  HOST_CALLER,
+  // ★ 诊断快照 `unresolvedDependencies[].reason` 的取值集合。
+  //   此前它是纯字面量、没导出 ⇒ 消费方想知道「我认全了没有」只能跨仓读实现或暴力探测。
+  //   导出后实现已回改成本常量（`host.mjs` 的产出点与比较点），不是第二真相源。
+  UnresolvedReason,
+  UNRESOLVED_REASON_VALUES,
   validateManifest,
   // ★ 诊断快照的稳定性契约 —— 消费方**必须**能读到它，否则「哪些字段可信」只能靠人传。
   //   它不是内部实现细节，而正是对外承诺本身（allowlist 形态：点名即承诺）。

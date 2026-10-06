@@ -16,8 +16,15 @@ test('★ index.mjs 导出清单定稿（显式具名，不得随模块新增 ex
     // ★ DIAGNOSTICS_CONTRACT：诊断快照的稳定性契约 —— 消费方必须能读到它，
     //   否则「哪些字段可信」只能靠人传（它是对外承诺本身，不是内部实现细节）。
     'DIAGNOSTICS_CONTRACT',
-    'DispatchMode', 'EffectScope', 'ErrorCode', 'KERNEL_API_VERSION', 'LOG_LEVEL_VALUES', 'LifecycleState', 'LogLevel', 'MessageChannel',
+    'DispatchMode', 'EffectScope', 'ErrorCode',
+    // ★ HOST_CALLER：宿主的调用方身份。导出是**承重的** —— 消费方靠它从审计日志里认出
+    //   「这条是宿主自己干的」，而不是某个插件（此前宿主只能借插件身份，日志记的是被借者）。
+    'HOST_CALLER',
+    'KERNEL_API_VERSION', 'LOG_LEVEL_VALUES', 'LifecycleState', 'LogLevel', 'MessageChannel',
     'PLUGIN_KIND_VALUES', 'PluginKind', 'SERVICE_ACCESS_VALUES', 'ServiceAccess',
+    // ★ UnresolvedReason / UNRESOLVED_REASON_VALUES：诊断快照 reason 字段的取值集合。
+    //   导出后 `host.mjs` 的 5 个产出点 + 1 个比较点已回改成本常量 ⇒ 不是第二真相源。
+    'UNRESOLVED_REASON_VALUES', 'UnresolvedReason',
     'compareSemVer', 'isBailed', 'isValidSemVer', 'satisfiesSemVer', 'validateManifest'
   ]);
 });

@@ -22,7 +22,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CordiumHost, LifecycleState } from '../src/index.mjs';
+import { CordiumHost, LifecycleState, UnresolvedReason, UNRESOLVED_REASON_VALUES } from '../src/index.mjs';
 
 /** 登记一批插件，boot（吞掉失败），返回快照里按 id 索引的插件记录 */
 async function snapshotOf(manifests) {
@@ -184,4 +184,47 @@ test('★★ 用户停用坏插件 ⇒ boot 不再因它抛（`deactivatePlugin`
     '★ 被显式停用的插件必须显示 disabled —— 显示 discovered 的话，与「等着启动」无法区分');
   assert.deepEqual(byId('plugin.broken').unresolvedDependencies, [{ id: 'plugin.ghost', reason: 'missing' }],
     '★ 停用不等于把事实抹掉：它为什么起不来，快照里仍要说得出');
+});
+
+// ═══════ 导出面：reason 取值集合（消费方提请后落地） ═══════
+//
+// 动机：消费方要「知道自己认全了没有」，而此前 `reason` 是**纯字面量、没导出** ——
+//   只能跨仓读实现或暴力探测，两条路都不干净。同类的 LifecycleState / PluginKind 早就导出了。
+
+test('★★ 实际产出的 reason 必须全部落在【导出的取值集合】里，且四类都真的产得出', async () => {
+  // ★ 规矩 45：不能只断言 `Object.values(UnresolvedReason)` 等于一张手写列表 —— 那是拿导出物验导出物。
+  //   这里【真的构造出四类场景】，收集实际产出，再与导出集合比。
+  //
+  // ★ 四类必须【分场景】跑，不能塞进同一个宿主：`cycle` 会让 `boot()` 直接抛错，
+  //   而 `not_running` 依赖启动后的状态 ⇒ 混在一起时它根本不产出（实测：混跑只得到三类）。
+  const scenarios = [
+    [base('plugin.needs-ghost', { dependencies: { 'plugin.ghost': '^1.0.0' } })],            // missing
+    [base('plugin.dep'), base('plugin.needs-newer', { dependencies: { 'plugin.dep': '^2.0.0' } })], // version_mismatch
+    [base('plugin.cyc-a', { dependencies: { 'plugin.cyc-b': '^1.0.0' } }),
+     base('plugin.cyc-b', { dependencies: { 'plugin.cyc-a': '^1.0.0' } })],                   // cycle
+    [base('plugin.lazybase', { activation: 'lazy' }),
+     base('plugin.eager', { dependencies: { 'plugin.lazybase': '^1.0.0' } })]                 // not_running
+  ];
+
+  const produced = new Set();
+  for (const manifests of scenarios) {
+    const snap = await snapshotOf(manifests);
+    for (const p of snap.values()) for (const u of p.unresolvedDependencies ?? []) produced.add(u.reason);
+  }
+
+  // ① 产出 ⊆ 导出，且【四类都要真的产得出】—— 否则「都在集合里」可能只是因为只产出了一类
+  assert.deepEqual([...produced].sort(), [...UNRESOLVED_REASON_VALUES].sort(),
+    '★ 四类 reason 必须都能被真实场景产出，且产出集合与导出集合一致');
+
+  // ② 覆盖正向：导出集合里的每一个值都确实出现过（防导出物列了一个永远不会发生的值）
+  for (const v of UNRESOLVED_REASON_VALUES) {
+    assert.ok(produced.has(v), `★ 导出的 '${v}' 从未被任何场景产出 ⇒ 它是空头承诺`);
+  }
+});
+
+test('★ 导出物是冻结的，且实现真的用了它（不是另抄一份字面量）', () => {
+  assert.ok(Object.isFrozen(UnresolvedReason), 'UnresolvedReason 必须冻结');
+  assert.ok(Object.isFrozen(UNRESOLVED_REASON_VALUES), 'UNRESOLVED_REASON_VALUES 必须冻结');
+  // ★ 值集由对象【派生】⇒ 二者不可能各说各话（这是「不造第二真相源」的机械保证）
+  assert.deepEqual([...UNRESOLVED_REASON_VALUES], Object.values(UnresolvedReason));
 });

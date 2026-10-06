@@ -34,7 +34,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CordiumHost } from '../src/index.mjs';
+import { CordiumHost, HOST_CALLER } from '../src/index.mjs';
+import { PLUGIN_ID_PATTERN } from '../src/internal.mjs';
 
 // ═══════════════════ ① 行为门禁：真身份来自宿主，不来自 payload ═══════════════════
 
@@ -120,3 +121,77 @@ test('★ 换一个调用方，归属必须跟着换（防止「写死成第一�
 
 // 「生产代码里不得从 payload 读取身份字段」是对上层应用全仓调用约定的源码扫描，属上层应用自己的仓库级门禁，
 //   不在内核测试里。
+
+// ═══════════ ② 宿主自己的身份：给「宿主自己干的」一条【诚实的路】 ═══════════
+//
+// 缺陷背景：`dispatchAction(callerPluginId, …)` 要求宿主**报一个插件 id**，而派发前会查
+//   `isCallerLive` —— 宿主自己没有插件身份，于是**只能借一个正在跑的插件**，
+//   审计日志里记下的便是那个**被借的**身份，不是真实发起方。
+// ⇒ 这与 `getService` / `getInternalService` 的分工**不对称**：那边有诚实的出口，这边没有。
+// ★ 标准名字是 **Confused Deputy（CWE-441）** —— 「没有充分保留请求的原始来源」。
+
+test('★★ 宿主可以【以自身身份】派发 —— 审计记的是宿主，不是被借的插件', async () => {
+  const host = new CordiumHost();
+  const lines = [];
+  host.registerPlugin(
+    { id: 'plugin.owner', version: '1.0.0', apiVersion: '1.0.0' },
+    {
+      async activate(ctx) {
+        ctx.registerAction('demo.act', {
+          handler: async (payload, meta) => { lines.push(meta.callerPluginId); return 'ok'; }
+        });
+      }
+    }
+  );
+  await host.boot();
+
+  await host.dispatchActionAsHost('demo.act', {});
+  assert.deepEqual(lines, [HOST_CALLER], '★ 宿主自己干的，归属就必须是宿主');
+  assert.notEqual(HOST_CALLER, 'plugin.owner', '宿主身份不得等于任何插件 id');
+});
+
+test('★★ 宿主身份【伪造不出来】—— 它落在插件 id 命名空间之外', () => {
+  assert.equal(PLUGIN_ID_PATTERN.test(HOST_CALLER), false,
+    '★ HOST_CALLER 若匹配插件 id 字符集，插件就能把自己的 id 起成它 ⇒ 归属又可自报');
+});
+
+test('★★ 宿主是信任根：不受 requiredPermission 约束（与 getInternalService 同一口径）', async () => {
+  const host = new CordiumHost();
+  host.declarePermissions(['perm.export']);   // ★ 权限名须由装配方登记
+  host.registerPlugin(
+    { id: 'plugin.owner', version: '1.0.0', apiVersion: '1.0.0' },
+    {
+      async activate(ctx) {
+        ctx.registerAction('demo.gated', {
+          requiredPermission: 'perm.export',
+          handler: async () => 'ok'
+        });
+      }
+    }
+  );
+  await host.boot();
+
+  assert.equal(await host.dispatchActionAsHost('demo.gated'), 'ok', '宿主不受权限门约束');
+
+  // ★★ 正向对照：同一个动作，一个【没有该权限】的插件调它必须被拒 ——
+  //    否则「宿主能过」什么也证明不了（权限门可能根本没生效）。
+  host.registerPlugin({ id: 'plugin.poor', version: '1.0.0', apiVersion: '1.0.0' }, { async activate() {} });
+  await host.activatePlugin('plugin.poor');
+  await assert.rejects(host.dispatchAction('plugin.poor', 'demo.gated'),
+    (e) => e.code === 'access_denied',
+    '★ 权限门对插件照旧生效（这是上一条的正向对照）');
+});
+
+test('★★ 判别性：宿主身份的「常驻」判定必须存在 —— 拿掉它宿主就派发不了', async () => {
+  // 宿主不是一个插件，`#plugins` 里查不到它 ⇒ 若 `isCallerLive` 没有 HOST_CALLER 分支，
+  //   本调用会以 `access_denied: Caller plugin '@host' is not active` 失败。
+  const host = new CordiumHost();
+  host.registerPlugin(
+    { id: 'plugin.owner', version: '1.0.0', apiVersion: '1.0.0' },
+    { async activate(ctx) { ctx.registerAction('demo.act', { handler: async () => 'ok' }); } }
+  );
+  await host.boot();
+
+  await assert.doesNotReject(host.dispatchActionAsHost('demo.act'),
+    '★ 宿主必须能派发；若这里变成 access_denied，说明 isCallerLive 的 HOST_CALLER 分支没了');
+});

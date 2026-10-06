@@ -213,6 +213,35 @@ export function isValidActivationPolicy(value) {
   return /** @type {readonly unknown[]} */ (ACTIVATION_POLICY_VALUES).includes(value);
 }
 
+/**
+ * `unresolvedDependencies[].reason` 的**取值集合**（诊断快照的稳定面字段）。
+ *
+ * ★ 为什么要导出它：快照里这个字段此前是**纯字面量**，消费方想知道「我认全了没有」
+ *   只能跨仓读实现或暴力探测 —— 两条路都不干净。同类的 `LifecycleState` / `PluginKind`
+ *   早就导出了，唯独它没有。
+ *
+ * ★ 导出之后**实现必须回改成本常量**（`host.mjs` 的产出点与比较点）。
+ *   否则导出物与实现各说各话 —— 那就是**第二真相源**，本仓栽过两次的坑。
+ *   `UNRESOLVED_REASON_VALUES` 由本对象**派生**（`Object.values`），不是另抄一份。
+ *
+ * ★ 四类的分工（详见 `host.mjs` 的产出点）：
+ *   · `missing` / `version_mismatch` —— 与 `boot()` 的拒绝**同源**；
+ *   · `cycle` / `not_running` —— **不会**让 `boot()` 抛错，回答的是「它为什么没起来」。
+ */
+export const UnresolvedReason = Object.freeze({
+  /** 依赖根本没登记 */
+  MISSING: 'missing',
+  /** 登记了，但版本范围不满足 */
+  VERSION_MISMATCH: 'version_mismatch',
+  /** 与这个依赖**互相**可达 ⇒ 拓扑排序必然失败 */
+  CYCLE: 'cycle',
+  /** 依赖在、版本也对，但**此刻它跑不起来**（等触发的懒插件 / 被停用 / 已失败 / 被上游的环挡住） */
+  NOT_RUNNING: 'not_running'
+});
+
+/** ★ 合法 reason 值集（由 `UnresolvedReason` 派生，不另抄） */
+export const UNRESOLVED_REASON_VALUES = Object.freeze(Object.values(UnresolvedReason));
+
 
 /**
  * ★★ Manifest 字段表（**两套 schema 共享的单一事实来源**）
@@ -630,6 +659,22 @@ export function isApiVersionCompatible(kernelApiVersion, pluginApiVersion) {
 
 /** 插件 id 字符集（与插件层 runtime.mjs 的 ID_PATTERN 同一规则） */
 export const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+
+/**
+ * 宿主（内核自身 / 外壳）的**调用方身份**。
+ *
+ * ★ 为什么需要它：`host.dispatchAction(callerPluginId, …)` 此前要求宿主**报一个插件 id**，
+ *   而派发前会查 `isCallerLive(callerPluginId)` —— 宿主自己没有插件身份，于是**只能借一个
+ *   正在跑的插件**。审计日志里记下的就是那个**被借的**身份，不是真实发起方。
+ *   这是第一原则①的同形：**归属判据一旦取自调用方可控的输入，它就只是一句自述，不是事实**。
+ *
+ * ★ 为什么这个值**伪造不出来**：它含 `@`，而 `PLUGIN_ID_PATTERN` 的字符集**不含 `@`** ——
+ *   任何合法插件 id 都不可能等于它。（插件也拿不到 `host` 对象：`ctx` 是闭包注入的。）
+ *
+ * ★ 语义：宿主是**信任根**，与 `getInternalService()` 同一口径 —— 不受 `requiredPermission`
+ *   约束。宿主本就持有插件表、能装卸插件，多这一项检查不增加任何实际约束，只会让审计失真。
+ */
+export const HOST_CALLER = '@host';
 
 /**
  * 内核运行时契约的**归一化 manifest 形状**（`validateManifest` 的产物）。

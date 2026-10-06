@@ -1,6 +1,6 @@
 # 插件开发指南
 
-本文是写 Cordium 插件所需的全部接口说明，按它写不需要读内核源码。示例均可直接运行（Node.js ≥ 22.13，ES Module）。可运行的完整示例在仓库的 [`examples/`](examples/) 目录。
+本文是写 Cordium 插件所需的全部接口说明，按它写不需要读内核源码。示例都按**可直接运行**写（Node.js ≥ 22.13，ES Module）：**manifest 示例有门禁逐条核对**（内核层与描述符层都必须收下），其余示例**未在 CI 里真跑** —— 照抄后若拿不准，以仓库 [`examples/`](examples/) 目录里的完整可运行版本为准。
 
 - [1. 插件长什么样](#1-插件长什么样)
 - [2. manifest](#2-manifest)
@@ -243,6 +243,8 @@ export async function activate(ctx) {
 
 动作是带权限守门和超时的命名调用，适合「命令」式的操作。
 
+**提供方** —— 一个插件登记动作：
+
 ```js
 export function activate(ctx) {
   ctx.registerAction('acme.export', {
@@ -253,8 +255,11 @@ export function activate(ctx) {
     }
   });
 }
+```
 
-// 另一个插件
+**调用方** —— 另一个插件。它得**先在 manifest 里申请这个权限**（在 `permissions` 数组里写上 `'perm.export'`，权限名必须由装配方 `declarePermissions` 登记过），否则派发会被 `access_denied` 挡下：
+
+```js
 const result = await ctx.dispatchAction('acme.export', { rows: [1, 2, 3] });
 ```
 
@@ -485,6 +490,8 @@ await host.boot();
 - 加载清单的 `module` 必须是绝对路径、`file:` / `data:` URL 或 `URL` 对象。清单里任一条出错，一条都不登记。
 - 慢插件的时限在清单或 `registerPlugin(manifest, entry, { lifecycleTimeoutMs })` 里放宽；写在插件自己的 manifest 里无效。
 - 常用宿主方法：`registerPlugin` / `unregisterPlugin` / `replacePlugin` / `boot` / `activatePlugin` / `deactivatePlugin` / `getInternalService` / `getUIContributions(type)` / `getDiagnostics()`。
+- ★ **宿主自己要派发动作时，用 `host.dispatchActionAsHost(action, payload)`** —— 它以**宿主自己的身份**派发（`HOST_CALLER`），不受 `requiredPermission` 约束（宿主是信任根，与 `getInternalService()` 同一口径）。
+  ⚠️ 别为了「过权限门」去借一个插件的 id 调 `dispatchAction(pluginId, …)` —— 那样**审计日志会记成那个插件干的**，不是宿主。确实需要「代表某个插件」时，那是**委派**，要能同时说清「谁在做」和「代表谁」。
 - 插件放在哪个目录都可以，清单里写绝对路径即可；以脚本自身为基准时用 `new URL('./plugins/x.mjs', import.meta.url)`。
 
 ### 读诊断快照：哪些字段可以依赖
@@ -502,13 +509,13 @@ await host.boot();
 **消费方的义务**（读快照的一方）：
 
 ```js
-import { DIAGNOSTICS_CONTRACT } from '@cordium/kernel';
+import { DIAGNOSTICS_CONTRACT, LifecycleState } from '@cordium/kernel';
 
 const diag = host.getDiagnostics();
 if (diag.schemaVersion !== DIAGNOSTICS_CONTRACT.schemaVersion) { /* 按契约版本分支处理 */ }
 
 // ✅ 只读稳定面点名的字段；**忽略未知字段**
-const active = diag.plugins.filter(p => p.state === 'active').map(p => p.id);
+const active = diag.plugins.filter(p => p.state === LifecycleState.ACTIVE).map(p => p.id);
 
 // ⚠️ 不稳定面：能用，但内核随时会改它（文本、条数、内部形状）
 const tail = diag.recentLogs.slice(-5).map(l => l.message);
