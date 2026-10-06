@@ -858,23 +858,54 @@ export class CordiumHost {
   }
 
   /**
+   * ★★ 必需依赖里**不满足**的那些 —— 纯查询：不改状态、不抛错。
+   *
+   * ── 为什么必须有 ────────────────────────────────────────────────────
+   *   `boot()` 遇到缺失依赖会抛 `missing_dependency`（响亮，这是对的），但**回滚之后**
+   *   诊断快照里只剩 `state: 'discovered'` + `error: null` ——
+   *   运维者**事后完全看不出「这个插件为什么没起来」**（实测）。
+   *   ⇒ 把「等依赖」表达成**诊断字段**，而不是新增一个状态枚举
+   *     （对照 OSGi：它也没有 `waiting_dependencies` 态，「等依赖」= 尚未进入 `RESOLVED`）。
+   *
+   * ★ 只收**必需**依赖（`manifest.dependencies`）：可选依赖按「缺席」设计，
+   *   缺席是它的正常形态，报出来是噪音。
+   *
+   * ★★ 与 `#orderingEdges` **共用同一份判定**（那个抛错，这个返回清单）。
+   *   两份各写一遍必漂 —— 而漂的表现是「诊断说没问题、boot 却拒绝」，最难查的那种。
+   *   ⚠️ 只报 `{ id, reason }`，**不带版本号**：期望范围在 `dependencies` 里、
+   *     实际版本在对方的 `version` 里，快照里都已有 ⇒ 带上就是造第二真相源。
+   *
+   * @returns {{ id: string, reason: 'missing' | 'version_mismatch' }[]}
+   */
+  #unresolvedDependencies(manifest) {
+    const out = [];
+    for (const [depId, expectedRange] of Object.entries(manifest.dependencies || {})) {
+      const target = this.#plugins.get(depId);
+      if (!target) { out.push({ id: depId, reason: 'missing' }); continue; }
+      if (!satisfiesSemVer(target.manifest.version, expectedRange)) {
+        out.push({ id: depId, reason: 'version_mismatch' });
+      }
+    }
+    return out;
+  }
+
+  /**
    * 一个插件参与排序的依赖边（被依赖方 id 列表）。必选依赖缺失 / 版本不符 ⇒ 抛错。
    * ★ 纯查询：只抛错，不改任何记录的 state（此前这里会把插件标成 FAILED ——
    *   一个看起来只读的公开方法带副作用，诊断里会凭空出现 failed）。
    */
   #orderingEdges(id, manifest) {
-    const edges = [];
-    for (const [depId, expectedRange] of Object.entries(manifest.dependencies || {})) {
-      const target = this.#plugins.get(depId);
-      if (!target) {
+    const unresolved = this.#unresolvedDependencies(manifest);
+    if (unresolved.length > 0) {
+      // ★ 报文与错误码必须与拆分前【逐字相同】—— 既有调用方按它们断言。
+      const { id: depId, reason } = unresolved[0];
+      if (reason === 'missing') {
         throw new CordiumError(ErrorCode.MISSING_DEPENDENCY, `Missing dependency '${depId}' required by '${id}'`);
       }
-      const actualVersion = target.manifest.version;
-      if (!satisfiesSemVer(actualVersion, expectedRange)) {
-        throw new CordiumError(ErrorCode.DEPENDENCY_VERSION_MISMATCH, `Version mismatch for dependency '${depId}': expected ${expectedRange}, got ${actualVersion}`);
-      }
-      edges.push(depId);
+      throw new CordiumError(ErrorCode.DEPENDENCY_VERSION_MISMATCH,
+        `Version mismatch for dependency '${depId}': expected ${manifest.dependencies[depId]}, got ${this.#plugins.get(depId).manifest.version}`);
     }
+    const edges = Object.keys(manifest.dependencies || {});
     // ★ 可选依赖：缺失 ⇒ 跳过，不报错；版本不符 ⇒ 跳过拓扑依赖（运行期视为不可用，
     //   取服务时返回 optional_unavailable）；存在且版本匹配 ⇒ 参与拓扑排序，
     //   保证「提供者先激活」的顺序仍然成立。
@@ -2412,7 +2443,9 @@ export class CordiumHost {
         ...manifestSnapshot(p.manifest),
         state: p.state,
         error: p.state === LifecycleState.FAILED ? describeError(p.error) : null,
-        activationMs: p.activationMs
+        activationMs: p.activationMs,
+        // ★ 依赖没齐 ⇒「它为什么没起来」只能靠这一项回答（见 #unresolvedDependencies 的注释）
+        unresolvedDependencies: this.#unresolvedDependencies(p.manifest)
       })),
       services: Array.from(this.#serviceContracts.entries()).map(([name, s]) => ({
         name,

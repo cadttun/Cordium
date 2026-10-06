@@ -5,7 +5,7 @@ import { CordiumHost, LifecycleState } from '../src/index.mjs';
 // ★ 诊断快照的字段契约以 MANIFEST_FIELD_TABLE.kernel 为**唯一真相源**（见下方门禁说明）。
 //   ⚠️ 本包自己的测试走**相对路径**：`@cordium/kernel/internal` 只许 plugins/src 引用
 //      （boundary.test.mjs 守这条边界 —— 它当场抓住了我最初写的包名形式）。
-import { MANIFEST_FIELD_TABLE } from '../src/types.mjs';
+import { MANIFEST_FIELD_TABLE, DIAGNOSTICS_CONTRACT } from '../src/types.mjs';
 
 /**
  * 测试专用：登记本文件用到的临时服务契约。
@@ -406,7 +406,13 @@ test('★★ 诊断快照的字段必须【由 manifest 契约派生】—— �
   //        不会有任何提示。
   //    ⇒ 这条是 ① 的**反向对照**：① 防漏，② 防多。
   //      只写「不漏」是单向断言 —— 实现把整个内部 record 透传出去也照样能过。
-  const RUNTIME_FIELDS = ['state', 'error', 'activationMs'];
+  //  ★★ 运行时字段清单**从契约表派生**，不手抄。
+  //    此前这里是 `['state', 'error', 'activationMs']` —— 与
+  //    `DIAGNOSTICS_CONTRACT.stable['plugins[]']` 的尾巴是**同一份知识写了两遍**。
+  //    两份清单的漂移是**双向**的：漏了 ⇒ 新字段被当成"凭空多出"而误红；
+  //    多了 ⇒ 某个已删字段仍被"登记在册"而放行。⇒ 取真相源，去掉这一份。
+  const RUNTIME_FIELDS = DIAGNOSTICS_CONTRACT.stable['plugins[]']
+    .filter((k) => !MANIFEST_FIELD_TABLE.kernel.includes(k));
   const extra = Object.keys(entry).filter(
     (k) => !MANIFEST_FIELD_TABLE.kernel.includes(k) && !RUNTIME_FIELDS.includes(k)
   );

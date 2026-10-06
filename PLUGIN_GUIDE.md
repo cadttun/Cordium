@@ -63,7 +63,7 @@ export function deactivate() {
 | `optionalDependencies` | | object | 可选依赖，写法同上。缺席时不影响本插件激活 |
 | `permissions` | | string[] | 本插件申请的权限名。必须是装配方登记过的名字 |
 | `kind` | | `'core'` \| `'business'` | 插件类别，默认 `business`。只是描述，「core 能否被用户停用」由应用决定 |
-| `activation` | | `'eager'` \| `'lazy'` | 默认 `eager`（`boot()` 时激活）。写 `'lazy'` 则登记后停在 `ready`，等**被显式激活**或**首次派发它登记的动作**时才激活；它的必需依赖会被连带激活 |
+| `activation` | | `'eager'` \| `'lazy'` | 默认 `eager`（`boot()` 时激活）。写 `'lazy'` 则登记后停在 `ready`，等**被显式激活**或**首次派发它登记的动作**时才激活；它的必需依赖会被**连带激活**（递归，先深后己） |
 | `displayName` / `description` | | string | 展示用 |
 | `name` | | string | 插件目录 / 市场用的名称（见下一小节）。内核不保留，登记时丢弃并记一条 `info` 级诊断 |
 | `hotReload` | | boolean | 默认 `false`。写 `true` 表示本插件可以在进程内热重载：它只在 `ctx` 上登记东西，或自己开的外部资源都在 `deactivate` / `ctx.scope` 里释放干净。开发期重载器只重载写了它的插件，见 [§10](#开发期热重载) |
@@ -71,6 +71,18 @@ export function deactivate() {
 - 不在上表的字段会被丢弃，并记一条诊断（`host.getDiagnostics().manifestDiagnostics`）。**分级按整条诊断判定**：这条 manifest 里只要有**两层都不认**的字段（多半是拼写错误），整条记 `warn`，同一条里被列出的描述符字段（如 `name`、`config`）也一并算在该条的 `fields` 里；一个都不认的字段也没有时，才记 `info`。
 - 插件拿到的 `ctx.manifest` 是规范化后的**冻结副本**，改它不会影响宿主，也不能借此提权。
 - 依赖范围语法与 npm 相同（`^1.2.0`、`~1.2`、`>=1 <2`、`1.x`、`*` 等）；`latest` 之类的 tag 不是合法范围。
+
+**哪些插件不该写 `'lazy'`**：写 `'lazy'` 的前提是「**没人调用它之前，它不做任何事也不要紧**」。所以：
+
+- **被广泛依赖的基础设施**（日志 / 存储 / 配置等）宜 `eager` —— 它们通常是被别的东西顺带拉起来的，
+  自己再懒只是把激活推迟几微秒，却让「依赖链上哪一环还没起来」多一层不确定性。
+- **需要在外壳渲染前就位的东西**宜 `eager` —— 例如要往 UI 里登记贡献的插件：
+  懒激活的触发点只有「显式激活」与「派发同名动作」两个，**外壳画界面不属于任何一个**
+  ⇒ 用户会看到一个缺了这块的界面，而且不报错。
+- **纯响应式的业务插件**（只有被调用时才干活）才适合 `'lazy'`。
+
+★ 这三条是**本内核自己的约定**，不是外部规范 —— 外部只有正向指引（如 VS Code 建议慎用 `*`），
+没有「哪些扩展应当 eager」的官方清单。
 
 ### 插件目录 / 市场用的 manifest
 
@@ -148,6 +160,16 @@ export function activate(ctx) {
 2. 服务名写在自己 manifest 的 `provides` 里（否则 `provide_not_declared`）；
 3. 契约若声明了 `methods`，实现必须有全部这些方法（否则 `invalid_implementation`）；
 4. 同一作用域里只能有一个提供者，别的插件已提供则 `provider_conflict`。同一插件重复提供会替换自己的实现；**提供者一经停用、注销或重新激活，此前发出去的所有句柄一律失效**（即使服务名与实现看起来没变），消费者必须重新 `getService`。
+
+**为什么第 2 条（必须先声明）要卡这么严**：换来的是**一份可静态审计的 manifest** ——
+「这个插件会提供什么」在**不运行任何代码**的前提下就能读出来（拼写错误在启动那一刻即被发现，
+而不是等某个动作调不通），也是权限推导与依赖分析的基础。
+
+代价是**放弃了「运行时动态提供服务」的灵活性**：插件不能在 `activate` 里临时决定多提供一个服务名。
+★ 若将来真需要那种形态，这条应当放宽为「**未声明则告警**」而不是现在的直接拒绝 —— 但现在不需要，
+所以保持严格。（同一模式的外部先例：Grafana 的 `extensions.exposedComponents` 官方原文
+「Components that are **not listed here won't work**」；反例是 VS Code 的 `registerCommand`
+与 OSGi 的 `registerService`，两家都**不校验**是否预先声明。）
 
 ### 取用
 
@@ -432,6 +454,11 @@ await host.boot();
 ```
 
 - **服务契约和权限名只能由装配方定义**，插件不能自造。契约里的 `requiredPermission` 会自动登记为权限名。
+- ★ **服务契约不带版本号**：同一个服务名**同时只允许一个不兼容版本**。真需要并存两个不兼容版本时，
+  做法是**拆成两个服务名**（如 `kv` / `kv2`），**不是**给契约加 `version` 字段 ——
+  后者会引入「解析哪个版本」的匹配规则与过渡期管理，而拆名字零成本。
+  （同一目的的外部实现：Grafana 的扩展点用 `/v1` 版本后缀，破坏性变更时升 `/v2` 并让两版并存一个过渡期。
+  ★ 那也是「同一个名字承载两个版本」，与本仓「拆成两个名字」是同一目的的两种做法。）
 - 加载清单的 `module` 必须是绝对路径、`file:` / `data:` URL 或 `URL` 对象。清单里任一条出错，一条都不登记。
 - 慢插件的时限在清单或 `registerPlugin(manifest, entry, { lifecycleTimeoutMs })` 里放宽；写在插件自己的 manifest 里无效。
 - 常用宿主方法：`registerPlugin` / `unregisterPlugin` / `replacePlugin` / `boot` / `activatePlugin` / `deactivatePlugin` / `getInternalService` / `getUIContributions(type)` / `getDiagnostics()`。

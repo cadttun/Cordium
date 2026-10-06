@@ -16,6 +16,7 @@
 - `ctx.watchPluginState(listener)`：订阅任意插件的状态变更（含注册与移出、中间态与终态）。此前装配层要拿到这个时机只能包装宿主的注册方法 —— 那是在改别人的对象，内核把方法改成不可写后会静默失效。
 - `@cordium/plugins` / `@cordium/kernel` 新导出：`ActivationPolicy` / `ACTIVATION_POLICY_VALUES` / `LogLevel` / `LOG_LEVEL_VALUES`。
 - `host.declareUIContributionTypes(types)`：声明 UI 贡献 `type` 的合法值集（与 `declarePermissions` 同口径）。不调 ⇒ 不校验。
+- 诊断快照的插件条目新增 `unresolvedDependencies: [{ id, reason }]`（`reason` 为 `'missing'` 或 `'version_mismatch'`）：**必需**依赖没满足时，此前快照只剩 `state: 'discovered'` + `error: null` —— 运维者**事后完全看不出「这个插件为什么没起来」**（`boot()` 当时会抛 `missing_dependency`，但回滚之后线索就没了）。只报 `{ id, reason }`、不带版本号：期望范围在 `dependencies` 里、实际版本在对方的 `version` 里，快照里都已经有了。可选依赖缺席按设计放行，不进这一项。
 - `DIAGNOSTICS_CONTRACT`：诊断快照的**稳定性契约**（`@cordium/kernel` 的导出）。按**路径**逐层分区 —— `stable` 点名「不删 / 不改名 / 不改类型」的字段（枚举值可增不可改），`unstable` 显式列出**不承诺**的那些。快照随附 `schemaVersion`（结构版本；发生**不兼容**改动时递增，增字段不算）。
   （**未点名的路径/键一律不承诺** —— 不是「大概稳定」，是明确不承诺。消费方契约：**只读稳定面、忽略未知字段**。依据：allowlist 形态，与 k6 的措辞同一口径；分两档的形态取自 Kubernetes 指标（Alpha「no stability guarantees」/ Stable）与 OpenTelemetry（`/incubating` 子入口）。）
 

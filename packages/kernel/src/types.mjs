@@ -337,7 +337,7 @@ export const DIAGNOSTICS_CONTRACT = Object.freeze({
     '': Object.freeze(['hostVersion', 'booted', 'totalPlugins', 'actionsCount', 'uiContributionsCount', 'plugins', 'services']),
     // ★★ 记录字段 = manifest 投影 + 生命周期。**从契约表派生，不手列** ——
     //    往 manifest 加字段 ⇒ 投影自动带出 ⇒ 自动进入稳定面。手列就是「漏列即静默丢弃」那个坑。
-    'plugins[]': Object.freeze([...MANIFEST_FIELD_TABLE.kernel, 'state', 'error', 'activationMs']),
+    'plugins[]': Object.freeze([...MANIFEST_FIELD_TABLE.kernel, 'state', 'error', 'activationMs', 'unresolvedDependencies']),
     // ⚠️ 只收「契约本身 + 提供者归属」；`scopedProviders` 明细属不稳定（排障用，随作用域机制演进）。
     'services[]': Object.freeze(['name', 'access', 'requiredPermission', 'methods', 'activeProvider', 'providerCount'])
   }),
