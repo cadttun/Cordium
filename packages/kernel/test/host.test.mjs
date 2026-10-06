@@ -281,8 +281,9 @@ test('★ 公开面门禁：实例字段与原型方法必须与清单一致（�
   assert.equal(methods.filter(k => k.startsWith('__')).length, 0, '不得出现 __test_* 之类的测试专用方法');
   assert.deepEqual(methods.sort(), [
     'activatePlugin', 'boot', 'deactivatePlugin', 'declarePermissions', 'declareServiceContract',
-    'declareServiceContracts', 'dispatchAction', 'getDiagnostics', 'getInternalService', 'getService',
-    'getUIContributions', 'log', 'recordManifestDiagnostic', 'registerPlugin', 'replacePlugin', 'unregisterPlugin'
+    'declareServiceContracts', 'declareUIContributionTypes', 'dispatchAction', 'getDiagnostics',
+    'getInternalService', 'getService', 'getUIContributions',
+    'log', 'recordManifestDiagnostic', 'registerPlugin', 'replacePlugin', 'unregisterPlugin'
   ]);
 });
 
@@ -294,7 +295,7 @@ test('★ 公开面门禁：插件 ctx 成员清单（定稿；增删改名 = �
   const expected = [
     'bail', 'dispatchAction', 'emit', 'getService', 'log', 'manifest', 'on', 'once', 'parallel',
     'pluginId', 'privateScope', 'provideService', 'registerAction', 'registerUIContribution',
-    'scope', 'scoped', 'serial', 'watchService', 'waterfall'
+    'scope', 'scoped', 'serial', 'watchPluginState', 'watchService', 'waterfall'
   ];
   assert.deepEqual(Object.keys(ctx).sort(), expected);
   assert.deepEqual(Object.keys(ctx.scoped('s')).sort(), expected, 'scoped() 派生的 ctx 必须同形');
@@ -324,6 +325,7 @@ test('★ 公开面门禁：ctx 各方法的同步 / 异步形状钉死（调用
       shape.provideService = kind(ctx.provideService('service.s', { f() {} }));
       shape.getService = kind(ctx.getService('service.s'));
       shape.watchService = kind(ctx.watchService('service.s', () => {}));
+      shape.watchPluginState = kind(ctx.watchPluginState(() => {}));
       shape.on = kind(ctx.on('x', () => {}));
       shape.once = kind(ctx.once('y', () => {}));
       shape.emit = kind(ctx.emit('e'));

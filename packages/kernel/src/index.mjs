@@ -15,8 +15,15 @@ export {
   SERVICE_ACCESS_VALUES,
   PluginKind,
   PLUGIN_KIND_VALUES,
+  ActivationPolicy,
+  ACTIVATION_POLICY_VALUES,
+  LogLevel,
+  LOG_LEVEL_VALUES,
   KERNEL_API_VERSION,
-  validateManifest
+  validateManifest,
+  // ★ 诊断快照的稳定性契约 —— 消费方**必须**能读到它，否则「哪些字段可信」只能靠人传。
+  //   它不是内部实现细节，而正是对外承诺本身（allowlist 形态：点名即承诺）。
+  DIAGNOSTICS_CONTRACT
 } from './types.mjs';
 // 经 semver-api 转出 —— 非法输入抛带码的 CordiumError，不是裸 TypeError
 export { isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';

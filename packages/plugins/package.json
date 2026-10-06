@@ -1,6 +1,6 @@
 {
   "name": "@cordium/plugins",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "Cordium 插件机制：加载器、执行隔离、manifest 校验、依赖解析、目录索引（不含任何具体业务插件）",
   "license": "MIT",
@@ -18,7 +18,7 @@
     "src"
   ],
   "dependencies": {
-    "@cordium/kernel": "0.2.2"
+    "@cordium/kernel": "0.3.0"
   },
   "exports": {
     "./runtime": "./src/runtime.mjs",

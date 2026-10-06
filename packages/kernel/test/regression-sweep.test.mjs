@@ -239,14 +239,26 @@ test('★ 插件层 validateManifest 拒绝非字符串 id / version', () => {
   assert.throws(() => validatePluginManifest({ id: 'abc', name: 'x', version: ['1.0.0'] }), hasCode('invalid_manifest'));
 });
 
-test('★ 内核层 validateManifest 与插件层对齐：id 字符集 / SemVer 版本 / apiVersion 主版本', () => {
+test('★ 内核层 validateManifest 与插件层对齐：id 字符集 / SemVer 版本 / apiVersion caret 语义', () => {
   const base = { id: 'ok.plugin', version: '1.0.0', apiVersion: '1.0.0' };
   assert.doesNotThrow(() => validateManifest(base));
   assert.throws(() => validateManifest({ ...base, id: 'A B' }), hasCode('invalid_manifest'));
   assert.throws(() => validateManifest({ ...base, id: '__proto__' }), hasCode('invalid_manifest'));
   assert.throws(() => validateManifest({ ...base, version: 'banana' }), hasCode('invalid_manifest'));
   assert.throws(() => validateManifest({ ...base, apiVersion: '9.0.0' }), hasCode('incompatible_api_version'));
-  assert.doesNotThrow(() => validateManifest({ ...base, apiVersion: '1.4.2' }), '同主版本兼容');
+
+  // ★★ 语义已从「只比 major」改为「`apiVersion` 的 caret 范围」（= 「至少需要哪个 API 版本」）。
+  //   ⚠️ 本行此前断言 `'1.4.2'` 与 1.0.0 内核兼容 —— 那正是**错的**：
+  //     插件的意思是「我需要 1.4.2 起的 API」，而内核只有 1.0.0 ⇒ 应当拒绝。
+  //     旧实现只比 major，于是 `'1.99.0'` 也能静默加载（实测）。
+  assert.throws(() => validateManifest({ ...base, apiVersion: '1.4.2' }), hasCode('incompatible_api_version'),
+    '要求比内核更新的 API ⇒ 必须拒绝（此前静默放行）');
+  // ★ 正向对照：与内核版本相等要放行（否则上面那条可能只是「什么都不让过」）
+  assert.doesNotThrow(() => validateManifest({ ...base, apiVersion: '1.0.0' }), '与内核同版本 ⇒ 放行（现有 296 处 manifest 全部照旧有效）');
+  // ⚠️ `'0.9.0'` 必须【拒绝】—— 主版本不同意味着 API 有过破坏性变更（SemVer §4：0.y.z 是初始开发期，
+  //    1.0.0 才定义公开 API）⇒ 「要求 0.9.0」与「1.0.0 内核」不兼容。这也是改动**之前**的行为。
+  assert.throws(() => validateManifest({ ...base, apiVersion: '0.9.0' }), hasCode('incompatible_api_version'), '主版本不同 ⇒ 拒绝');
+  assert.throws(() => validateManifest({ ...base, apiVersion: '2.0.0' }), hasCode('incompatible_api_version'), '高主版本 ⇒ 拒绝');
 });
 
 test('依赖名 __proto__ 不得被静默吞掉（成为普通键，随后按缺失依赖报错）', () => {

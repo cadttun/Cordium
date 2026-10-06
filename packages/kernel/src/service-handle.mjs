@@ -33,6 +33,43 @@ export function isTerminated(state) {
 }
 
 /**
+ * ★★ 插件记录是否处于「存活」态（可调用、可被级联停用、算作活着的依赖方）。
+ *
+ * ★ 为什么抽出来：这个判定此前以 `state === ACTIVE || state === ACTIVATING` 的形状
+ *   **散落在 5 处**（调用方鉴权 / 派发鉴权 / 级联停用 / 停用时的依赖方扫描 / action 注册）。
+ *   按需激活引入第三种存活态（`ready`）后，逐处修改必然漏 —— 而漏的表现是
+ *   **某一处不认 `ready` 的插件**（例如级联停用找不到它，于是留下一个依赖已下线的活插件）。
+ *   ⇒ 一处判定，五处共用。
+ *
+ * ⚠️ `TERMINATED`（`disabled` / `failed`）与「等待触发」（`discovered`）都不是存活态：
+ *   前者是终态；后者还没跑过依赖检查，不算「活着」。
+ *
+ * @param {string} state
+ * @returns {boolean}
+ */
+export function isLiveState(state) {
+  return state === LifecycleState.ACTIVE
+    || state === LifecycleState.ACTIVATING
+    || state === LifecycleState.READY;
+}
+
+/**
+ * ★ 该插件是否**已跑完** `activate()`（即它的能力都已登记、可被别人取用）。
+ *
+ * ⚠️ 与 `isLiveState` 的差别是刻意的，不是笔误：
+ *   `ready` 的插件算「活着」（要能级联停它、要能被当作依赖方看待），
+ *   但它的 `activate()` **还没跑**，所以任何「依赖必须已就绪」的判定**不得**接受 `ready` ——
+ *   否则一个 `ready` 的提供者会被当成已上线，消费者取服务时才炸。
+ *   （服务取用侧的 `#resolveProvider` 本就按「注册表里有没有实现」判，天然正确；这里管的是状态判定。）
+ *
+ * @param {string} state
+ * @returns {boolean}
+ */
+export function hasRunActivate(state) {
+  return state === LifecycleState.ACTIVE || state === LifecycleState.ACTIVATING;
+}
+
+/**
  * 把服务实现包一层薄壳：每次方法调用先跑一次失效检查，再以【原对象】为 this 调用。
  *
  * ★ 为什么 this 必须绑定原对象：

@@ -1,9 +1,11 @@
 // Strict manifest validation (descriptor layer) for plugin catalogs and markets; never executes plugin code.
 // ★ 统一走 internal.mjs（不直连内核实现文件，也不走会牵出 host.mjs 的 index.mjs）
 import {
-  normalizeStringList, normalizeDependencyMap, isValidSemVer,
+  normalizeStringList, normalizeDependencyMap, isValidSemVer, compareSemVer,
   // ★ 类别常量与成员校验 —— 与内核层【共用同一份定义】（同 normalizeStringList 的口径）
   PluginKind, PLUGIN_KIND_VALUES, isValidPluginKind, PLUGIN_ID_PATTERN,
+  // ★ 激活时机常量 + 成员校验（与内核层共用同一份定义）
+  ActivationPolicy, ACTIVATION_POLICY_VALUES, isValidActivationPolicy,
   // ★ 两层共用唯一错误类 + 码表（原 PluginError 已并入）
   CordiumError, ErrorCode,
   // ★ 丢字段诊断与内核同一判定（path = 'plugin'）
@@ -82,9 +84,8 @@ class ManifestIssues {
   }
 }
 
-function clone(value) {
-  return structuredClone(value);
-}
+// `clone` helper 已随 `config` 字段一并删除 —— 它此前只为克隆 manifest.config 而存在
+//（删除死字段后它成了无人调用的死函数，由 lint 的 no-unused-vars 抓出）。
 
 /**
  * 版本格式判定。★ 内核 `isValidSemVer` 是**唯一**判定（与内核层 validateManifest 同一实现）——
@@ -140,12 +141,23 @@ export function validatePluginManifest(input, options) {
   // 版本判定：**各自独立**收集 —— 这样 version 与 apiVersion 的问题能同时报出，
   // 而不是「先修一个再跑一遍才知道下一个」。
   if (typeof m.version === 'string') parseVersionBase(m.version, 'version', 'plugin version', issues);
-  const requiredMajor = (typeof m.apiVersion === 'string' ? m.apiVersion : apiVersion);
-  if (parseVersionBase(requiredMajor, 'apiVersion', 'plugin apiVersion', issues) !== null && issues.ok('apiVersion')) {
-    const hostMajor = parseVersionBase(apiVersion, 'host apiVersion', 'host apiVersion', issues);
-    const reqMajor = requiredMajor.split('-')[0].split('.')[0];
-    if (hostMajor !== null && reqMajor !== String(hostMajor[0])) {
-      issues.add('apiVersion', 'plugin api version is incompatible');
+  // ★★ 语义与内核层【逐字对齐】：`apiVersion` = 「**至少需要**哪个 API 版本」。
+  //   ⚠️ 此前本层只比 major，与内核同款漏检（`'1.99.0'` 在内核 1.0.0 上静默放行）。
+  //   两层必须同一判定，否则「内核拒、描述符层放行」（或反过来）会按读哪一层给出不同结论。
+  //   ★ 向后兼容：现有 manifest 写 `'1.0.0'` 照旧放行，零迁移。
+  //   ⚠️ 不用 caret 表达式：它在 **0.x** 上是 patch-only 语义（`^0.9.0` = `>=0.9.0 <0.10.0`），
+  //      会把「要求低于内核」的插件误拒 —— 实测 0.9.0 在 1.0.0 内核上被它挡下。
+  //   ★ 比较一律走 `compareSemVer`（本仓 semver 的唯一实现，见下方注释），不手写数值比较。
+  const requiredApi = (typeof m.apiVersion === 'string' ? m.apiVersion : apiVersion);
+  if (parseVersionBase(requiredApi, 'apiVersion', 'plugin apiVersion', issues) !== null && issues.ok('apiVersion')) {
+    // 先单独验 host 侧格式（它不该出错，但出错要能看见）
+    if (parseVersionBase(apiVersion, 'host apiVersion', 'host apiVersion', issues) !== null) {
+      const sameMajor = compareSemVer(
+        `${requiredApi.split('.')[0]}.0.0`, `${apiVersion.split('.')[0]}.0.0`) === 0;
+      const kernelMeetsRequirement = compareSemVer(apiVersion, requiredApi) >= 0;
+      if (!sameMajor || !kernelMeetsRequirement) {
+        issues.add('apiVersion', 'plugin api version is incompatible');
+      }
     }
   }
   // ★ 类别成员校验 —— 拼错值（`'Core'`）若静默落成 business，
@@ -153,6 +165,12 @@ export function validatePluginManifest(input, options) {
   //   ⚠️ 只在【显式传值】时校验：缺省 ⇒ 走下面的默认值，不报错。
   if (!(m.kind === undefined || m.kind === null || isValidPluginKind(m.kind))) {
     issues.add('kind', `plugin kind is invalid: ${String(m.kind)} (expected one of: ${PLUGIN_KIND_VALUES.join(', ')})`);
+  }
+  // ★ 激活时机成员校验 —— 与内核层同一口径（拼错值若静默落成 eager，
+  //   表现是「作者以为按需、实际启动即跑」，且零报错）。
+  if (!(m.activation === undefined || m.activation === null || isValidActivationPolicy(m.activation))) {
+    issues.add('activation',
+      `plugin activation is invalid: ${String(m.activation)} (expected one of: ${ACTIVATION_POLICY_VALUES.join(', ')})`);
   }
   // ★★ 严格性门（**本层特有，刻意保留**）：列表类字段必须是数组、且不得含空串/重复项。
   //    真正的**规范化**（裁剪空白 / 去重 / 依赖映射归一）已抽到内核层共享实现 ——
@@ -174,11 +192,14 @@ export function validatePluginManifest(input, options) {
   // ★ 类型错误报 invalid_manifest —— 此前宽容退化为 `{}` / `'*'`，
   //   版本门禁的输入错了却 fail-open。（旧的宽容是实现遗留，不是设计决定；
   //   这里是有意的行为变更。）
-  // ★ config 必须是普通对象（此前数组原样透传）。缺省 / null ⇒ {}。
-  if (!(m.config === undefined || m.config === null
-    || (typeof m.config === 'object' && !Array.isArray(m.config)))) {
-    issues.add('config', 'plugin config must be an object');
-  }
+  //
+  // ★★ 已删除 `config` 字段（连同它的校验与克隆产出）。
+  //   它此前被校验、被深克隆，却**零读取路径**（内核字段表也不认它）——
+  //   插件作者把默认配置写进 manifest.config，运行时永远拿到 `{}`。
+  //   联网对标：VS Code / OSGi / cordis / OpenClaw 无一家在清单里放「裸默认配置对象」，
+  //   主流是「schema + 用户覆盖 + 合并」。留一个永不生效的字段会误导未来的实现。
+  //   ⚠️ **加载清单的 `entry.config`（loadPlugins 的 `config:`）不受影响** —— 那才是生效的那个。
+  //   现在 manifest 里仍写 `config` 会被 diffManifestFields 报成 unknownFields ⇒ warn（响亮可见）。
 
   // ★ 严格性门的【归一化结果】在这里就取出来用，不再在下面重算一遍 ——
   //   重算会绕开这道门（曾误改成 `normalizeStringList(m.provides || [])`，
@@ -198,10 +219,11 @@ export function validatePluginManifest(input, options) {
     provides,
     permissions,
     dependencies: normalizeDependencyMap(m.dependencies, { pluginId: m.id }),
-    config: m.config && typeof m.config === 'object' ? clone(m.config) : {},
     // ★ 缺省 ⇒ business（与内核层逐字一致；两层语义必须对齐，否则
     //   「内核认为是 core、插件层认为是 business」会造成按哪一层读结果就不同）
-    kind: m.kind || PluginKind.BUSINESS
+    kind: m.kind || PluginKind.BUSINESS,
+    // ★ 激活时机（与内核层同一缺省；两层语义必须对齐）
+    activation: m.activation || ActivationPolicy.EAGER
   };
 }
 

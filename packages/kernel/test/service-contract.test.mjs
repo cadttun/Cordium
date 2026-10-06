@@ -112,7 +112,12 @@ test('共享字段表存在且两层 schema 都有声明', () => {
   assert.ok(Array.isArray(MANIFEST_FIELD_TABLE.kernel), '内核层字段表必须存在');
   assert.ok(Array.isArray(MANIFEST_FIELD_TABLE.plugin), '插件层字段表必须存在');
   assert.ok(MANIFEST_FIELD_TABLE.kernel.includes('optionalDependencies'), '内核层必须承认 optionalDependencies');
-  assert.ok(MANIFEST_FIELD_TABLE.plugin.includes('config'), '插件层必须承认 config');
+  assert.ok(MANIFEST_FIELD_TABLE.kernel.includes('activation'), '内核层必须承认 activation');
+  assert.ok(MANIFEST_FIELD_TABLE.plugin.includes('activation'), '插件层必须承认 activation');
+  // ★ 反例：`config` 已从两层删除（死字段：校验了、克隆了、零读取路径）
+  //   —— 若有人把它加回来，这里变红。写 manifest.config 会被报成 unknownFields（warn），这是预期的。
+  assert.equal(MANIFEST_FIELD_TABLE.kernel.includes('config'), false, 'config 是死字段，不得重回内核层字段表');
+  assert.equal(MANIFEST_FIELD_TABLE.plugin.includes('config'), false, 'config 是死字段，不得重回插件层字段表');
 });
 
 test('diffManifestFields 只报「输入有、输出没有」的字段', () => {

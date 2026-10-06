@@ -9,11 +9,18 @@ import { describeError } from './host-util.mjs';
 
 /**
  * 插件生命周期状态枚举
+ *
+ * ★ 删除了 `VALIDATED` / `WAITING_DEPENDENCIES`：**死枚举**（零赋值点、零测试断言、零下游使用，
+ *   随首次提交一起带进来的残留）。删前已实测全仓无外部按字符串断言。
+ *
+ * ★ 新增 `READY`：已登记、依赖齐备、**等待被触发**（按需激活，见 `manifest.activation`）。
+ *   ⚠️ **不复用**被删的那两个名字：它们说的是「校验过」「等依赖」，而本态的语义是
+ *   「**已就绪、等触发**」—— 名字对不上语义就是下一个坑。
  */
 export const LifecycleState = Object.freeze({
   DISCOVERED: 'discovered',
-  VALIDATED: 'validated',
-  WAITING_DEPENDENCIES: 'waiting_dependencies',
+  /** 已登记、依赖满足，等待被触发（`manifest.activation === 'lazy'`） */
+  READY: 'ready',
   ACTIVATING: 'activating',
   ACTIVE: 'active',
   STOPPING: 'stopping',
@@ -127,6 +134,83 @@ export function isValidPluginKind(value) {
 }
 
 /**
+ * ★★ 审计日志级别 —— **固定集**。
+ *
+ * ── 为什么必须固定，不能像 `ui.type` 那样走注册制 ──────────────────
+ *   内核**自己**按 level 分流：`error` 级会【另存一份】到 `recentErrors`
+ *   （500 槽的共享环形缓冲会被话多的 info 插件冲掉，而「出过事」是永久证据），
+ *   并且【只对 error 级抓栈】。这两件事都写死在 `log()` 里 ⇒
+ *   内核**必须**知道全部合法值，不能把这套语义交出去。
+ *   （对照 `ui.type`：内核只存不解释，值集属消费者 ⇒ 走注册制。**分层不同，做法不同。**）
+ *
+ * ── 实测的坑（本文件第三次同形）──────────────────────────────────
+ *   `log('Error')` / `log('err')` / `log('fatal')` 此前**全部照收**：
+ *   · 不进 `recentErrors` —— **出错证据从诊断里消失**；
+ *   · 不带栈（抓栈只认 `level === 'error'`）；
+ *   · **零报错**。
+ *   ⇒ 「拼错值静默落成最宽松的那个」，与 `ServiceAccess` / `PluginKind` 同一个坑。
+ *
+ * ★ `debug` 是既有实践，不是新增能力：本内核的**下游应用**已在用 `ctx.log('debug', …)`，
+ *   今天靠「宽容照收」才没炸。纳入合法集后它成为**契约**。
+ */
+export const LogLevel = Object.freeze({
+  DEBUG: 'debug',
+  INFO: 'info',
+  WARN: 'warn',
+  ERROR: 'error'
+});
+
+/** ★ 合法日志级别值集（成员校验用） */
+export const LOG_LEVEL_VALUES = Object.freeze(Object.values(LogLevel));
+
+/**
+ * 判断一个值是否为合法的日志级别。
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isValidLogLevel(value) {
+  return LOG_LEVEL_VALUES.includes(value);
+}
+
+/**
+ * ★★ 激活时机 —— `eager`（缺省）在 `boot()` 时激活；`lazy` 登记后停在 `ready`，等触发。
+ *
+ * ★ 为什么只有一个开关，**没有 `activationEvents: [...]` 清单**：
+ *   本内核的触发点只有两类 —— **显式** `host.activatePlugin(id)` 与**首次派发同名 action**。
+ *   而 action 名**无法从 manifest 推导**（它是在 `activate` 里 `ctx.registerAction` 登记的），
+ *   所以「声明一串事件名」**没有任何东西会去消费它** —— 一个无人消费的声明就是一句空话。
+ *   ⇒ 与 VS Code 1.74 起「由 `contributes` 隐式推导 activationEvents」是**同一方向**：少声明、多推导。
+ *
+ * ★★ 触发点为什么不能接在**服务取用**或**事件派发**上（这是设计里最硬的一条约束）：
+ *   `getService` 与 `emit` / `bail` / `waterfall` 都是**同步返回**的，
+ *   而激活是异步的（`activate` 可以是 async、有超时）。把激活挂上去就得把这些 API 改成 async
+ *   —— 那等于换一个框架。**不是取舍，是无解。**
+ *   对照：OSGi 能靠「类加载 / 服务请求」驱动懒激活（Java 的类加载可被阻塞等待）；
+ *   VS Code 能靠 `onCommand`（它的扩展宿主本就是异步消息通道）。**形态不同，不能照抄。**
+ *
+ * ★ 缺省值方向：缺省 ⇒ `eager` —— **现有行为逐字不变**，不写这个字段的插件一律照旧在 boot 时激活。
+ */
+export const ActivationPolicy = Object.freeze({
+  /** 缺省：`boot()` 时激活 */
+  EAGER: 'eager',
+  /** 登记后停在 `ready`，被显式激活或首次派发同名 action 时激活 */
+  LAZY: 'lazy'
+});
+
+/** ★ 合法 activation 值集（成员校验用） */
+export const ACTIVATION_POLICY_VALUES = Object.freeze(Object.values(ActivationPolicy));
+
+/**
+ * 判断一个值是否为合法的激活时机。
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isValidActivationPolicy(value) {
+  return ACTIVATION_POLICY_VALUES.includes(value);
+}
+
+
+/**
  * ★★ Manifest 字段表（**两套 schema 共享的单一事实来源**）
  *
  * 为什么必须有这张表：
@@ -157,15 +241,29 @@ export const MANIFEST_FIELD_TABLE = Object.freeze({
     'id', 'version', 'apiVersion', 'displayName', 'description',
     'provides', 'dependencies', 'optionalDependencies', 'permissions', 'hotReload',
     // ★ 插件类别 —— 取代宿主按 ID 前缀猜「这是不是基础设施」
-    'kind'
+    'kind',
+    // ★ 激活时机（'eager' 缺省 / 'lazy' 按需）
+    'activation'
   ]),
-  /** 插件描述符契约：插件加载器 / catalog / ecosystem 走的 schema */
+  /**
+   * 插件描述符契约：插件加载器 / catalog / ecosystem 走的 schema
+   *
+   * ★★ 已删除 `config` —— 它此前被校验、被克隆产出，但**零读取路径**
+   *   （内核字段表也不认它），插件作者写了默认配置却永远拿到 `{}`。
+   *   联网对标：VS Code / OSGi / cordis / OpenClaw 无一家在清单里放「裸默认配置对象」，
+   *   主流形态是「schema + 用户覆盖 + 合并」（cordis 的默认值写在插件代码的 schema 里，
+   *   清单只放覆盖值）；唯一相近的 npm `config` 面向脚本环境变量，不是插件运行时。
+   *   ⇒ 留一个永不生效的字段会**误导未来的实现**（让人以为 config 已经有位置了）。
+   *   ⚠️ **加载清单的 `entry.config`（`loadPlugins` 的 `config:`）不受影响** ——
+   *   那才是真正生效的配置来源，语义清晰。
+   */
   plugin: Object.freeze([
     'id', 'name', 'version', 'apiVersion',
-    'provides', 'permissions', 'dependencies', 'config',
+    'provides', 'permissions', 'dependencies',
     // ★ 两层共用同一份内置 manifest ⇒ 两层都必须承认它，
     //   否则会被 diffManifestFields 报成「跨层字段」（可见但不该报警的噪音）。
-    'kind'
+    'kind',
+    'activation'
   ]),
   /**
    * 带默认值的可选字段：输入里没有、输出里必有。
@@ -173,6 +271,93 @@ export const MANIFEST_FIELD_TABLE = Object.freeze({
    */
   defaultsOnly: Object.freeze(['displayName', 'description', 'hotReload'])
 });
+
+/**
+ * 诊断快照的结构版本：**稳定面**发生不兼容改动时递增（增字段不算）。
+ */
+const DIAGNOSTICS_SCHEMA_VERSION = 1;
+
+/**
+ * ★★ 诊断快照的**稳定性契约**（唯一真相源）—— `getDiagnostics()` 的哪一部分可以依赖。
+ *
+ * ── 为什么必须显式表态 ────────────────────────────────────────────
+ *   `getDiagnostics()` 此前**从没有文档说它稳定还是不稳定**，而消费方**已经在读它**
+ *   （实测消费方 **9 个真调用点**：读 `plugins` / `totalPlugins`，把记录**当 manifest 用**、
+ *    用字符串字面量 `record.state === 'active'` 判活跃）。
+ *   ⇒ 内核随手改个字段名，消费方**静默失灵**，而且无从追责。
+ *
+ * ── 为什么是【分区】而不是「全都稳定」或「全都不稳定」────────────────
+ *   联网先例两边都有，且都成体系：
+ *     · **Kubernetes 指标**（官方页逐字）：Stable 承诺「observe **strict API contracts** and
+ *       **no labels can be added or removed**」／Beta「observe a **looser** API contract…
+ *       labels **can be added** while in beta」／Alpha「**do not have any API guarantees**.
+ *       These metrics must be used at your own risk」。★ **三档同页并列**，正是本仓「分区」的形态来源。
+ *     · **OpenTelemetry 语义约定**：Development（旧称 Experimental）/ **release_candidate** / Stable，
+ *       且用**独立子入口**划线 —— 「The "incubating" entry-point … **is NOT subject to the
+ *       restrictions of semantic versioning and MAY contain breaking changes in minor releases.**」
+ *     · **k6**：allowlist 措辞（逐字）—— 「This document serves as an explicit allow list policy.
+ *       **Only APIs specifically mentioned within this document are covered by our stability
+ *       guarantees.** Any API not explicitly included is not covered by this policy and
+ *       **may be subject to breaking changes.**」
+ *   ⇒ 本仓取 **allowlist 形态**（最省事、最诚实）：**点名即承诺，没点名的一律不承诺**。
+ *
+ * ⚠️ **一处已撤回的引用**：此前这里引过一句英文，声称是 `kubectl describe` 的原文。
+ *   独立复核（含本仓自查）在 **kubernetes.io 一手页面找不到那句话** —— 它只出现在第三方转述里。
+ *   意思在 K8s 官方确有（机器读 `-o json`、人读文本），但**那句英文不是官方原文**，
+ *   ⇒ 按「引用不得比来源更重」删掉，不拿二手转述冒充满一手引文。
+ *
+ * ── ★★ 分区按【路径】逐层给，不按顶层键一把分 ────────────────────────
+ *   反例（第一版写错过的形态）：顶层 `plugins` 划进稳定面，就等于**整条记录**都稳定 ——
+ *   于是往记录里加一个 `activationMs` 这种纯排障字段，也成了对下游的承诺。
+ *   正解是**逐层**：`plugins` 稳定的是「有这条路径」，**记录内部**再各有一张稳定键表。
+ *   ⇒ 同一把尺子量到底，门禁才能**机械判定**（见 `diagnostics-contract.test.mjs`）。
+ *
+ * ★ 枚举值**可增不可改**（与 OTel / K8s 一致）—— 新增一个 `state` 取值不算破坏，
+ *   改掉既有取值的字面量才是（`LifecycleState` 的成员在门禁里另有 `Object.freeze` 守）。
+ *
+ * ★★ **消费方契约**：只读 `stable` 里点名的路径，**忽略未知字段**（Tolerant Reader）——
+ *   这样内核**加**字段不会打到它。反过来，消费方读了 `unstable` 里的东西，
+ *   就得自己承担内核随时改它的后果。
+ *
+ * ★ `schemaVersion` 本身**不在稳定面**：它是给「机器读契约版本」用的，
+ *   而它的取值集合会随契约演进 —— 承诺它就等于承诺「版本号不会变」，那是自相矛盾。
+ */
+export const DIAGNOSTICS_CONTRACT = Object.freeze({
+  /** 本次契约的结构版本（= 下面几张表的形状版本） */
+  schemaVersion: DIAGNOSTICS_SCHEMA_VERSION,
+
+  /**
+   * 稳定面：`点名的路径 → 在该路径下承诺的键集`。
+   *
+   * ★ 用【路径 → 键集】而不是一张扁平键表：扁表无法表达「`plugins` 这一层稳定，
+   *   记录内部另有约定」—— 而诊断快照恰恰是**三层嵌套**（顶层 / plugins[] / services[]）。
+   *   路径是**从快照根算起的点分路径**（`''` = 根）。
+   */
+  stable: Object.freeze({
+    '': Object.freeze(['hostVersion', 'booted', 'totalPlugins', 'actionsCount', 'uiContributionsCount', 'plugins', 'services']),
+    // ★★ 记录字段 = manifest 投影 + 生命周期。**从契约表派生，不手列** ——
+    //    往 manifest 加字段 ⇒ 投影自动带出 ⇒ 自动进入稳定面。手列就是「漏列即静默丢弃」那个坑。
+    'plugins[]': Object.freeze([...MANIFEST_FIELD_TABLE.kernel, 'state', 'error', 'activationMs']),
+    // ⚠️ 只收「契约本身 + 提供者归属」；`scopedProviders` 明细属不稳定（排障用，随作用域机制演进）。
+    'services[]': Object.freeze(['name', 'access', 'requiredPermission', 'methods', 'activeProvider', 'providerCount'])
+  }),
+
+  /**
+   * ★ 不稳定面（随时可变，**不承诺兼容**）—— 列出来是为了让「不承诺」也是**显式**的，
+   *   而不是靠读者猜「没写的那些到底算不算」。
+   */
+  unstable: Object.freeze([
+    // 文本与条数（K8s 同判：人类可读输出不是稳定的机器契约）
+    'recentLogs', 'recentErrors', 'errorLogCount',
+    // 字段诊断的内部形状
+    'manifestDiagnostics', 'manifestDiagnosticsDropped',
+    // 通道内部摘要、权限清单、作用域提供者明细
+    'channel', 'permissions', 'services[].scopedProviderCount', 'services[].scopedProviders',
+    // 契约版本号本身随契约演进
+    'schemaVersion'
+  ])
+});
+
 
 /**
  * ★★ 规范化字符串列表（**两层 schema 共享的单一实现**）
@@ -199,9 +384,12 @@ export function normalizeStringList(value) {
 /**
  * ★★ 规范化依赖映射（**两层 schema + ecosystem 共享的单一实现**）
  *
- * 支持两种输入形状（**这是 ecosystem.mjs 自陈的对外契约**）：
- *   · `Array`  —— `['plugin.a']`          ⇒ `{ 'plugin.a': '*' }`
- *   · `Object` —— `{ 'plugin.a':'^1' }`   ⇒ 原样（键值均裁剪空白，空范围取 `'*'`）
+ * ★ **只收一种形状**：
+ *   · `Object` —— `{ 'plugin.a':'^1' }` ⇒ 原样（键值均裁剪空白，空范围取 `'*'`）
+ *   · `Array`  —— **已取消**，一律 fail-loud 抛 `invalid_manifest`。
+ *     理由**不是**「生产代码没人用」，而是它**结构上写不下版本范围**：数组项没有位置放
+ *     range，只能一律当 `'*'` ⇒ 「用数组声明依赖」= **自动放弃版本约束**，且零提示。
+ *     （它同时是本函数下面那处静默数据损坏的入口 —— 两件事同源。）
  *
  * ⚠️ **本函数修掉一个静默数据损坏**：
  *   此前内核层写的是 `typeof x === 'object' ? { ...x } : {}`，
@@ -426,8 +614,33 @@ function validateManifestSnapshot(manifest) {
   if (!manifest.apiVersion || typeof manifest.apiVersion !== 'string') {
     throw new CordiumError(ErrorCode.INVALID_MANIFEST, `Plugin ${manifest.id} missing required string field: apiVersion`);
   }
+  // ★★ `apiVersion` 的语义 = 「**至少需要**哪个 API 版本」= 该值的 caret 范围。
+  //
+  //   为什么不是「只比 major」（此前实现）：那样 `'1.99.0'` 在 1.0.0 的内核上**静默放行** ——
+  //   插件要求一个还不存在的 API，作者以为前置要求被检查了，**其实没有**（实测）。
+  //   为什么不是「完整 SemVer 范围」：本仓是**同仓分发、一并 bump**，不存在「旧内核 + 新插件」
+  //   的组合矩阵 ⇒ 让作者写范围只会诱导他写**虚假上界**（0.x 期更甚，SemVer §4 明说 0.y.z 不承诺稳定）。
+  //   为什么不是「新增 minKernelVersion 字段」：那要改全仓**真实** manifest（实测 33 处），
+  //   而语义**已有一个函数能直接表达**。
+  //
+  //   ★ 依据（VS Code 官方逐字）：`1.8.0`（无 caret）表示「**只**兼容 1.8.0」；
+  //     `^1.8.0` 表示「1.8.0 及以后」。我们的语义是后者 —— 所以判据就该写成 `^值`。
+  //
+  //   ★★ 向后兼容：★ 实测【真实 manifest】33 处（本仓 14 + 消费方仓 19）写的**全是** `'1.0.0'`
+  //      ⇒ 在 1.0.0 内核上**照旧放行**，
+  //     **零迁移**。被拒的只有「声明高于内核版本」这类**本就该拒**的（此前在静默放行）。
+  // ★ 判据（两条同时成立才算兼容）：
+  //   ① **主版本相同** —— 主版本不同意味着 API 有过破坏性变更，插件可能已经跑不动；
+  //   ② **内核不低于插件要求** —— 插件写 `1.4.2` 是「我需要 1.4.2 起的 API」，
+  //      内核算 1.0.0 ⇒ 不满足，应当拒绝（此前只比 major，`1.99.0` 也静默放行）。
+  //   ⚠️ 不用 caret 表达式（`^${apiVersion}`）：它在 **0.x** 上是 **patch-only** 语义
+  //      （`^0.9.0` = `>=0.9.0 <0.10.0`），与「至少」的意图不符 —— 实测 0.9.0 的插件
+  //      在 1.0.0 内核上会被它误拒。**显式两条**才与这里承诺的语义逐字对应。
   if (!isValidSemVer(manifest.apiVersion)
-      || compareSemVer(`${manifest.apiVersion.split('.')[0]}.0.0`, `${KERNEL_API_VERSION.split('.')[0]}.0.0`) !== 0) {
+      || compareSemVer(
+        `${manifest.apiVersion.split('.')[0]}.0.0`,
+        `${KERNEL_API_VERSION.split('.')[0]}.0.0`) !== 0
+      || compareSemVer(KERNEL_API_VERSION, manifest.apiVersion) < 0) {
     throw new CordiumError(ErrorCode.INCOMPATIBLE_API_VERSION,
       `Plugin ${manifest.id} targets apiVersion '${manifest.apiVersion}', incompatible with kernel API ${KERNEL_API_VERSION}`
     );
@@ -447,6 +660,17 @@ function validateManifestSnapshot(manifest) {
   if (manifest.hotReload !== undefined && manifest.hotReload !== null && typeof manifest.hotReload !== 'boolean') {
     throw new CordiumError(ErrorCode.INVALID_MANIFEST,
       `Plugin ${manifest.id} hotReload must be a boolean, got ${Array.isArray(manifest.hotReload) ? 'array' : typeof manifest.hotReload}`);
+  }
+
+  // ★ 激活时机成员校验 —— 与 kind / access 同一口径（写表之前抛）。
+  //   拼错值（如 'lazzy' / 'onDemand'）若静默落成 eager，表现是
+  //   「**作者以为按需、实际启动即跑**」，而且零报错 —— 同一个坑。
+  if (manifest.activation !== undefined && manifest.activation !== null
+      && !isValidActivationPolicy(manifest.activation)) {
+    throw new CordiumError(ErrorCode.INVALID_MANIFEST,
+      `Plugin ${manifest.id} declares unknown activation '${String(manifest.activation)}' `
+      + `(expected one of: ${ACTIVATION_POLICY_VALUES.join(', ')})`
+    );
   }
 
   // ★ 展示类字段显式传了非字符串 ⇒ 响亮失败（此前原样透传，下游按字符串用时才炸）。
@@ -479,6 +703,8 @@ function validateManifestSnapshot(manifest) {
     //   只收 true / false：写成 'yes' / 1 这类值多半是误解了语义，静默转布尔会把意图吞掉。
     hotReload: manifest.hotReload === true,
     // ★ 缺省 ⇒ business（第三方插件不该因忘写字段就被锁死；内置插件的一致性由上层装配层检查）
-    kind: manifest.kind || PluginKind.BUSINESS
+    kind: manifest.kind || PluginKind.BUSINESS,
+    // ★ 缺省 ⇒ eager（**现有行为逐字不变**：不写这个字段的插件照旧在 boot 时激活）
+    activation: manifest.activation || ActivationPolicy.EAGER
   };
 }

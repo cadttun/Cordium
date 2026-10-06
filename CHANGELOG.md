@@ -7,6 +7,56 @@
 破坏兼容的改动必须走 minor —— 0.x 的 patch 位会被下游的 `^0.x.0` 自动纳入，承载不了破坏性变更。
 `KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
 
+## [0.3.0] - 2026-10-06
+
+### Added
+
+- **按需激活**：manifest 新字段 `activation`（`'eager'` 缺省 / `'lazy'`）。`lazy` 的插件在 `boot()` 时不激活，停在新的 `ready` 状态，等**被显式激活**或**首次派发一个未命中动作**时激活（后者会先递归拉起它自己的懒依赖）。`eager` 是缺省 ⇒ 不写这个字段的插件行为逐字不变。
+  （触发点只有两个，这是**契约约束**而非取舍：`getService` 与 `emit` / `bail` / `waterfall` 都同步返回，把激活挂上去就得把它们改成 async。只有本就 async 的 `dispatchAction` 能承载激活。）
+- `ctx.watchPluginState(listener)`：订阅任意插件的状态变更（含注册与移出、中间态与终态）。此前装配层要拿到这个时机只能包装宿主的注册方法 —— 那是在改别人的对象，内核把方法改成不可写后会静默失效。
+- `@cordium/plugins` / `@cordium/kernel` 新导出：`ActivationPolicy` / `ACTIVATION_POLICY_VALUES` / `LogLevel` / `LOG_LEVEL_VALUES`。
+- `host.declareUIContributionTypes(types)`：声明 UI 贡献 `type` 的合法值集（与 `declarePermissions` 同口径）。不调 ⇒ 不校验。
+- `DIAGNOSTICS_CONTRACT`：诊断快照的**稳定性契约**（`@cordium/kernel` 的导出）。按**路径**逐层分区 —— `stable` 点名「不删 / 不改名 / 不改类型」的字段（枚举值可增不可改），`unstable` 显式列出**不承诺**的那些。快照随附 `schemaVersion`（结构版本；发生**不兼容**改动时递增，增字段不算）。
+  （**未点名的路径/键一律不承诺** —— 不是「大概稳定」，是明确不承诺。消费方契约：**只读稳定面、忽略未知字段**。依据：allowlist 形态，与 k6 的措辞同一口径；分两档的形态取自 Kubernetes 指标（Alpha「no stability guarantees」/ Stable）与 OpenTelemetry（`/incubating` 子入口）。）
+
+### Changed
+
+- `activate(ctx, config)` 的第二参**只有一种形状**：`host.registerPlugin` 路径此前完全不传（`undefined`），与 `loadPlugins` 路径（已冻结对象）不一致。现在没配置时传冻结的 `{}`。
+  （依据是语言规范：`function activate(ctx, config = {})` 的默认参数在传 `undefined` 时同样生效 ⇒ 两种形状对遵循语言约定的插件逐字等价。）
+- `log.level` 改为**成员校验**：只收 `debug` / `info` / `warn` / `error`，其余（含 `'Error'` / `'err'` 这类拼法）在写表之前抛 `invalid_argument`。此前拼错的值照收，后果是**不进专用错误缓冲、不带栈、零报错** —— 出错证据就这么消失了。
+- `boot()` 中 `lazy` 插件被标记为「已跳过」：依赖它的急切插件同样不激活（依赖没跑过 `activate`，不能上线）。
+- ★ `apiVersion` 的判定从「只比主版本」收紧为「**至少需要哪个 API 版本**」（**两层同步**：内核运行时契约与插件描述符契约）。
+  此前内核 `KERNEL_API_VERSION = '1.0.0'` 时，插件写 `'1.99.0'` 会被**静默放行** —— 作者以为前置要求被检查了，其实没有。
+  ★ **零迁移（实测）**：真实 manifest 的 `apiVersion` 声明共 **33 处**（本仓 14 + 消费方仓 19），取值**全部**是 `'1.0.0'` —— 逐处过两层校验全数放行，行为逐字不变。
+  ⚠️ **行为变更**：插件若声明一个**高于内核**的版本（如 `'1.0.1'`），从此会被拒 —— 这正是修的目的。
+
+### Removed
+
+- **manifest 的 `config` 字段**：它此前被校验、被深克隆，却**没有任何读取路径**（内核字段表也不认它）—— 插件作者写了默认配置，运行时永远拿到 `{}`。现在写它会被告知为未知字段（`warn` 级诊断）。
+  （**加载清单的 `config`（`loadPlugins` 的 `config:`）不受影响** —— 那才是真正生效的配置来源。）
+- `LifecycleState` 的 `VALIDATED` / `WAITING_DEPENDENCIES`：**死枚举**（零赋值点、零断言、零下游，随首次提交带进来的残留）。
+
+### Fixed
+
+- `deactivatePlugin` 对一个等待触发的懒插件**完全无效**（内部路径只认 `ACTIVE`）⇒ 用户根本停不掉它。现在 `ready` 的插件可直接停为 `disabled`。
+- 存活态判定此前以 `state === ACTIVE || state === ACTIVATING` 的形状散落在 5 处；引入第三种存活态后逐处修改必漏，现抽为共用的单一判定。
+- `@cordium/plugins` 六个入口的**导出面此前零门禁**（只钉了子路径键名，没钉每个入口里导出什么）：加一个 `export` ⇒ **全量测试全绿、无人拦**；而改名会红（既有测试在调它）—— 即**改名有人管、加导出无人管**，导出面可以无声膨胀。现补 `packages/plugins/test/public-surface.test.mjs` 逐字钉死（与内核侧 `public-surface.test.mjs` 同一口径）。
+
+## 契约演进约定（服务契约的 `methods`）
+
+服务契约由**装配方**声明，`methods` 是提供者必须实现的方法名清单。判定的依据是**改动落在哪一侧**，不是「改了什么」：
+
+| 契约改动 | 谁被破坏 | 表现（实测） |
+|---|---|---|
+| **加** 一个方法 | **提供者** | 已在跑的提供者实现里没有这个方法 ⇒ 注册服务实现时即以 `invalid_implementation` 响亮失败。装配方需同步改实现 |
+| **删** 一个方法 | **消费者** | 契约不再要求提供者实现它 ⇒ **提供者可以把它删掉**。此时仍在调用它的消费者拿到的是**引擎级 `TypeError`（`code` 为 `undefined`）**，不是 `CordiumError` —— 装配方须自己确认没有消费者在用，机器替不了 |
+| 改 `access` / `requiredPermission` | 两侧都可能 | 门禁在**取服务**那一刻判，改严 ⇒ 既有消费者拿 `access_denied` |
+
+两条推论：
+
+- **提供者的破坏在注册期可见，消费者的破坏要到运行期才可见**（且如上表第二行，连错误码都没有）—— 所以删方法前必须自己确认消费方。
+- 契约**不带版本号**：同一服务名同时存在两个不兼容版本，本内核不支持。真出现这种需求时，做法是拆成两个服务名，而不是给契约加 `version`。
+
 ## [0.2.2] - 2026-10-05
 
 ### Fixed
@@ -90,7 +140,8 @@
 - CI：Ubuntu 与 Windows × Node 20 / 22 / 24 测试与打包，oxlint 静态检查（含模块环检测 `import/no-cycle`）；workflow 只读权限、action 锁提交 SHA，dependabot 每月提升级 PR。
 - 安全策略（SECURITY.md）：私密漏洞报告渠道与范围说明。
 
-[Unreleased]: https://github.com/cadttun/cordium/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/cadttun/cordium/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/cadttun/cordium/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/cadttun/cordium/releases/tag/v0.2.2
 [0.2.1]: https://github.com/cadttun/cordium/releases/tag/v0.2.1
 [0.2.0]: https://github.com/cadttun/cordium/releases/tag/v0.2.0

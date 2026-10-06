@@ -9,8 +9,20 @@
 
 import { CordiumError, ErrorCode } from './errors.mjs';
 
+/**
+ * @typedef {object} UIRegistryQueries
+ * @property {(type: string) => boolean} [isKnownType] `type` 是否为装配方登记过的合法值
+ * @property {() => string[]} [knownTypes] 已登记值集（仅用于报文）
+ */
+
 export class UIRegistry {
   #items = new Map();
+  #q;
+
+  /** @param {UIRegistryQueries} [queries] 不传 ⇒ 不校验 `type`（保持旧行为） */
+  constructor(queries = {}) {
+    this.#q = queries;
+  }
 
   /** 当前条目数（诊断用） */
   get size() { return this.#items.size; }
@@ -36,6 +48,23 @@ export class UIRegistry {
       ? { id: contribution, type: 'custom', ownerId }
       : { ...contribution, ownerId };
     if (!item.id) throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'UI contribution must have an id');
+
+    // ★ type 成员校验（写表之前）—— 同 `kind` / `access` / `log.level` 的口径。
+    //
+    //   实测的坑（在消费方）：上层 UI 宿主的分派是
+    //     `if type==='theme' … else if type==='command' … else if (item.slot) …`
+    //   ⇒ **type 拼错但带 `slot` 的贡献会静默落进 panels** ——「拼错值静默落成最宽松的那个」
+    //   在本项目的第三个实例。内核装不了那道闸（它不该知道 `slot` 是什么），
+    //   但可以提供【登记口】让消费方把它自己的值集交进来。
+    //
+    //   ⚠️ 值集为空（装配方未登记）⇒ 不校验：内核不得替消费方猜它的值集。
+    if (this.#q.isKnownType && this.#q.knownTypes().length > 0 && !this.#q.isKnownType(item.type)) {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+        `UI contribution '${item.id}' by plugin '${ownerId}' has unknown type ${JSON.stringify(item.type)} — `
+        + `types must be declared by the host via host.declareUIContributionTypes() `
+        + `(declared: ${this.#q.knownTypes().join(', ')})`
+      );
+    }
 
     // ★ 查重与所有权 —— 对齐 registerAction 的做法，**不得静默覆盖**。
     //   此前这里是 `map.set(item.id, item)`，后者直接顶掉前者。

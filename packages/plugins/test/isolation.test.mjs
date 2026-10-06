@@ -7,9 +7,36 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { hasCode } from './fixtures/errors.mjs';
-import { callIsolated } from '../src/isolation.mjs';
+import { callIsolated as rawCallIsolated } from '../src/isolation.mjs';
 
 const TARGET = fileURLToPath(new URL('./fixtures/isolated/targets.mjs', import.meta.url));
+
+/**
+ * ★ 调用预算包装：给【没显式传 timeoutMs】的调用补一个宽预算。
+ *
+ * 动机：`callIsolated` 的计时器从 `spawn()` 起算（`isolation.mjs` 的 `awaitReply`），
+ * **起 worker / fork 子进程的时间算进调用预算**。本机实测首次 **30ms（worker）/ 71ms（process）**，
+ * 但 CI 的 `windows-latest` runner 实测要 **3664ms / 3005ms** —— 慢两个数量级，一次就把默认
+ * **3000ms** 吃穿 ⇒ 期望「正常返回」的用例拿到 `call_timeout`（`test #17` 就是这样红的：
+ * 同一次运行的 windows/Node 22 与 26 全绿，只有 Node 24 那一格踩中）。
+ *
+ * ★ 只放宽【预算】，不碰被测语义：被测函数、入参、返回值、错误码、断言一律不变。
+ * ★ 不用「失败重试」替代 —— 重试会把真实回归也吞掉。
+ */
+const CALL_BUDGET_MS = 20000;
+const callIsolated = (target, fn, args, options) => rawCallIsolated(target, fn, args, withCallBudget(options));
+
+function withCallBudget(options) {
+  if (options === undefined) return { timeoutMs: CALL_BUDGET_MS };
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) return options;
+  let descs;
+  // 用描述符探测而不展开：展开会【触发 getter】，把「有毒选项袋」那条的被测路径兜没了。
+  try { descs = Object.getOwnPropertyDescriptors(options); } catch { return options; }
+  // ① 有毒袋（getter / 抛错的 Proxy）原样交进去 —— 被测的就是「入口能否带码拒绝它」
+  // ② 显式传了 timeoutMs 的一律不动（含 300 / 100 / Infinity / 20000 那些用例）
+  if (Object.values(descs).some(d => 'get' in d) || 'timeoutMs' in descs) return options;
+  return { ...options, timeoutMs: CALL_BUDGET_MS };
+}
 const OUTSIDE = fileURLToPath(new URL('../package.json', import.meta.url));   // 目标模块目录之外
 
 for (const mode of ['worker', 'process']) {

@@ -17,7 +17,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CordiumHost } from '@cordium/kernel';
+import { CordiumHost, ACTIVATION_POLICY_VALUES } from '@cordium/kernel';
 import { validatePluginManifest, validatePluginManifestDetailed } from '@cordium/plugins/runtime';
 import { loadPlugins } from '@cordium/plugins/loader';
 import { configureIsolation } from '@cordium/plugins/isolation';
@@ -94,15 +94,18 @@ test('★★ manifest 带 getter 抛错 ⇒ 必须是【带码】的 invalid_man
 test('★★ 每个入参字段【只读一次】—— getter 无法在校验之后改值（TOCTOU）', () => {
   let reads = 0;
   const evil = { id: 'plugin.a', name: 'A', version: '1.0.0' };
-  Object.defineProperty(evil, 'config', {
+  // ★ 载体从 `config` 换成 `activation`：前者已作死字段删除（校验了、克隆了、零读取路径），
+  //   但这条判据本身必须留着，换成另一个【会落库的枚举字段】继续钉。
+  Object.defineProperty(evil, 'activation', {
     enumerable: true,
-    get() { reads += 1; return reads <= 3 ? { safe: true } : ['evil']; }
+    get() { reads += 1; return reads <= 3 ? 'eager' : 'not-a-valid-policy'; }
   });
   const out = validatePluginManifest(evil);
-  // ★ 快照后 config 只被读 1 次（此前是 7 次，且第 7 次的结果才落库 ⇒ 数组能突破「必须是对象」门）
-  assert.equal(reads, 1, `★ config 应恰好被读 1 次，实际 ${reads} 次 —— 多次读之间就是 TOCTOU 窗口`);
-  assert.deepEqual(out.config, { safe: true }, '★ 落库的必须是【校验时看到的那个值】');
-  assert.ok(!Array.isArray(out.config), '★ 数组不得突破「config 必须是普通对象」这道门');
+  // ★ 快照后 activation 只被读 1 次（多次读之间就是 TOCTOU 窗口）
+  assert.equal(reads, 1, `★ activation 应恰好被读 1 次，实际 ${reads} 次 —— 多次读之间就是 TOCTOU 窗口`);
+  assert.equal(out.activation, 'eager', '★ 落库的必须是【校验时看到的那个值】');
+  // ★ 反例前提：后读到的值确实是非法的（否则本用例恒真、判不出任何东西）
+  assert.equal(ACTIVATION_POLICY_VALUES.includes('not-a-valid-policy'), false);
 });
 
 test('★ 详细版（validatePluginManifestDetailed）同样走快照', () => {

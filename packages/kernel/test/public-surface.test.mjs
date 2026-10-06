@@ -11,8 +11,12 @@ import * as internalApi from '../src/internal.mjs';
 
 test('★ index.mjs 导出清单定稿（显式具名，不得随模块新增 export 自动变大）', () => {
   assert.deepEqual(Object.keys(publicApi).sort(), [
-    'CordiumError', 'CordiumHost', 'DispatchMode', 'EffectScope', 'ErrorCode', 'KERNEL_API_VERSION', 'LifecycleState',
-    'MessageChannel', 'PLUGIN_KIND_VALUES', 'PluginKind', 'SERVICE_ACCESS_VALUES', 'ServiceAccess',
+    'ACTIVATION_POLICY_VALUES', 'ActivationPolicy', 'CordiumError', 'CordiumHost',
+    // ★ DIAGNOSTICS_CONTRACT：诊断快照的稳定性契约 —— 消费方必须能读到它，
+    //   否则「哪些字段可信」只能靠人传（它是对外承诺本身，不是内部实现细节）。
+    'DIAGNOSTICS_CONTRACT',
+    'DispatchMode', 'EffectScope', 'ErrorCode', 'KERNEL_API_VERSION', 'LOG_LEVEL_VALUES', 'LifecycleState', 'LogLevel', 'MessageChannel',
+    'PLUGIN_KIND_VALUES', 'PluginKind', 'SERVICE_ACCESS_VALUES', 'ServiceAccess',
     'compareSemVer', 'isBailed', 'isValidSemVer', 'satisfiesSemVer', 'validateManifest'
   ]);
 });

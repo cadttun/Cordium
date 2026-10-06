@@ -14,7 +14,13 @@ import {
   // ★ 服务契约的「白名单重建丢字段」判定 —— 与 manifest 共用同一条知识
   diffServiceContractFields,
   // ★ access 成员校验（拼错值 ⇒ 静默 fail-open，必须挡在写表之前）
-  SERVICE_ACCESS_VALUES, isValidServiceAccess
+  SERVICE_ACCESS_VALUES, isValidServiceAccess,
+  // ★ log 级别成员校验（同款坑：拼错的 error 级不进 recentErrors、不带栈、零报错）
+  LOG_LEVEL_VALUES, isValidLogLevel,
+  // ★ 激活时机（按需激活：boot 跳过 lazy 插件，置 ready 等触发）
+  ActivationPolicy,
+  // ★ 诊断快照的稳定性契约 —— schemaVersion 由它带出（唯一真相源，不另写一份字面量）
+  DIAGNOSTICS_CONTRACT
 } from './types.mjs';
 import { CordiumError, ErrorCode } from './errors.mjs';
 import { EffectScope } from './scope.mjs';
@@ -30,7 +36,10 @@ import {
   freezeManifestForPlugin, snapshotDetails, copyLogEntry, MAX_TIMER_MS, describeValue, describeError, errorDetails, readOptions, runWithTimeout
 } from './host-util.mjs';
 import {
-  optionalUnavailable, isTerminated, wrapServiceHandle, normalizeContractMethods, missingMethods
+  optionalUnavailable, isTerminated, wrapServiceHandle, normalizeContractMethods, missingMethods,
+  // ★ 存活态判定（一处定义、五处共用）与「已跑完 activate」判定
+  //   —— 按需激活引入 `ready` 后二者必须分开，见各自注释
+  isLiveState, hasRunActivate
 } from './service-handle.mjs';
 
 /**
@@ -41,6 +50,19 @@ import {
  *   改用模块私有 symbol：插件拿不到它，发不出也订不到；宿主经 broadcast 发、经 watchService 转交。
  */
 const SERVICE_CHANGE = Symbol('cordium.service-change');
+
+/**
+ * 插件状态变更通知的事件名。**模块私有 symbol**，理由同 `SERVICE_CHANGE`：
+ * 插件拿不到它 ⇒ 发不出伪造的「某插件已停用」，也订不到别人的状态流。
+ */
+const PLUGIN_STATE = Symbol('cordium.plugin-state');
+
+/**
+ * 统一的「没有配置」值 —— 冻结的空对象，`registerPlugin` 路径下 activate 的第二参。
+ * ★ 冻结：插件改它无效（与 `loadPlugins` 路径交付的 config 同一口径）；
+ *   共享单例：它是只读的，不需要每个插件各造一份。
+ */
+const EMPTY_CONFIG = Object.freeze({});
 
 /** 超时类选项：不传 ⇒ 用默认；0 / 负数 = 不限；正数须 ≤ MAX_TIMER_MS（超出 Node 会改成 1ms ⇒ 立即超时） */
 function assertTimeoutOption(label, value) {
@@ -100,7 +122,9 @@ export class CordiumHost {
   #actionHandlers = new ActionRegistry({
     isCallerLive: (id) => {
       const caller = this.#plugins.get(id);
-      return !!caller && (caller.state === LifecycleState.ACTIVE || caller.state === LifecycleState.ACTIVATING);
+      // ★ 用共用判定，不手写 `=== ACTIVE || === ACTIVATING` —— 按需激活引入 `ready` 后
+      //   手写版会漏（漏的表现是某一处不认 ready 的插件，见 isLiveState 的注释）
+      return !!caller && isLiveState(caller.state);
     },
     hasPermission: (id, perm) => this.#pluginPermissions.get(id)?.has(perm) ?? false,
     assertPermissionDeclared: (name, where) => this.#assertPermissionDeclared(name, where),
@@ -109,7 +133,34 @@ export class CordiumHost {
     releaseKey: this.#scopeReleaseKey,
     log: (level, message, details) => this.log(level, message, details)
   });
-  #uiContributions = new UIRegistry();
+  // 注入窄查询（同 ActionRegistry 的口径）：注册表只问「这个 type 算不算合法」，
+  // 不拿宿主引用、读不到也改不了别的状态。闭包延迟求值 ⇒ 与 #uiTypes 的初始化顺序无关。
+  #uiContributions = new UIRegistry({
+    isKnownType: (type) => this.#uiTypes.has(type),
+    knownTypes: () => [...this.#uiTypes]
+  });
+  /**
+   * ★★ UI 贡献 `type` 的【合法值集】—— 由装配方登记，缺省空集（= 不校验）。
+   *
+   * ── 为什么走【注册制】而不是内核固定集 ────────────────────────────
+   *   `type` 是**消费者侧的概念**：内核只存不解释（`getUIContributions(type)` 只按字符串过滤），
+   *   真正按 type 分派的是上层 UI 宿主。实测消费方在按 `theme` / `command` / `panel` / `widget`
+   *   `/ settings` 分派，**这些值集内核无从预知**。
+   *   ⇒ 与「服务契约 / 权限名只能由装配方定义」**同一口径**。
+   *   （对照 `log.level`：内核自己按级别分流 recentErrors 与抓栈 ⇒ 必须固定集。**分层不同，做法不同。**）
+   *
+   * ── 缺省为什么不校验 ──────────────────────────────────────────────
+   *   不登记 ⇒ 空集 ⇒ 放行（保持现有行为逐字不变，装配方按需收紧）。
+   *   ⚠️ 这是刻意的：内核**不得**替消费方猜它的值集。
+   *
+   * ── 实测的坑（为什么必须有这个口）─────────────────────────────────
+   *   消费方 `syncFromKernel` 的分派是：
+   *     `if type==='theme' … else if type==='command' … else if (item.slot) …`
+   *   ⇒ **type 拼错但带 `slot` 的贡献会静默落进 panels**。这是「拼错值静默落成最宽松的那个」
+   *   在本项目的**第三个实例**（前两个 ServiceAccess / PluginKind 均已修），且这次在消费方。
+   *   ⚠️ 内核装不了那道闸（它不该知道 `slot` 是什么）⇒ 只能提供**登记口**让消费方自己守。
+   */
+  #uiTypes = new Set();
   #pluginPermissions = new Map();
   #pluginDependencies = new Map();
   #pluginOptionalDependencies = new Map();
@@ -318,8 +369,19 @@ export class CordiumHost {
 
   /**
    * 记录运行时审计日志 (有上限，防止内存无限膨胀)
+   *
+   * ★ 级别【成员校验】（写表之前）—— 此前 `log('Error')` / `log('err')` / `log('fatal')`
+   *   全部照收，实测后果：**不进 `recentErrors`、不带栈、零报错** ⇒
+   *   「拼错值静默落成最宽松的那个」，与 `ServiceAccess` / `PluginKind` 同一个坑（本仓第三次）。
+   *
+   * ⚠️ 归属说明：`ctx.log` 的级别来自**插件**，但校验点在这里（宿主自己的日志入口）。
+   *   宿主内部调用一律写 `ErrorCode.X` 之类的字面量，不受影响。
    */
   log(level, message, details) {
+    if (!isValidLogLevel(level)) {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+        `Log level must be one of ${LOG_LEVEL_VALUES.join(', ')}, got ${describeValue(level)}`);
+    }
     // ★ details 存【快照】不存引用：此前原样存入 ⇒ 调用方（插件经 ctx.log）
     //   记完日志后改自己手里的对象，就能回头改写审计记录。
     // message 一律转成字符串：非字符串（对象）此前原样存引用，调用方事后改它就改了审计记录；symbol 在 ctx.log 的模板里直接抛
@@ -536,6 +598,28 @@ export class CordiumHost {
     for (const name of names) this.#permissions.add(name);
   }
 
+  /**
+   * ★ 声明本应用用到的 UI 贡献 `type` 值集（UI 贡献 `type` 的成员校验）。
+   *
+   * 与 `declarePermissions` / `declareServiceContracts` **同一位置、同一口径**：
+   * 由装配方在 boot 前一次性登记，插件不得自造。
+   * ⚠️ 不调它 ⇒ 不校验（保持现有行为）；调了 ⇒ 登记之外的值在**注册 UI 贡献时**抛错。
+   *
+   * @param {string[]} types
+   */
+  declareUIContributionTypes(types) {
+    if (!Array.isArray(types)) {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'declareUIContributionTypes requires an array of type names');
+    }
+    for (const type of types) {
+      if (typeof type !== 'string' || !type.trim()) {
+        throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+          `UI contribution type must be a non-empty string, got ${describeValue(type)}`);
+      }
+    }
+    for (const type of types) this.#uiTypes.add(type);
+  }
+
   /** 断言权限名已由宿主登记 —— 未登记即抛错（禁止插件自造权限名） */
   #assertPermissionDeclared(name, where) {
     if (!this.#permissions.has(name)) {
@@ -607,11 +691,19 @@ export class CordiumHost {
       transition: Promise.resolve(),
       // ★ 停用来源 —— 用户显式停用（boot 跳过） vs 因依赖被停而级联停用（提供者回来时恢复）
       disabledByUser: false,
-      stoppedByCascade: false
+      stoppedByCascade: false,
+      // ★ 级联停用时它是否**正停在「等触发」**（`ready`）—— 只对懒插件有意义。
+      //   恢复动作取决于被连累时在哪个状态，而 ready / active 级联后都变成 `disabled`，
+      //   所以必须在级联那一刻记下来（见 #stopDependents / #resumeCascaded）。
+      stoppedWhileReady: false
     });
 
     this.#snapshotAuthority(manifest);
 
+    // ★ 名单变更也是一次「注册表变更」—— 订阅方（例如按注册表渲染界面的装配层）
+    //   需要知道**有了一个新插件**，而不是只关心已有插件的状态迁移。
+    //   `from` = null 表示「之前不在表里」。
+    this.#announcePresence(manifest.id, null, LifecycleState.DISCOVERED);
     this.log('info', `Plugin registered: ${manifest.id} v${manifest.version}`);
   }
 
@@ -796,7 +888,61 @@ export class CordiumHost {
   // ════════════════ 生命周期：boot / 激活 / 停用 / 移除 ════════════════
 
   /**
+   * ★★ 按需激活的**依赖收拢**：把 `pluginId` 的必需依赖里仍在等触发的懒插件
+   *  （含它们自己的依赖，递归）先拉起来。
+   *
+   * 为什么必须有：懒插件 B 依赖懒插件 A。触发 B 时 A 还没跑过 `activate()`，
+   * `#assertDependenciesActive` 会以 `dependency_inactive` 拒绝 —— 于是「按需激活」
+   * 在最常见的「提供者也是懒的」场景下**直接不可用**。
+   * （OSGi 的懒激活由类加载**隐式级联**；这里是同一条语义的显式版。）
+   *
+   * ★ 只收拢 `ready` 的：`disabled`（用户停过）与 `failed`（激活失败过）**不擅自拉起**——
+   *   前者是用户意图，后者会重演一次已知失败。让依赖检查照常报错，报的才是真原因。
+   * ★ 用 `#serializeLifecycle` 走正规激活路径 ⇒ 天然幂等（已是 ACTIVE 会短路）。
+   *
+   * @param {string} pluginId
+   */
+  /**
+   * ★ 同步预检：`pluginId` 是否有**直接**依赖仍停在 `ready`（= 是否需要走异步收拢）。
+   *
+   * ★★ 为什么必须存在（这条是被测试逼出来的，两个用例同时变红）：
+   *   `#activateReadyDependencies` 是 `async`，**只要 await 它就会让出一跳微任务** ——
+   *   即使它一个依赖都不用收拢。而 `#serializeLifecycle` 有一条硬契约：
+   *   「空闲时必须**同步**进入任务体」（见其注释，`state = ACTIVATING` 必须同步生效）。
+   *   多这一跳的后果实测是：
+   *     · 「排在移除之后的旧 deactivate」用例读到 `discovered` 而不是 `active`；
+   *     · 级联停用用例里依赖的状态被别的迁移推进到 `stopping`，
+   *       于是报 `dependency_inactive (state=stopping)` —— 一个**由调度顺序制造的假错**。
+   *   ⇒ 非懒路径（绝大多数）必须**零额外 await**：先同步判断，没有才不 await。
+   */
+  #hasReadyDependency(pluginId) {
+    const record = this.#plugins.get(pluginId);
+    if (!record) return false;
+    return Object.keys(record.manifest.dependencies)
+      .some(depId => this.#plugins.get(depId)?.state === LifecycleState.READY);
+  }
+
+  async #activateReadyDependencies(pluginId) {
+    const record = this.#plugins.get(pluginId);
+    if (!record) return;
+    for (const depId of Object.keys(record.manifest.dependencies)) {
+      const dep = this.#plugins.get(depId);
+      if (!dep || dep.state !== LifecycleState.READY) continue;
+      await this.#activateReadyDependencies(depId);   // 先收拢它自己的依赖（递归，先深后己）
+      await this.#serializeLifecycle(depId, async () => {
+        if (this.#plugins.get(depId) !== dep || dep.state !== LifecycleState.READY) return;
+        await this.#activatePluginNow(depId);
+        this.log('info', `Lazy plugin '${depId}' activated as a dependency of '${pluginId}'`);
+      });
+    }
+  }
+
+  /**
    * 启动宿主运行时 (按依赖拓扑依次激活所有已注册插件)
+   *
+   * ★ `manifest.activation === 'lazy'` 的插件**不激活**：登记后停在 `ready`，等触发
+   *   （显式 `activatePlugin`，或首次派发它登记的动作）。不写该字段的插件一律 `eager`
+   *   ⇒ **现有行为逐字不变**。
    */
   async boot() {
     this.log('info', 'CordiumHost booting...');
@@ -807,14 +953,46 @@ export class CordiumHost {
     const activated = [];
     // ★ 级联停用配套：被【显式停用】的插件不得被 boot 顺手拉起（此前 deactivate a → 注册 b → boot ⇒ a 复活）。
     //   依赖它的插件同样跳过 —— 否则会因「依赖未激活」让整次 boot 失败回滚。
-    const skipped = new Set();
+    //
+    // ★★ 两个集合必须分开（`unavailable` / `deferred`）—— 这是被对抗性核验逼出来的修正。
+    //   只用一个集合时「依赖被跳过」把两件不同的事混成一件：
+    //     · 依赖**永远起不来**（被停用 / 失败）⇒ 依赖方也不该起（`unavailable`）
+    //     · 依赖**等触发**（懒、已就绪）⇒ 依赖方只是【还不能跑】，它自己也该进 `ready`（`deferred`）
+    //   混用的实测后果：**lazy 依赖 lazy 时，被依赖方进了 skipped，依赖方就永久停在
+    //   `discovered`**，而 `#activateAllReady` 只扫 `READY` ⇒ 它永远不会被触发，
+    //   连注册的动作都派发不到（`action_not_found`）——「按需激活」在最常见的形态下失效。
+    const unavailable = new Set();
+    const deferred = new Set();
     try {
       for (const id of order) {
         const rec = this.#plugins.get(id);
         // ★ 拓扑序是开跑前的快照：途中被 unregisterPlugin 移除的插件直接跳过。
         if (!rec) continue;
-        if (rec.disabledByUser || Object.keys(rec.manifest.dependencies).some(d => skipped.has(d))) {
-          skipped.add(id);
+        const deps = Object.keys(rec.manifest.dependencies);
+        if (rec.disabledByUser || deps.some(d => unavailable.has(d))) {
+          unavailable.add(id);
+          continue;
+        }
+        const isLazy = rec.manifest.activation === ActivationPolicy.LAZY;
+        // ★ 已经是活的（重复 boot 到已激活的懒插件）⇒ **不得**改写成 ready，
+        //   否则会把一个正在运行、已提供服务与动作的插件"假停用"掉
+        //   （scope 没释放、服务还在表里，再触发会重跑 activate ⇒ 动作注册撞名抛 duplicate_action）。
+        //   ⇒ 走下面的正常路径（`activatePlugin` 对 ACTIVE 短路），依赖方也照常可上线。
+        if (isLazy && !isLiveState(rec.state)) {
+          // 依赖里若有【永远起不来】的，它连"等触发"都算不上 —— 不置 ready，等条件具备的自然会被拉起
+          if (deps.some(d => deferred.has(d) && this.#plugins.get(d)?.manifest.activation !== ActivationPolicy.LAZY)) {
+            deferred.add(id);
+            continue;
+          }
+          this.#setState(rec, LifecycleState.READY);
+          deferred.add(id);
+          this.log('info', `Plugin '${id}' is ready (lazy: waiting to be triggered)`);
+          continue;
+        }
+        // ★ 急切插件：必需依赖只要还没【跑过 activate】（等触发的懒依赖也算）就不能上线。
+        //   否则会以 dependency_inactive 让整次 boot 失败回滚 —— 而那不是错误，只是"还没到时候"。
+        if (deps.some(d => deferred.has(d) || !hasRunActivate(this.#plugins.get(d)?.state))) {
+          deferred.add(id);
           continue;
         }
         // ★ 只把【本次调用真正启动的】记进回滚清单。
@@ -907,6 +1085,12 @@ export class CordiumHost {
     const record = this.#plugins.get(pluginId);
     const run = this.#serializeLifecycle(pluginId, async () => {
       if (this.#plugins.get(pluginId) !== record) throw new CordiumError(ErrorCode.PLUGIN_NOT_FOUND, `Plugin '${pluginId}' not found`);
+      // ★ 按需激活：显式激活一个懒插件时，它自己的懒依赖也要跟着起来
+      //   —— 否则 `#assertDependenciesActive` 会以 dependency_inactive 拒绝，
+      //   而真因是「提供者也是懒的、还没被触发」。
+      // ⚠️ 先【同步】判断，没有 ready 依赖就不 await —— 保住「空闲时同步进入任务体」的契约
+      //   （多一跳微任务会让别的迁移插队，实测两个用例变红，见 #hasReadyDependency 的注释）。
+      if (this.#hasReadyDependency(pluginId)) await this.#activateReadyDependencies(pluginId);
       await this.#activatePluginNow(pluginId);
       record.disabledByUser = false;
     });
@@ -952,7 +1136,7 @@ export class CordiumHost {
    *   被级联停掉的插件打上 stoppedByCascade，提供者重新激活时会被拉回来。
    */
   async #stopDependents(pluginId) {
-    const isLive = (rec) => rec?.state === LifecycleState.ACTIVE || rec?.state === LifecycleState.ACTIVATING;
+    const isLive = (rec) => !!rec && isLiveState(rec.state);
     // ★ 一轮停完要重新取名单，直到没有活的依赖方：停用途中提供者仍是 ACTIVE，
     //   期间新注册 / 新激活的依赖方不在上一轮名单里 ⇒ 只跑一轮会留下依赖已下线却仍 ACTIVE 的插件。
     for (let live = this.#dependentsOf(pluginId); live.some(id => isLive(this.#plugins.get(id)));
@@ -964,9 +1148,23 @@ export class CordiumHost {
         await this.#serializeLifecycle(depId, async () => {
           if (this.#plugins.get(depId) !== dep) return;
           await this.#stopDependents(depId);
-          if (dep.state !== LifecycleState.ACTIVE) return;
+          // ★ `ready` 的依赖方没有东西可拆，但要记住「它被级联停过」：
+          //   提供者回来时才能把它放回 `ready`（否则它会永远留在 `disabled`，
+          //   而它本来只是「还没触发」而已）。
+          if (!isLiveState(dep.state)) return;
+          if (dep.state === LifecycleState.READY) {
+            this.#setState(dep, LifecycleState.DISABLED);
+            dep.stoppedByCascade = true;
+            // ★ 记住「它是在【等触发】的状态下被连累的」——否则恢复时无从分辨
+            //   它原本是 ready 还是 active（两者都会变成 disabled），
+            //   而这两种情况的正确恢复动作**不同**（回 ready vs 重新激活）。
+            dep.stoppedWhileReady = true;
+            this.log('info', `Lazy plugin '${depId}' was moved back to disabled because its dependency '${pluginId}' was deactivated`);
+            return;
+          }
           await this.#deactivatePluginNow(depId);
           dep.stoppedByCascade = true;
+          dep.stoppedWhileReady = false;
           this.log('info', `Plugin '${depId}' stopped because its dependency '${pluginId}' was deactivated`);
         });
       }
@@ -979,10 +1177,31 @@ export class CordiumHost {
       const dep = this.#plugins.get(depId);
       // ★ 同 #stopDependents：循环里有 await，后面的依赖方可能已被移除。
       if (!dep || !dep.stoppedByCascade || dep.disabledByUser) continue;
+      // ★ 依赖必须【真的跑过 activate】才算就绪 —— `hasRunActivate` 而非 `isLiveState`：
+      //   一个 `ready` 的提供者被当成已上线，消费者取服务时才炸（见 hasRunActivate 的注释）。
       const ready = Object.keys(dep.manifest.dependencies)
-        .every(d => this.#plugins.get(d)?.state === LifecycleState.ACTIVE);
+        .every(d => hasRunActivate(this.#plugins.get(d)?.state));
       if (!ready) continue;
+      // ★★ `stoppedByCascade` 的语义是「**它只是被连累，该恢复原样**」——
+      //   所以这里对懒插件**不能**一律退回 `ready`。
+      //
+      //   缺陷（由独立对抗性核验发现，本机复现）：
+      //     一个**已经被触发过**（跑过 `activate`）的懒插件，在依赖被停用时走的是
+      //     **正常级联停用**（`state → disabled`）；依赖回来时若一律把它重写成 `ready`，
+      //     就抹掉了「它其实已经激活过」这个事实 —— 下次触发会**重跑 `activate`**，
+      //     带 `registerAction` 的插件直接撞名抛 `duplicate_action`（实测）。
+      //
+      //   ⇒ 恢复动作取决于它**被连累时在哪个状态**，而两者都会变成 `disabled`，
+      //     所以那件事必须当场记下来（`stoppedWhileReady`），不能事后猜。
+      const wasWaiting = dep.stoppedWhileReady === true;
       dep.stoppedByCascade = false;
+      dep.stoppedWhileReady = false;
+      if (dep.manifest.activation === ActivationPolicy.LAZY && wasWaiting) {
+        this.#setState(dep, LifecycleState.READY);
+        this.log('info', `Lazy plugin '${depId}' is ready again after its dependency '${pluginId}' came back`);
+        continue;
+      }
+      // 已激活过的懒插件走下面的正常激活路径 ⇒ 恢复激活（不是「退回等触发」）
       try {
         await this.activatePlugin(depId);   // 递归恢复它自己的级联依赖方
       } catch (err) {
@@ -1001,13 +1220,13 @@ export class CordiumHost {
     try {
       this.#assertDependenciesActive(pluginId, record);
     } catch (err) {
-      record.state = LifecycleState.FAILED;
+      this.#setState(record, LifecycleState.FAILED);
       record.error = err;
       this.#logFailure('error', `Plugin '${pluginId}' failed to activate`, err, pluginId);
       throw err;
     }
 
-    record.state = LifecycleState.ACTIVATING;
+    this.#setState(record, LifecycleState.ACTIVATING);
     const scope = new EffectScope(pluginId, {
       // ★ 注入释放回调而不是交出宿主引用：scope 会作为 ctx.scope 交给插件，
       //   它只需要「按 scope 身份释放」这两个能力，不需要认识宿主的形状。
@@ -1023,7 +1242,21 @@ export class CordiumHost {
     try {
       if (record.entry && typeof record.entry.activate === 'function') {
         const ctx = this.#buildPluginCtx(pluginId, scope, null);
-        await runWithTimeout(() => record.entry.activate(ctx), budget, () => new CordiumError(ErrorCode.LIFECYCLE_TIMEOUT,
+        // ★★ 第二参【一律】传 —— 没有配置时传 `{}`，不传 `undefined`。
+        //
+        //   此前 `registerPlugin` 路径完全不传第二参（`loadPlugins` 路径则传一个已冻结的对象）⇒
+        //   同一个接口**两种形状**，其中一种是 `undefined`。实测后果：
+        //   照抄插件指南 §1 的 `activate(ctx, config) { let n = config.start ?? 0 }` 会抛
+        //   **裸 TypeError**（`instanceof CordiumError === false`、`code === undefined`），
+        //   而指南 §9 承诺「宿主抛出的一律是 CordiumError」⇒ 作者按文档写的 catch 分支接不住。
+        //
+        //   ★ 为什么统一成 `{}` 是安全的（依据是**语言规范**，不是我的偏好）：
+        //     `function activate(ctx, config = {})` 的默认参数在【调用方传 undefined】时同样生效，
+        //     故 `activate(ctx, undefined)` 与 `activate(ctx, {})` 对任何遵循语言约定的插件**逐字等价**。
+        //     受影响的只有「假定第二参一定存在」的写法 —— 而那正是会崩的写法。
+        //   ⚠️ 不选「只改文档」：文档只能覆盖照着文档写的人，而这是内核的**结构问题**。
+        const config = record.entry.config ?? EMPTY_CONFIG;
+        await runWithTimeout(() => record.entry.activate(ctx, config), budget, () => new CordiumError(ErrorCode.LIFECYCLE_TIMEOUT,
           `Plugin '${pluginId}' activate() did not finish within ${budget}ms (it may still be running; its scope is released, so later registrations are rejected)`,
           { pluginId }));
         // ★ 防御纵深 —— **本检查在当前代码路径上不可达**，保留是刻意的。按本仓既有口径，
@@ -1050,14 +1283,14 @@ export class CordiumHost {
         }
       }
       record.activationMs = Date.now() - started;
-      record.state = LifecycleState.ACTIVE;
+      this.#setState(record, LifecycleState.ACTIVE);
       // ★ 成功后必须清掉上一次的失败痕迹，否则 getDiagnostics() 会出现
       //   「state=active 却还挂着旧 error」的自相矛盾输出，误导排障。
       record.error = undefined;
       this.log('info', `Plugin activated: ${pluginId}`);
     } catch (err) {
       record.activationMs = Date.now() - started;
-      record.state = LifecycleState.FAILED;
+      this.#setState(record, LifecycleState.FAILED);
       record.error = err;
       await scope.dispose(this.#scopeReleaseKey, { timeoutMs: budget });
       record.scope = null;
@@ -1081,10 +1314,7 @@ export class CordiumHost {
       record.stoppedByCascade = false;
       // ★ 没有活着的依赖方时【同步】进入停用（不多加一跳微任务）——
       //   保持「调用返回那一刻 state 已是 stopping」这条既有契约（见 #serializeLifecycle 注释）。
-      const live = this.#dependentsOf(pluginId).some(id => {
-        const s = this.#plugins.get(id).state;
-        return s === LifecycleState.ACTIVE || s === LifecycleState.ACTIVATING;
-      });
+      const live = this.#dependentsOf(pluginId).some(id => isLiveState(this.#plugins.get(id).state));
       if (!live) return this.#deactivatePluginNow(pluginId);
       return this.#stopDependents(pluginId).then(() => this.#deactivatePluginNow(pluginId));
     });
@@ -1092,9 +1322,21 @@ export class CordiumHost {
 
   async #deactivatePluginNow(pluginId) {
     const record = this.#plugins.get(pluginId);
-    if (!record || record.state !== LifecycleState.ACTIVE) return;
+    if (!record) return;
+    // ★★ `ready` 的插件也要能停 —— 它什么都没跑过（没有 scope、没有挂钩子），
+    //   直接落 `disabled` 即可，**不能**走下面的 STOPPING 流程去 dispose 一个 null scope。
+    //
+    //   ★ 这是一处真实缺口（被判别性测试逼出来的）：`ready` 算「活着」（见 isLiveState），
+    //     但此前这里只认 ACTIVE ⇒ `deactivatePlugin` 对一个等触发的懒插件**完全无效**
+    //     —— 显式停用后状态仍是 `ready`，用户根本停不掉一个懒插件。
+    if (record.state === LifecycleState.READY) {
+      this.#setState(record, LifecycleState.DISABLED);
+      this.log('info', `Plugin deactivated while waiting to be triggered: ${pluginId}`);
+      return;
+    }
+    if (record.state !== LifecycleState.ACTIVE) return;
 
-    record.state = LifecycleState.STOPPING;
+    this.#setState(record, LifecycleState.STOPPING);
     this.log('info', `Deactivating plugin: ${pluginId}`);
 
     // deactivate() 与清理回调共用一份预算 ⇒ 停用在预算内【一定】走到 disabled
@@ -1114,7 +1356,7 @@ export class CordiumHost {
         await record.scope.dispose(this.#scopeReleaseKey, { timeoutMs: left });
         record.scope = null;
       }
-      record.state = LifecycleState.DISABLED;
+      this.#setState(record, LifecycleState.DISABLED);
       this.log('info', `Plugin deactivated and scope released: ${pluginId}`);
     }
   }
@@ -1160,6 +1402,9 @@ export class CordiumHost {
       this.#pluginPermissions.delete(pluginId);
       this.#pluginDependencies.delete(pluginId);
       this.#pluginOptionalDependencies.delete(pluginId);
+      // ★ `to` = null 表示「已不在表里」。★ 位置在删除【之后】—— 通知必须晚于事实，
+      //   否则监听器回调里去查 `getDiagnostics()` 还会看到这个插件。
+      this.#announcePresence(pluginId, LifecycleState.DISABLED, null);
       this.log('info', `Plugin unregistered: ${pluginId}`);
     });
   }
@@ -1227,6 +1472,17 @@ export class CordiumHost {
        * 不会拿到提供者实现；需要重新使用服务时，必须重新调用 getService。
        */
       watchService: (name, listener) => this.#watchServiceForPlugin(pluginId, scope, name, listener, scopeKey),
+      /**
+       * 订阅**任意插件**的状态变更（启用 / 停用 / 激活失败 / 进入等触发…）。
+       *
+       * 适合的场景：某个装配层按内核注册表渲染界面，需要在「注册表刚变了」时重投影。
+       * 此前没有这个时机，装配层只能**包装宿主的注册方法**来制造它 —— 而包装是在改别人的对象，
+       * 内核把方法改成不可写或私有后它会**静默失效**（表现是「停用的插件面板还留在屏幕上」）。
+       *
+       * @param {(change: {id: string, from: string, to: string}) => void} listener 收到冻结的轻量元数据
+       * @returns {() => void} 退订函数（作用域会托管它，插件停用后自动摘除）
+       */
+      watchPluginState: (listener) => this.#watchPluginStateForPlugin(pluginId, scope, listener, scopeKey),
 
       // ───────── 作用域 ─────────
       /**
@@ -1941,6 +2197,65 @@ export class CordiumHost {
    * @param {string | symbol | null} scopeKey
    * @returns {() => boolean}
    */
+  /**
+   * ★★ 插件状态变更的窄接口 —— 插件用它订阅任意插件的启停。
+   *
+   * ── 为什么必须有（这是下游实测出来的需求，不是我推测的）──────
+   *   一个按内核注册表渲染界面的装配层，需要「内核注册表刚变了」这个时机来重投影。
+   *   它此前**明确记录过这条缺口**，并因此放弃了自动同步：
+   *     「内核**没有**「插件启停」事件 …… 本类若靠包装 `kernel.registerPlugin` 来实现自动同步，
+   *      就是在**改别人的对象**：一旦内核把这些方法改成不可写（或换成 class 私有），
+   *      包装会静默失效，而失效的表现是「停用的插件面板还留在屏幕上」」
+   *   ⇒ 那条注释描述的做法（包装宿主方法）**正是本事件要取代的东西**。
+   *
+   * ── 形状与 `watchService` 完全一致 ──────────────────────────────
+   *   · 事件名是**模块私有 symbol**：插件发不出也订不到（防伪造 registered / unregistered）；
+   *   · 宿主经 `channel.broadcast` 发（绕开作用域放行规则，见其注释）；
+   *   · 调用方只声明「我关心」，作用域注入与退订托管由宿主负责。
+   *
+   * ⚠️ 收到的是**冻结的轻量元数据**，不含插件记录本身：
+   *   要拿别人的能力，仍必须走 `getService`（那条路才有鉴权）。
+   *
+   * @param {string} pluginId 订阅方（闭包注入，不可伪造）
+   * @param {import('./scope.mjs').EffectScope} scope
+   * @param {(change: {id: string, from: string, to: string}) => void} listener
+   * @param {string | null} scopeKey
+   */
+  #watchPluginStateForPlugin(pluginId, scope, listener, scopeKey) {
+    if (typeof listener !== 'function') {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'watchPluginState requires a function listener');
+    }
+    return this.#subscribeForPlugin(pluginId, scope, PLUGIN_STATE, listener, {}, scopeKey);
+  }
+
+  /**
+   * ★★ 状态迁移的**唯一写入口**：改状态 + 广播。
+   *
+   * 为什么必须是一处：状态赋值此前散落在 **10 处**。要广播「插件状态变了」时，
+   *   逐处插桩必然漏 —— 而漏的表现是「界面偶尔不刷新」这种最难查的 bug
+   *   （与 `isLiveState` 抽出来的理由同源：一处判定，多处共用）。
+   *
+   * ★ 广播时机必须是【事实落定之后】：先写 `record.state`，再广播 ——
+   *   否则监听器回调里读到的还是旧状态，它据此做的判断全是错的。
+   *
+   * ⚠️ 中间态（`activating` / `stopping`）也照实广播，不合并、不节流：
+   *   「正在起」与「起来了」对界面是两件事（前者该显示加载态）。
+   *
+   * @param {object} record 插件记录
+   * @param {string} next 新状态
+   */
+  #setState(record, next) {
+    const from = record.state;
+    if (from === next) return;
+    record.state = next;
+    this.#channel.broadcast(PLUGIN_STATE, Object.freeze({ id: record.manifest.id, from, to: next }));
+  }
+
+  /** 插件表**增删**同样是一次「注册表变更」—— 订阅方需要知道名单变了（from / to 为 null） */
+  #announcePresence(id, from, to) {
+    this.#channel.broadcast(PLUGIN_STATE, Object.freeze({ id, from, to }));
+  }
+
   #watchServiceForPlugin(pluginId, scope, serviceName, listener, scopeKey) {
     if (!this.#serviceContracts.has(serviceName)) {
       throw new CordiumError(ErrorCode.UNDECLARED_SERVICE, `Service '${serviceName}' is not declared by host`);
@@ -1973,8 +2288,61 @@ export class CordiumHost {
    * @param {string} action
    * @param {any} payload
    */
-  dispatchAction(callerPluginId, action, payload) {
-    return this.#actionHandlers.dispatch(callerPluginId, action, payload);
+  async dispatchAction(callerPluginId, action, payload) {
+    // ★★ 按需激活的触发点：**首次派发一个还没有处理器的动作**时，
+    //   先把所有仍在等触发的懒插件拉起来，再重试一次。
+    //
+    //   ── 为什么这是本内核唯一可行的触发点（不是设计取舍，是契约约束）──
+    //   `getService` 与 `emit` / `bail` / `waterfall` 都**同步返回**，而激活是异步的
+    //   （`activate` 可以是 async、有超时）。把激活挂到服务取用或事件派发上，
+    //   就得把这些 API 改成 async —— 那等于换一个框架。
+    //   `dispatchAction` 本来就是 `async`，所以只有它能承载激活。
+    //
+    //   ── 为什么【只在未命中时】尝试 ──
+    //   正常的 action 派发（热路径）不为此付出任何代价：查表命中就直接走。
+    //   未命中才值得付一次「拉起懒插件」的代价 —— 而且只付一次（下面的 while 不循环）。
+    let result;
+    try {
+      result = await this.#actionHandlers.dispatch(callerPluginId, action, payload);
+    } catch (err) {
+      if (err?.code !== ErrorCode.ACTION_NOT_FOUND) throw err;
+      const woken = await this.#activateAllReady(`action '${action}' was dispatched`);
+      if (woken === 0) throw err;        // 没有懒插件可拉 ⇒ 保持原来的 action_not_found 语义
+      result = await this.#actionHandlers.dispatch(callerPluginId, action, payload);
+    }
+    return result;
+  }
+
+  /**
+   * ★ 把所有仍在等触发的懒插件拉起来（依赖按递归收拢），返回真正启动了几个。
+   *
+   * ⚠️ 一次派发里**只调用一次**（调用方保证）：懒插件激活后自己注册动作是常见形态，
+   *   所以「拉起 → 重试」是一对；若重试仍未命中，说明确实没有这个动作，
+   *   再拉一轮不会有新东西，只会变成递归触发。
+   *
+   * ★ 单个懒插件激活失败【不阻断其它】—— 一个坏插件不该让所有按需插件都起不来；
+   *   失败者已成 `failed` 并进了日志与诊断（`getDiagnostics().plugins[].state`）。
+   *
+   * @param {string} reason 记日志用（说明是什么触发的）
+   * @returns {Promise<number>} 成功激活的个数
+   */
+  async #activateAllReady(reason) {
+    let woken = 0;
+    // ★ 直接迭代插件表：这一路只改 `state`，不增删条目（激活钩子拿到的是 ctx，注册不了插件），
+    //   故无需为「迭代中改表」做快照。
+    for (const [id, rec] of this.#plugins) {
+      if (rec.state !== LifecycleState.READY) continue;
+      try {
+        await this.#activateReadyDependencies(id);
+        await this.activatePlugin(id);
+        woken += 1;
+        this.log('info', `Lazy plugin '${id}' activated because ${reason}`);
+      } catch (err) {
+        // 不吞：失败的懒插件进 failed，原因进日志；其它懒插件继续尝试
+        this.#logFailure('warn', `Failed to activate lazy plugin '${id}' (${reason})`, err, id);
+      }
+    }
+    return woken;
   }
 
   // ★ UI 贡献表已抽成内部类 UIRegistry（ui-registry.mjs），这里只委托。
@@ -1997,9 +2365,34 @@ export class CordiumHost {
 
   /**
    * 获取当前运行时完整诊断拓扑 (可用于空内核自检或可视化呈现)
+   *
+   * ★★ **稳定性契约**（allowlist 形态，与 k6 的措辞同一口径：
+   *   「Only APIs **specifically mentioned within this document** are covered by our
+   *     stability guarantees. Any API not explicitly included… may be subject to breaking changes.」）
+   *
+   *   本快照**分成两档**，点名的那部分才承诺兼容 —— 详见 `DIAGNOSTICS_CONTRACT`：
+   *     · **稳定面**（`DIAGNOSTICS_CONTRACT.stable`，按**路径**逐层给）：
+   *       点名的路径与键不删、不改名、不改类型；**枚举值可增不可改**
+   *       （与 OTel / K8s 一致：加一个 `state` 取值不算破坏，改掉既有字面量才是）。
+   *     · **不稳定面**（`DIAGNOSTICS_CONTRACT.unstable`）：随时可改，**不承诺**。
+   *       人类可读文本与条数都在这一档 —— 与 K8s 同判：官方的**人类可读输出**不是稳定的
+   *       机器契约（机器读走 `-o json`）。⚠️ 本文件此前引过一句声称是 K8s 原文的英文，
+   *       联网复核在**一手页面查无**（只见于第三方转述），已删 —— 不拿二手转述冒充满一手引文。
+   *   ★ 未点名的路径/键**一律不承诺** —— 不是「大概稳定」，是**明确不承诺**。
+   *
+   * ★★ **消费方契约**：只读稳定面点名的路径，**忽略未知字段**（Tolerant Reader）。
+   *   内核加字段不改契约、也不该打到消费方；反过来消费方读了不稳定面，后果自负。
+   *
+   * ★ `schemaVersion` 随快照交出，供消费方判「这份快照按哪版契约读」；
+   *   它本身**不在稳定面**（承诺它等于承诺「版本号不会变」，自相矛盾）。
+   *   ★ 稳定面发生**不兼容**改动时才递增；**增字段不算**（增字段对守约的消费方无感）。
    */
   getDiagnostics() {
     return {
+      // ★★ 契约版本随快照一起交出 —— 「这份快照按哪版契约读」是**消费方**需要的，
+      //   不能只写在文档里（文档不会跟着 API 调用走）。取值来自契约表，不另写字面量。
+      //   ⚠️ 它本身**不在稳定面**：稳定面发生不兼容改动时它才递增，承诺它等于承诺它不变。
+      schemaVersion: DIAGNOSTICS_CONTRACT.schemaVersion,
       hostVersion: this.#hostVersion,
       booted: this.#booted,
       totalPlugins: this.#plugins.size,

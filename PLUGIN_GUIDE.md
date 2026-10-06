@@ -47,7 +47,7 @@ export function deactivate() {
 
 也可以用默认导出同形对象：`export default { manifest, activate, deactivate }`。
 
-- `activate(ctx, config)`：插件被激活时调用，可以是 `async`。`config` 来自装配方的加载清单，已冻结；直接用 `host.registerPlugin` 登记时没有第二个参数。
+- `activate(ctx, config)`：插件被激活时调用，可以是 `async`。`config` 来自装配方的加载清单，**已冻结**；直接用 `host.registerPlugin` 登记时是**空对象 `{}`**（不是 `undefined`）。两种情况都请写成 `config = {}` 有默认值的形状，或用 `config.foo ?? 默认值` 取用。
 - `deactivate()`：插件被停用时调用，可以是 `async`。
 - 两个钩子默认各有 **30 秒**上限（装配方可调整），超时的激活判为失败。
 
@@ -57,12 +57,13 @@ export function deactivate() {
 |---|---|---|---|
 | `id` | ✅ | string | 全局唯一。小写字母和数字组成的段，段之间用 `.` `_` `-` 连接，如 `acme.search-index` |
 | `version` | ✅ | string | 插件自身版本，合法 SemVer，如 `1.2.0` |
-| `apiVersion` | ✅ | string | 插件面向的内核接口版本。主版本号必须等于内核的 `KERNEL_API_VERSION`（当前 `1.0.0`，所以写 `1.x.y`） |
+| `apiVersion` | ✅ | string | 语义是「**至少需要哪个**内核接口版本」。两条判据同时成立才放行：**主版本号等于**内核的 `KERNEL_API_VERSION`（当前 `1.0.0`），且**内核不低于**你声明的号 ⇒ 现在写 `'1.0.0'`。★ 写一个**高于内核**的号（如 `'1.0.1'`）会被拒 —— 内核还没有那个 API。 |
 | `provides` | | string[] | 本插件会提供的服务名。**不在这里的服务名不能 `provideService`** |
 | `dependencies` | | object | 必需依赖：`{ '插件id': 'SemVer 范围' }`，如 `{ 'demo.counter': '^1.0.0' }`。**只收这一种形态**（数组写法已取消：它写不下范围，只能一律当 `*`，等于静默放弃版本约束） |
 | `optionalDependencies` | | object | 可选依赖，写法同上。缺席时不影响本插件激活 |
 | `permissions` | | string[] | 本插件申请的权限名。必须是装配方登记过的名字 |
 | `kind` | | `'core'` \| `'business'` | 插件类别，默认 `business`。只是描述，「core 能否被用户停用」由应用决定 |
+| `activation` | | `'eager'` \| `'lazy'` | 默认 `eager`（`boot()` 时激活）。写 `'lazy'` 则登记后停在 `ready`，等**被显式激活**或**首次派发它登记的动作**时才激活；它的必需依赖会被连带激活 |
 | `displayName` / `description` | | string | 展示用 |
 | `name` | | string | 插件目录 / 市场用的名称（见下一小节）。内核不保留，登记时丢弃并记一条 `info` 级诊断 |
 | `hotReload` | | boolean | 默认 `false`。写 `true` 表示本插件可以在进程内热重载：它只在 `ctx` 上登记东西，或自己开的外部资源都在 `deactivate` / `ctx.scope` 里释放干净。开发期重载器只重载写了它的插件，见 [§10](#开发期热重载) |
@@ -83,11 +84,13 @@ export function deactivate() {
 | `provides` / `permissions` | | 同上表，但更严格：必须是数组，不能有空项和重复项 |
 | `dependencies` | | 同上表 |
 | `kind` | | 同上表 |
-| `config` | | 普通对象，随描述符一起进目录；缺省为 `{}` |
+| `activation` | | 同上表 |
 
 描述符**不保留** `optionalDependencies` / `displayName` / `description` / `hotReload`。
 
-要让同一份 manifest 既能运行又能上架，就写成两套字段的并集。本文与 README 的示例都已带上 `name`，可以直接上架。内核登记这份 manifest 时会丢掉 `name` / `config`，并记一条 `info` 级诊断，这是预期行为。运行时的配置由装配方通过 `loadPlugins` 清单的 `config` 传入（见 §10），不读 manifest 里的 `config`。
+要让同一份 manifest 既能运行又能上架，就写成两套字段的并集。本文与 README 的示例都已带上 `name`，可以直接上架。内核登记这份 manifest 时会丢掉 `name`，并记一条 `info` 级诊断，这是预期行为。
+
+**配置从哪来**：只有一个来源 —— 装配方通过 `loadPlugins` 清单的 `config` 传入（见 §10）。manifest 里**没有** `config` 字段（曾经有过，但它从不生效：既不传给插件，也没有任何读取路径，只会让作者以为默认配置生效了）。
 
 ## 3. ctx：插件能用的全部能力
 
@@ -101,6 +104,7 @@ export function deactivate() {
 | `provideService(name, impl)` | undefined | 提供服务，见 [§4](#4-服务) |
 | `getService(name)` | 服务句柄 | 取用服务 |
 | `watchService(name, listener)` | 退订函数 | 监听某个服务的注册 / 注销 |
+| `watchPluginState(listener)` | 退订函数 | 监听**任意插件**的状态变更（注册 / 启停 / 等触发 / 激活失败）。回调收到冻结的 `{ id, from, to }`；`from` 为 `null` 表示新注册，`to` 为 `null` 表示已移出。中间态（`activating` / `stopping`）也会推 |
 | `registerAction(name, options)` | undefined | 注册动作，见 [§5](#5-动作) |
 | `dispatchAction(name, payload)` | **Promise** | 调用动作 |
 | `on(name, listener, options?)` | 退订函数 | 订阅事件，见 [§6](#6-事件) |
@@ -112,8 +116,8 @@ export function deactivate() {
 | `waterfall(name, ...args, fallback)` | 结果（链上有 async 时为 Promise） | 中间件链 |
 | `scoped(label)` | 新 ctx | 进入命名作用域，见 [§7](#7-作用域) |
 | `privateScope()` | 新 ctx | 进入只属于这一次调用的私有作用域 |
-| `registerUIContribution(item)` | undefined | 登记一条 UI 贡献（`{ id, type, ... }` 或字符串 id） |
-| `log(level, message, details?)` | undefined | 写宿主审计日志，`level` 一般用 `info` / `warn` / `error` |
+| `registerUIContribution(item)` | undefined | 登记一条 UI 贡献（`{ id, type, ... }` 或字符串 id）。`type` 由装配方用 `host.declareUIContributionTypes([...])` 声明值集；声明了之后写别的值当场抛 `invalid_argument`（没声明则不做校验） |
+| `log(level, message, details?)` | undefined | 写宿主审计日志。`level` **必须是** `debug` / `info` / `warn` / `error` 之一，写别的（包括 `'Error'`、`'err'` 这类拼法）当场抛 `invalid_argument` —— 只有 `error` 级会进诊断的专用错误缓冲并附栈，拼错就等于让出错证据消失 |
 
 - `dispatchAction` 总是返回 Promise；`parallel` / `serial` 正常调用返回 Promise（旧 `ctx` 上会先同步抛 `scope_disposed`，见下条）。`waterfall` 在**实际走到**的监听器与 `fallback` 都同步时直接返回结果，实际走到某一环返回 Promise 时整条链返回 Promise，稳妥的写法是一律 `await`。其余方法都是同步的。
 - 插件停用后，手里留着的旧 `ctx` 基本都失效：除 `log` 外，登记、发布、取服务、派发动作、事件订阅与派发、`scoped` / `privateScope`，调用时都抛 `scope_disposed`。两处例外：`log` 不报错（只留日志，便于收尾）；`provideService` 在服务名未声明契约时，先报 `undeclared_service`（该项检查在生命周期门之前）。`dispatchAction` 是异步的，错误只会经 Promise 拒绝送达；`parallel` / `serial` 正常调用时监听器错误也走 Promise 拒绝，但生命周期门是**同步检查** —— 旧 `ctx` 上调用会**同步抛** `scope_disposed`。旧 `ctx` 的调用一律用 `try { await … } catch` 包住（同步抛与 Promise 拒绝都能接住）。
@@ -309,7 +313,15 @@ export function activate(ctx) {
 
 ## 9. 错误
 
-宿主抛出的一律是 `CordiumError`，请按 `err.code` 分支，不要匹配报文文字：
+**宿主自身**的失败一律是 `CordiumError`，请按 `err.code` 分支，不要匹配报文文字：
+
+> ⚠️ 口径收窄（此前写成「宿主抛出的一律」，实测为假）：**插件自己抛出的值会原样透传，不是 `CordiumError`**。
+> 分两类看清楚：
+> - **宿主主动检测到的失败**（参数错、未声明依赖、权限不足、取服务失败…）⇒ 一定是 `CordiumError`，带 `code`。
+> - **插件钩子抛出的原始值** ⇒ **原样透传**。`activate` / `deactivate` 抛什么就得到什么（宿主只负责记日志）；
+>   动作、服务、通道这几条路径上会被**包成** `CordiumError` 送到调用方，原始值在 `cause` 里。
+> 所以 `catch (err) { if (err.code === …) }` 之前，**先判 `err instanceof CordiumError`**（下面的示例就是这么写的）。
+
 
 ```js
 import { CordiumError, ErrorCode } from '@cordium/kernel';
@@ -425,6 +437,37 @@ await host.boot();
 - 常用宿主方法：`registerPlugin` / `unregisterPlugin` / `replacePlugin` / `boot` / `activatePlugin` / `deactivatePlugin` / `getInternalService` / `getUIContributions(type)` / `getDiagnostics()`。
 - 插件放在哪个目录都可以，清单里写绝对路径即可；以脚本自身为基准时用 `new URL('./plugins/x.mjs', import.meta.url)`。
 
+### 读诊断快照：哪些字段可以依赖
+
+`host.getDiagnostics()` 交出的快照**分两档**，契约写在 `DIAGNOSTICS_CONTRACT`（`@cordium/kernel` 的导出）：
+
+| 档 | 承诺 | 在哪 |
+|---|---|---|
+| **稳定面** | 点名的路径与键**不删、不改名、不改类型**；枚举值**可增不可改** | `DIAGNOSTICS_CONTRACT.stable`（按**路径**逐层给：根 / `plugins[]` / `services[]`） |
+| **不稳定面** | 随时可改，**不承诺** | `DIAGNOSTICS_CONTRACT.unstable` |
+
+★ **未点名的路径/键一律不承诺** —— 不是「大概稳定」，是**明确不承诺**（allowlist 形态）。
+★ 快照里的 `schemaVersion` 是**结构版本**，供判断「这份快照按哪版契约读」；它本身不在稳定面。
+
+**消费方的义务**（读快照的一方）：
+
+```js
+import { DIAGNOSTICS_CONTRACT } from '@cordium/kernel';
+
+const diag = host.getDiagnostics();
+if (diag.schemaVersion !== DIAGNOSTICS_CONTRACT.schemaVersion) { /* 按契约版本分支处理 */ }
+
+// ✅ 只读稳定面点名的字段；**忽略未知字段**
+const active = diag.plugins.filter(p => p.state === 'active').map(p => p.id);
+
+// ⚠️ 不稳定面：能用，但内核随时会改它（文本、条数、内部形状）
+const tail = diag.recentLogs.slice(-5).map(l => l.message);
+```
+
+★ **只读稳定面 + 忽略未知字段**，内核**加**字段就不会打到你的代码 —— 这正是分两档的目的。
+反过来，读了不稳定面就得自己承担内核改它的后果。★ 判活跃请用 `LifecycleState.ACTIVE` 常量，
+不要写字面量 `'active'`（拼错是静态值，不会报错，只会静默判错）。
+
 ### 按目录加载
 
 内核不扫描目录，只加载清单里写明的文件：会执行哪些代码一目了然，每一条还能带 `config` 等参数。想「把插件丢进一个目录就加载」，由应用自己扫描后生成清单：
@@ -524,3 +567,4 @@ const result = await callIsolated('/abs/path/heavy.mjs', 'crunch', [data], {
 - 动作超时和生命周期超时都只是停止等待，不能打断同步死循环，重计算请用 `callIsolated`。
 - 停用后不要再用旧 `ctx`；重新激活时 `activate` 会拿到新的 `ctx`。
 - 热重载只在开发时用；插件持有外部资源时，要么在 `deactivate` / `ctx.scope` 里释放干净并声明 `hotReload: true`，要么改完重启进程。
+- 读 `getDiagnostics()` **只读稳定面**（`DIAGNOSTICS_CONTRACT.stable`），并**忽略未知字段**；`state` 用 `LifecycleState.ACTIVE`，不写字面量。
