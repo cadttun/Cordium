@@ -222,9 +222,12 @@ test('★★ 实际产出的 reason 必须全部落在【导出的取值集合�
   }
 });
 
-test('★ 导出物是冻结的，且实现真的用了它（不是另抄一份字面量）', () => {
+test('★ 导出物是冻结的，且值集由对象【派生】（不是另抄一份）', () => {
   assert.ok(Object.isFrozen(UnresolvedReason), 'UnresolvedReason 必须冻结');
   assert.ok(Object.isFrozen(UNRESOLVED_REASON_VALUES), 'UNRESOLVED_REASON_VALUES 必须冻结');
   // ★ 值集由对象【派生】⇒ 二者不可能各说各话（这是「不造第二真相源」的机械保证）
   assert.deepEqual([...UNRESOLVED_REASON_VALUES], Object.values(UnresolvedReason));
+  // ⚠️ 本用例**不**证明「`host.mjs` 用的是这个常量」—— 那件事由上面那条
+  //   「产出集合 == 导出集合」兜住：实现若在 `host.mjs` 里新写一个字面量，
+  //   产出集合就会多出一个值，那条当场变红。（两处措辞不同，别把这条说成在验实现。）
 });
