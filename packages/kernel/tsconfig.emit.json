@@ -1,0 +1,27 @@
+{
+  // 声明文件生成配置（`@cordium/kernel`）。
+  //
+  // ★ 为什么与根 `tsconfig.json` 分开：`emitDeclarationOnly` 与 `noEmit` 互斥
+  //   （同时开会直接报错），而两件事的目标也不同 —— 一个做检查、一个做产出。
+  // ★ `outDir` 必须在 `src/` **之外**。这不是洁癖：把 `.d.mts` 写在 `.mjs` 旁边
+  //   会让 `--checkJs` 静默失效（TypeScript 的已知行为：同名声明存在时，
+  //   `.mjs` 会被从检查范围里剔除，`tsc` 退出码 0、零输出）。生成物落在 `types/`
+  //   既绕开这一点，也正好是 `exports` 要指向的地方。
+  // ★ `rootDir` 必须显式写（新版本 TS 起不再有默认值）。
+  // ★ 本文件只产出声明，不做检查 —— 检查由根 `tsconfig.json` 负责，两者不要混。
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "./src",
+    "outDir": "./types",
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": false
+  },
+  "include": ["src/**/*.mjs"]
+}

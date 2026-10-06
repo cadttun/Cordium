@@ -36,6 +36,25 @@ const ID_PATTERN = PLUGIN_ID_PATTERN;   // ★ 与内核层同一份定义
 //   而两者都用于「主版本相等」判定 ⇒ 漂移即跨层兼容性静默失守。现改为派生，结构上不可能漂移。
 export const PLUGIN_API_VERSION = KERNEL_API_VERSION;
 
+/**
+ * 插件描述符层的**归一化 manifest 形状**（`validatePluginManifest` 的产物）。
+ *
+ * ⚠️ 字段集 == `MANIFEST_FIELD_TABLE.plugin`（运行时的唯一真相源仍是那张表）。
+ *   与内核层 `PluginManifest` 是**两套 schema**：本层多 `name`，
+ *   少 `displayName` / `description` / `hotReload` / `optionalDependencies`。
+ *
+ * @typedef {object} PluginDescriptor
+ * @property {string} id
+ * @property {string} name
+ * @property {string} version
+ * @property {string} apiVersion
+ * @property {string[]} provides
+ * @property {string[]} permissions
+ * @property {Record<string,string>} dependencies
+ * @property {string} kind `'core'` | `'business'`
+ * @property {string} activation `'eager'` | `'lazy'`
+ */
+
 // 本文件的 assert 只守 manifest ⇒ 一律 invalid_manifest（与内核 validateManifest 同码）
 function assert(condition, message) {
   if (!condition) throw new CordiumError(ErrorCode.INVALID_MANIFEST, message);
@@ -105,6 +124,17 @@ function parseVersionBase(value, field, label, issues) {
 // 本层不再保留自己的比较函数。
 //   并使用它，而不是在插件层重写。
 
+/**
+ * 校验并归一化**插件描述符层**的 manifest。
+ *
+ * 入参是调用方自报的原始输入（形状未校验），故不写成具体类型；本函数负责判成 `PluginDescriptor`。
+ *
+ * @param {unknown} input 原始 manifest（形状未校验）
+ * @param {object} [options]
+ * @param {string} [options.apiVersion]
+ * @returns {PluginDescriptor} 白名单重建后的归一化 manifest
+ * @throws {CordiumError} 非法时抛 `invalid_manifest`
+ */
 export function validatePluginManifest(input, options) {
   const { apiVersion = PLUGIN_API_VERSION } = readOptions(options, 'validatePluginManifest', ['apiVersion']);
   assert(input && typeof input === 'object', 'plugin manifest is required');
@@ -120,7 +150,8 @@ export function validatePluginManifest(input, options) {
   //
   //   ⇒ 快照一次，两个问题一起关掉。内核层 `validateManifest` 早已是这个写法，本层此前漏了。
   let m;
-  try { m = { ...input }; } catch (err) {
+  // 上面已断言 input 是对象；这里把它读成键值视图做快照（形状未校验，只取顶层自有可枚举键）
+  try { m = { .../** @type {Record<string, unknown>} */ (input) }; } catch (err) {
     throw new CordiumError(ErrorCode.INVALID_MANIFEST,
       `plugin manifest could not be read: ${describeError(err)}`, { cause: err });
   }
@@ -229,9 +260,13 @@ export function validatePluginManifest(input, options) {
  * 这里是纯增量。`diagnostic` 与内核 `diffManifestFields` 同一形状（`path: 'plugin'`），
  * 可直接交给 `host.recordManifestDiagnostic`。不丢字段时为 `null`。
  *
- * @returns {{ manifest: object, diagnostic: object|null }}
+ * @param {unknown} input 原始 manifest（形状未校验，同 `validatePluginManifest`）
+ * @param {object} [options]
+ * @param {string} [options.apiVersion]
+ * @returns {{ manifest: PluginDescriptor, diagnostic: object|null }}
  */
 export function validatePluginManifestDetailed(input, options) {
   const manifest = validatePluginManifest(input, options);
-  return { manifest, diagnostic: diffManifestFields('plugin', input, manifest, manifest.id) };
+  // input 已过 validatePluginManifest（必为对象）⇒ 读成键值视图比对丢字段
+  return { manifest, diagnostic: diffManifestFields('plugin', /** @type {Record<string, unknown>} */ (input), manifest, manifest.id) };
 }

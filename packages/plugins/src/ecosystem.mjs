@@ -39,7 +39,7 @@ export function normalizeDependencies(dependencies) {
  * @param {Array<object>} manifests 候选插件 Manifest 列表
  * @param {object} [options]
  * @param {Map<string, { manifest: any, entry?: any }>} [options.existingRegistry] 已注册的插件表
- * @param {(diagnostic: object) => void} [options.onDiagnostic] ★ 候选 manifest 丢字段时回调（形状同内核 diffManifestFields）
+ * @param {(diagnostic: object) => void} [options.onDiagnostic] 丢字段回调 ★ 候选 manifest 时回调（形状同内核 diffManifestFields）
  * @returns {Array<object>} 拓扑排序后的 Manifest 列表
  */
 export function resolvePluginDependencies(manifests = [], options) {
@@ -183,6 +183,9 @@ function topologicalOrder(candidateIds, allMap) {
  * ★ 原名 `runSandboxedPluginCall`，名字暗示隔离而实际没有 ⇒ 名实不符，
  *   内核未发布，不保留旧名别名。
  *
+ * @param {(...args: unknown[]) => unknown} fn 被调用的插件函数
+ * @param {unknown[]} [args=[]] 透传给 fn 的参数（任意值，由调用方自定）
+ * @param {object} [options]
  * @param {number} [options.timeoutMs=3000] 必须是 (0, 2^31-1] 内的有限数；
  *   此前传 Infinity / NaN / 过大值会被 Node 静默改成 1ms ⇒ 立即超时（实测）。
  */

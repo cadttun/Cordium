@@ -3,7 +3,7 @@
  * @description 兜底定位：出错时能不能一眼看出「哪个插件、什么码、哪一行」。
  *
  * ★ 分两类：
- *   · 有调用方的失败（服务 / 动作 / serial·bail·waterfall）—— 调用方 catch 到 CordiumError：code / pluginId / cause（原错误带插件行号）；
+ *   · 有调用方的失败（服务 / 动作 / serial·waterfall）—— 调用方 catch 到 CordiumError：code / pluginId / cause（原错误带插件行号）；
  *   · 没有调用方的失败（emit 监听器、清理回调、生命周期钩子、启动回滚）—— 只进宿主日志，
  *     日志必须自带：插件 id、码、源头位置（文件:行:列）、栈、cause 链。
  */
@@ -213,7 +213,7 @@ test('插件抛字符串 / undefined：日志照记，无位置可报时不编�
 
 // ════════════════ 有调用方的失败 ⇒ 信封带归属 ════════════════
 
-test('★ serial / bail / waterfall：listener_failed 信封带出错监听器的插件 id', async () => {
+test('★ serial / waterfall：listener_failed 信封带出错监听器的插件 id', async () => {
   const host = new CordiumHost();
   let ctx;
   register(host, 'p.ok', { activate(c) { c.on('q', () => undefined); c.on('w', next => next()); } });
@@ -223,7 +223,7 @@ test('★ serial / bail / waterfall：listener_failed 信封带出错监听器�
   } });
   register(host, 'p.caller', { activate(c) { ctx = c; } });
   await host.boot();
-  for (const run of [() => ctx.serial('q'), async () => ctx.bail('q')]) {
+  for (const run of [() => ctx.serial('q')]) {
     const err = await run().then(() => null, e => e);
     assert.equal(err?.code, 'listener_failed');
     assert.equal(err.pluginId, 'p.fail');

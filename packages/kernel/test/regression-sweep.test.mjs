@@ -41,13 +41,6 @@ test('★ broadcast（internal/service 等宿主通知走这里）同样接住�
   assert.deepEqual(reported, ['watcher boom']);
 });
 
-test('bail：async 监听器不得被当成「已拦截」—— 响亮失败并指向 serial', () => {
-  const ch = new MessageChannel();
-  ch.subscribe('q', async () => undefined);
-  ch.subscribe('q', () => 'real answer');
-  assert.throws(() => ch.bail('q'), hasCode('invalid_usage'));
-});
-
 // ─────────── 父作用域被回收后，子链不得被他人重建的同名父键「接管」───────────
 
 test('★ 仍有子键时父键不得被回收（名字不空出来，就无从被重建接管）', () => {
@@ -291,7 +284,7 @@ test('★ 退订 / once 触发后 disposer 一并归还（常驻插件不得无�
   assert.equal(ctx.scope.disposers.size, base);
 });
 
-test('★ 停用后的旧 ctx 不得再 emit / parallel / serial / bail / waterfall', async () => {
+test('★ 停用后的旧 ctx 不得再 emit / parallel / serial / waterfall', async () => {
   const host = new CordiumHost();
   let stale;
   const heard = [];
@@ -300,7 +293,6 @@ test('★ 停用后的旧 ctx 不得再 emit / parallel / serial / bail / waterf
   await host.boot();
   await host.deactivatePlugin('a');
   assert.throws(() => stale.emit('x', 'ghost'), hasCode('scope_disposed'));
-  assert.throws(() => stale.bail('x'), hasCode('scope_disposed'));
   assert.throws(() => stale.waterfall('x', () => {}), hasCode('scope_disposed'));
   assert.throws(() => stale.parallel('x'), hasCode('scope_disposed'));
   assert.throws(() => stale.serial('x'), hasCode('scope_disposed'));
@@ -533,16 +525,6 @@ test('未声明的父键随子键以顶层入表：他人不能再把它新建�
   ch.ensureScope('evil', null);
   ch.ensureScope('p', 'evil');
   assert.equal(ch.scopeParentOf('p'), null, 'p 的位置不得被改写');
-});
-
-test('bail 拒绝 async 监听器时仍上报其拒绝原因', async () => {
-  const ch = new MessageChannel();
-  const reported = [];
-  ch.onListenerError = (n, e) => reported.push(e.message);
-  ch.subscribe('q', async () => { throw new Error('real cause'); });
-  assert.throws(() => ch.bail('q'), hasCode('invalid_usage'));
-  await tick();
-  assert.deepEqual(reported, ['real cause']);
 });
 
 test('★ 两层 manifest 版本判定一致：宽松写法与越界数字两层都拒绝', () => {

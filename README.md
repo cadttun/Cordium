@@ -102,7 +102,7 @@ await host.boot();
 | **服务契约** | 装配方声明「有哪个服务、谁能取、必须有哪些方法」。插件不能自造服务名。 |
 | **服务** | 插件在 `activate` 里 `provideService`，其它插件 `getService` 取到一个句柄；提供者停用后句柄立即失效。 |
 | **动作** | 带权限守门、超时的点对点调用：`registerAction` / `dispatchAction`。 |
-| **消息通道** | 一对多通知：`emit` / `parallel` / `serial` / `bail` / `waterfall`。 |
+| **消息通道** | 一对多通知：`emit` / `parallel` / `serial` / `waterfall`。 |
 | **作用域** | `ctx.scoped(label)` 让服务与事件只在同一作用域内流动（例如按 agent 或会话隔离）。 |
 | **资源回收** | 插件注册的服务、动作、监听器、UI 贡献、托管的定时器都挂在它的 `scope` 上，停用时由宿主统一回收。 |
 

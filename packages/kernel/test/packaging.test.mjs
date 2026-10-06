@@ -1,4 +1,5 @@
-// 打包内容门禁：两包的 tarball 只含 package.json、LICENSE、README.md 与 src/*.mjs，且 src 下每个模块都在里面。
+// 打包内容门禁：两包的 tarball 只含 package.json、LICENSE、README.md、src/*.mjs 与 types/*.d.mts，
+// 且 src 下每个模块都在、每个模块的类型声明也都在。
 // ★ README.md 是【要】进包的：npm 只认包目录下的 README，缺了它 npm 页面会显示「This package does not have a README」。
 // ★ 为什么跑真的 `npm pack --dry-run`，而不是只读 `files` 字段：`files` 之外还有 npm 的默认包含 / 排除规则
 //   （README、LICENSE、.npmignore 等），判据取打包器的实际输出，才不会与真相漂移（「以实际输出为准」口径）。
@@ -22,18 +23,27 @@ function packedFiles(workspace) {
 }
 
 for (const [workspace, dir] of [['@cordium/kernel', 'packages/kernel'], ['@cordium/plugins', 'packages/plugins']]) {
-  test(`★ ${workspace} 打包内容：只含 package.json + LICENSE + README.md + src/*.mjs，且 src 下模块一个不少`, () => {
+  test(`★ ${workspace} 打包内容：只含 package.json + LICENSE + README.md + src/*.mjs + types/*.d.mts，且模块与声明一个不少`, () => {
     const files = packedFiles(workspace);
     assert.ok(files.includes('LICENSE'), 'tarball 缺 LICENSE（MIT 要求随副本附带许可声明）');
     assert.ok(files.includes('README.md'), 'tarball 缺 README.md（npm 页面会显示「does not have a README」）');
     const allowed = new Set(['package.json', 'LICENSE', 'README.md']);
-    const stray = files.filter(f => !allowed.has(f) && !/^src\/[\w.-]+\.mjs$/.test(f));
+    const stray = files.filter(f => !allowed.has(f)
+      && !/^src\/[\w.-]+\.mjs$/.test(f)
+      && !/^types\/[\w.-]+\.d\.mts$/.test(f));
     assert.deepEqual(stray, [], `不该进包的文件（测试 / 文档 / 夹具等）：\n${stray.join('\n')}`);
 
-    const expected = fs.readdirSync(path.join(ROOT, dir, 'src'))
-      .filter(n => n.endsWith('.mjs')).map(n => `src/${n}`);
+    const modules = fs.readdirSync(path.join(ROOT, dir, 'src')).filter(n => n.endsWith('.mjs'));
+    const expected = modules.map(n => `src/${n}`);
     const missing = expected.filter(f => !files.includes(f));
     assert.deepEqual(missing, [], `src 下有模块没进包：\n${missing.join('\n')}`);
+
+    // ★ 声明文件必须与 src **一一对应**。这是「exports 的 types 条件指向的文件存在」
+    //   之外的另一半：少一个，消费方在那个子路径上就静默退回「无类型」，
+    //   而包本身看着完全正常 —— 又是一次「宣称成立、判据不成立」。
+    const expectedDecl = modules.map(n => `types/${n.replace(/\.mjs$/, '.d.mts')}`);
+    const missingDecl = expectedDecl.filter(f => !files.includes(f));
+    assert.deepEqual(missingDecl, [], `types 下缺了对应模块的声明（跑一次 npm run types:emit）：\n${missingDecl.join('\n')}`);
   });
 }
 

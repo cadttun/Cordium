@@ -169,6 +169,14 @@ export function wrapServiceHandle(serviceName, impl, check, providerId) {
   });
 }
 
+/**
+ * 句柄的写入侧一律拒绝（见 Proxy 各陷阱的说明）。
+ *
+ * ★ 它总是抛错、从不返回 —— 标注 `never` 既如实描述实现，也让 Proxy 的
+ *   `set` / `deleteProperty` / `defineProperty` / `setPrototypeOf` / `preventExtensions`
+ *   陷阱（类型上要求返回 boolean）能直接复用它。
+ * @returns {never}
+ */
 function readOnly(serviceName, what) {
   throw new CordiumError(ErrorCode.ACCESS_DENIED,
     `Service '${serviceName}': handles are read-only — consumers cannot ${what} on the provider's implementation`);

@@ -205,7 +205,7 @@ test('★ 嵌套派发：内层的码不再冒充外层 —— 外层 action_fai
   await assert.rejects(a.dispatchAction('act.none'), hasCode('action_not_found'));
 });
 
-test('★ 通道 serial / bail / waterfall 与 parallel 同一口径：监听器抛错 ⇒ listener_failed，原值在 cause', async () => {
+test('★ 通道 serial / waterfall 与 parallel 同一口径：监听器抛错 ⇒ listener_failed，原值在 cause', async () => {
   for (const thrown of THROWN) {
     const ch = new MessageChannel();
     ch.subscribe('s', () => { throw thrown; });
@@ -213,7 +213,6 @@ test('★ 通道 serial / bail / waterfall 与 parallel 同一口径：监听器
     const check = err => hasCode('listener_failed')(err) && err.cause === thrown;
     await assert.rejects(ch.serial('s'), check);
     await assert.rejects(ch.serial('a'), check, 'serial 的异步拒绝');
-    assert.throws(() => ch.bail('s'), check);
     assert.throws(() => ch.waterfall('s', 1, () => 0), check);
     await assert.rejects(ch.waterfall('a', 1, () => 0), check, 'waterfall 的异步拒绝');
   }

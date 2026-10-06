@@ -18,10 +18,14 @@
     "node": ">=22.13.0"
   },
   "devDependencies": {
-    "oxlint": "1.86.0"
+    "@types/node": "^26.6.4",
+    "oxlint": "1.86.0",
+    "typescript": "^7.0.2"
   },
   "scripts": {
     "test": "node scripts/run-tests.mjs",
+    "typecheck": "tsc --noEmit",
+    "types:emit": "tsc -p packages/kernel/tsconfig.emit.json && tsc -p packages/plugins/tsconfig.emit.json",
     "pack": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && npm pack --workspaces --pack-destination dist",
     "test:coverage": "node scripts/run-tests.mjs --experimental-test-coverage"
   }

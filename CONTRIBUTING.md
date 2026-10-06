@@ -54,9 +54,17 @@ git config --unset include.path                   # 停用
 
 - 公开导出、宿主方法、`ctx` 成员、错误码表都由测试钉死（`public-surface.test.mjs`、`host.test.mjs`、`error-model.test.mjs`）。增删改名是有意的 API 变更，要同时改这些清单，并写进 `CHANGELOG.md`。
 - 插件可见的接口有破坏性变化时，升 `KERNEL_API_VERSION` 的主版本（它与包版本相互独立）。
+  ★ 判据是「**已发布**的契约版本」：0.x 期间**未发版**版本内的删除不升 —— 没有任何已发布的契约包含它，消费者无从迁移。
 - 两个包版本同步发布（lockstep）。
 - 发版：两个 `package.json` 的版本改好、`CHANGELOG.md` 把 `[Unreleased]` 改成版本段 → 打标签 `vX.Y.Z` 推送 → 在 GitHub 上发布 Release。`release` workflow 会校验包版本与标签一致、跑测试，再把两个 `.tgz` 与 `SHA256SUMS` 附到 Release 上。
 - 删除过的接口及原因记录在 [design/removed-apis.md](design/removed-apis.md)，加回之前先读。
+
+## 类型
+
+- 类型信息来自**源码里的 JSDoc**（不引入 `.ts` 源文件），`types/*.d.mts` 是 `npm run types:emit` 的**产物**。
+- ★ **不要手改 `types/*.d.mts`** —— 它不是手写的。改了也白改：`npm test` 会重新生成一遍并逐字节比对，不一致即红。
+- 改了源码的 JSDoc 之后跑 `npm run types:emit` 并把产物一并提交。`npm run typecheck` 只做检查、不产出。
+- 写 JSDoc 时**如实**描述实现：类型不确定就用 `unknown` 并说明为什么，**不要**用 `any` 消音，也不要用 `@ts-ignore` / `@ts-expect-error` —— 那只是把错误藏起来，而门禁要的正是把它露出来。
 
 ## 代码约定
 

@@ -103,7 +103,7 @@ test('★ emit：遍历用快照 —— 发布过程中退订不得导致漏发�
   assert.deepEqual(seen, ['second', 'third'], '下一次发布时被退订者不应再收到');
 });
 
-// ───────────────────────── serial / bail（第一个有回应的赢）─────────────────────────
+// ───────────────────────── serial（第一个有回应的赢）─────────────────────────
 
 test('serial：串行询问，【第一个有回应的赢】，后面的人不再被问', () => {
   const channel = new MessageChannel();
@@ -123,13 +123,6 @@ test('serial：全部无回应时返回 undefined（不得误报成功）', asyn
   channel.subscribe('demo/none', () => undefined);
   channel.subscribe('demo/none', () => null);
   assert.equal(await channel.serial('demo/none'), undefined);
-});
-
-test('bail：serial 的同步版，语义一致', () => {
-  const channel = new MessageChannel();
-  channel.subscribe('demo/bail', () => false);     // false 不算拦截
-  channel.subscribe('demo/bail', () => 'win');
-  assert.equal(channel.bail('demo/bail'), 'win');
 });
 
 test('isBailed：只有非空且非 false 才算拦截', () => {
@@ -236,7 +229,7 @@ test('waterfall：缺少兜底函数必须报错（不能"没人收尾"）', () 
 test('DispatchMode 导出完整且冻结（供诊断与测试引用）', () => {
   assert.deepEqual(
     Object.keys(DispatchMode).sort(),
-    ['BAIL', 'EMIT', 'PARALLEL', 'SERIAL', 'WATERFALL']
+    ['EMIT', 'PARALLEL', 'SERIAL', 'WATERFALL']
   );
   assert.throws(() => { DispatchMode.EMIT = 'hacked'; }, TypeError, '枚举必须冻结');
 });

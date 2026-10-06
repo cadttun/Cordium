@@ -22,6 +22,19 @@ const field = (err, key, fallback) => { try { const v = err?.[key]; return typeo
 const stackText = (err) => { const s = field(err, 'stack', null); return s === null ? null : s.slice(0, 4096); };
 const notCloneable = err => ({ ok: false, name: 'DataCloneError', code: IsolationCode.RESULT_NOT_CLONEABLE, message: errorText(err), stack: null });
 
+/**
+ * 隔离端收到的请求（协议：`{ href, exportName, args }`）。
+ *
+ * ⚠️ 它来自 IPC（workerData / process message），**形状未校验**；这里只声明协议约定的字段，
+ *   真正的失败（字段缺失 / 导出不是函数）由 `run` 的返回值以码上报。
+ *
+ * @typedef {object} IsolationRequest
+ * @property {string} href
+ * @property {string} exportName
+ * @property {unknown[]} args 插件函数参数（任意值）
+ */
+
+/** @param {IsolationRequest} request */
 async function run({ href, exportName, args }) {
   try {
     const mod = await import(href);
@@ -46,7 +59,8 @@ if (!isMainThread) {
   }
 } else {
   process.once('message', async (request) => {
-    const reply = await run(request);
+    // 进程消息类型是宽泛联合，这里是协议约定的请求形状（未校验，见 IsolationRequest）
+    const reply = await run(/** @type {IsolationRequest} */ (request));
     const done = () => process.disconnect();
     try { process.send(reply, done); } catch (err) { process.send(notCloneable(err), done); }
   });

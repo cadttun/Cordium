@@ -6,7 +6,7 @@
  *   Chrome SW 靠事件唤醒 —— 「静态声明 + 动态加载」这套范式缺了动态那一半。
  *
  * ★★ 本内核的触发点为什么只有两个（**契约约束，不是取舍**）：
- *   `getService` / `emit` / `bail` / `waterfall` 都**同步返回**，而激活是异步的。
+ *   `getService` / `emit` / `waterfall` 都**同步返回**，而激活是异步的。
  *   把激活挂到服务取用或事件派发上，就得把它们改成 async —— 那等于换一个框架。
  *   只有本来就 `async` 的 `dispatchAction` 能承载激活。
  *   对照：OSGi 能靠类加载驱动（Java 的 `Class.forName` 可阻塞等待）；

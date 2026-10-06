@@ -12,7 +12,7 @@
 ### Added
 
 - **按需激活**：manifest 新字段 `activation`（`'eager'` 缺省 / `'lazy'`）。`lazy` 的插件在 `boot()` 时不激活，停在新的 `ready` 状态，等**被显式激活**或**首次派发一个未命中动作**时激活（后者会先递归拉起它自己的懒依赖）。`eager` 是缺省 ⇒ 不写这个字段的插件行为逐字不变。
-  （触发点只有两个，这是**契约约束**而非取舍：`getService` 与 `emit` / `bail` / `waterfall` 都同步返回，把激活挂上去就得把它们改成 async。只有本就 async 的 `dispatchAction` 能承载激活。）
+  （触发点只有两个，这是**契约约束**而非取舍：`getService` 与 `emit` / `waterfall` 都同步返回，把激活挂上去就得把它们改成 async。只有本就 async 的 `dispatchAction` 能承载激活。）
 - `ctx.watchPluginState(listener)`：订阅任意插件的状态变更（含注册与移出、中间态与终态）。此前装配层要拿到这个时机只能包装宿主的注册方法 —— 那是在改别人的对象，内核把方法改成不可写后会静默失效。
 - `@cordium/plugins` / `@cordium/kernel` 新导出：`ActivationPolicy` / `ACTIVATION_POLICY_VALUES` / `LogLevel` / `LOG_LEVEL_VALUES`。
 - `host.declareUIContributionTypes(types)`：声明 UI 贡献 `type` 的合法值集（与 `declarePermissions` 同口径）。不调 ⇒ 不校验。
@@ -20,6 +20,21 @@
 - `DIAGNOSTICS_CONTRACT`：诊断快照的**稳定性契约**（`@cordium/kernel` 的导出）。按**路径**逐层分区 —— `stable` 点名「不删 / 不改名 / 不改类型」的字段（枚举值可增不可改），`unstable` 显式列出**不承诺**的那些。快照随附 `schemaVersion`（结构版本；发生**不兼容**改动时递增，增字段不算）。
   （**未点名的路径/键一律不承诺** —— 不是「大概稳定」，是明确不承诺。消费方契约：**只读稳定面、忽略未知字段**。依据：allowlist 形态，与 k6 的措辞同一口径；分两档的形态取自 Kubernetes 指标（Alpha「no stability guarantees」/ Stable）与 OpenTelemetry（`/incubating` 子入口）。）
 
+- ★ **内存门禁**（`packages/kernel/test/memory-bounds.test.mjs`）：内核经过若干轮「注册 → 使用 → 停用 → 卸载」后**不得保留本应释放的对象**。判据是**对象存活性计数**（`v8.queryObjects`），不是堆字节阈值 —— 计数与 Node 版本 / OS / GC 策略无关，天然免疫 CI 抖动，也不需要「失败重试」（重试会吞掉真回归）。
+  ★ **不依赖 `--expose-gc`**：`v8.setFlagsFromString('--expose-gc')` + `vm.runInNewContext('gc')` 免改 CI 就拿到 `gc`；拿不到则**模块加载即抛** —— 判据失效不许静默降级成「跳过」。
+  ★ 机制要点（本机 Node v24.16.0 实测 + 官方文档）：`queryObjects` 默认返回 **number**；`{ format: 'summary' }` 返回的是**字符串**数组、**不是实例**；它**自带一次 full GC**（官方原文「…search for objects … in the heap after a full garbage collection」）。★ 但探针**不依赖**这一点 —— `settle()`（让出栈 + 显式 `gc()`）是自己保证的那一步，把判据建在实验性 API 的内部行为上，只会让门禁在别的 Node 版本上假红、而红不出任何内核回归。
+  ★ **判别力两头都验**：忠实变异体（同一套探针 + 一个额外持有者）必须报出增长、撤掉后回到基线；**内核侧变异体**（`unregisterPlugin` 忘了移除插件记录）下门禁如实变红，且增量恰为「轮数 × 每轮对象数」。
+  ★ 文件头显式写明**故意不覆盖**什么：native / 外部内存看不见；`structuredClone` 的产物丢原型因而数不到；审计日志环形缓冲等「按设计常驻的有界证据」不纳入零增长断言。
+- ★ **`PLUGIN_GUIDE` §3 的 ctx 成员表改成三档**（主干 8 / 作用域 3 / 通道与观察 8），并补一道门禁把这张表与**运行时** `Object.keys(ctx)` 钉成同集。此前这张表**零门禁**：加一个 ctx 成员时成员清单门禁会红，但**文档表**可以静默少一行 / 多一行 —— 读者照着写就得到「不是函数」。
+  分档依据是消费方实测调用次数（180 个文件：`provideService` 33 / `manifest` 46 / `log` 26 / `on` 17 …，而 `once` / `parallel` / `serial` / `scoped` / `privateScope` / `watchService` / `watchPluginState` **全部为零**）。
+  ★ 判据取自**运行时**、文档是**被测对象**（拿另一份手写清单来比就是循环论证）；「解析不出」与「检查通过」分开报。两个变异体（文档里改一个成员名 / 删一整行）各自变红。
+
+- ★★ **类型声明**（两个包）：`exports` 的各子路径新增 `types` 条件，指向生成出来的 `types/*.d.mts`。消费方的编辑器从此能拿到补全与跳转 —— 此前 TypeScript 会报「找不到声明文件，该模块隐式为 any」，而它**不会**去读源码里现成的 JSDoc（实测：`exports` 里没有 `types` 条件时它解析到 `src/index.mjs`，整包退化成 `any`）。
+  ★ **真相源是源码里的 JSDoc**，`types/` 是**产物**。产物之所以能进版本库，是因为「它是不是派的」可以被**机械证明**：每次 `npm test` 重新生成一遍并逐字节比对 —— **手改产物在结构上失效**，漂移在结构上不可能。
+  ★ **为什么非要把产物提交**：消费方经 `file:` + symlink 直连源码，而 `file:` 依赖**不会安装依赖方的 devDependencies** ⇒ 消费方手里没有 `tsc`，自己生成不出来。不提交 = 消费方拿不到任何类型。
+  ★ **顺序是强制的：先补齐 JSDoc，再发布产物**。实测补齐前生成出来几乎全是 `any`（`validateManifest(manifest: any)`、`compareSemVer: (...args: any[]) => any`）—— 那样的产物会把消费方的「找不到声明」**静默消掉**，换来一个看着有类型、实则没有的面，正是本仓反复在抓的「宣称强于实现」。补齐后：`validateManifest(manifest: unknown): PluginManifest`、`compareSemVer: (a: string, b: string) => number`，公开入口 `index.d.mts` **零 `any`**。
+  ★ 端到端实测（造一个消费方，经 junction 直连本仓，与消费方的接法一致）：类型解析走 `exports` 的 `types` 条件，枚举字面量精确保留；摘掉该条件后同一次检查**零报错**（全变 `any`）—— 判别力两头都验过。
+  ★ `typescript` 落根 `devDependencies`（与 `oxlint` 同款），**不碰运行时零依赖**（该门禁对 devDependencies 豁免）。新增 `npm run typecheck` / `npm run types:emit`；类型检查本身也纳入 `npm test`（当前 0 错）。
 - **`boot()` 的失败半径**写进指南（`PLUGIN_GUIDE` §10）：静态装配期是**原子**的 —— 任一插件的必需依赖不满足，`boot()` 在**激活任何插件之前**就抛错，**整份清单都不启动**（含依赖齐备的插件），宿主停在 `booted === false`，不存在「半启动」；`boot()` **之后**加载的插件则是**隔离**的 —— 只有它自己进 `failed`，宿主照常运行。两个世界不同是有意的：静态清单由装配方自己写，依赖写错启动时就暴露最省事；动态插件来自外部，不该拖垮已经跑起来的宿主。同时给出「装配方要隔离谁」的做法（`boot` 之前读 `unresolvedDependencies` 纯查询一次拿全 —— `boot()` 自身一次只报碰到的第一个 —— 再 `unregisterPlugin`，有必需依赖方时从叶子往上摘）。`boot-failure-radius.test.mjs` 把两侧**一起**钉住：只测一侧的话，把任一侧改成另一侧的语义都照样全绿。
 
 - 诊断字段 `unresolvedDependencies` 的 `reason` 从 2 类扩到 4 类：新增 `'cycle'`（与这个依赖**互相**可达 ⇒ 拓扑排序必然失败）与 `'not_running'`（依赖在、版本也对，但**此刻它跑不起来**：等触发的懒插件 / 被停用 / 已失败 / 它自己也被上游的环挡住）。
@@ -54,11 +69,17 @@
 - `PLUGIN_GUIDE` 澄清 `err.cause` 的形状是**分路径**的：只有「隔离端**回了一条失败报文**」这条路径是 wire DTO；**崩溃**路径挂的是**活体 `Error`**（其 `code` 是 Node / OS 码），**无结果退出**与**超时**路径**根本不挂 `cause`**。
   此前那句话写成了通称，读者会以为「隔离调用失败一律如此」—— 而它只对三条路径中的一条成立。
 
+- ★ `exports` 目标存在性门禁此前假设值是**字符串** —— 条件对象进来会拿一个 object 去 `path.join`，当场 TypeError。现支持两种形状，并补一条「`types` 必须在前、`default` 必须在后」：**顺序是语义不是排版**（Node 官方文档对这两条分别写着 always be included first / always come last）。打包门禁同步放行 `types/*.d.mts`，并新增「每个 `src/*.mjs` 都要有对应的声明」—— 少一个，消费方在那个子路径上就静默退回「无类型」，而包本身看着完全正常。
+- ★ 三处**手抄的类型字段表**（`PluginManifest` / `PluginDescriptor` / `PluginContext` 的 `@typedef`）此前**没有任何门禁**保证它们与运行时真相源不漂。`@typedef` 尤其危险：它只活在注释里、**没有任何运行时消费者**，漂了之后连一次报错都不会有，只会让下游 IDE 给出错误补全。现补门禁逐项比对 `MANIFEST_FIELD_TABLE.kernel` / `.plugin` / 运行时 `Object.keys(ctx)`；两个方向（少列 / 多列）各用一个变异体验过变红。
+
 ### Removed
 
 - **manifest 的 `config` 字段**：它此前被校验、被深克隆，却**没有任何读取路径**（内核字段表也不认它）—— 插件作者写了默认配置，运行时永远拿到 `{}`。现在写它会被告知为未知字段（`warn` 级诊断）。
   （**加载清单的 `config`（`loadPlugins` 的 `config:`）不受影响** —— 那才是真正生效的配置来源。）
 - `LifecycleState` 的 `VALIDATED` / `WAITING_DEPENDENCIES`：**死枚举**（零赋值点、零断言、零下游，随首次提交带进来的残留）。
+- `MessageChannel` 的 `bail` 与 `ctx.bail`（**公开面 20 → 19**）：`serial` 的同步版。它唯一的用处是「监听器全是同步函数时省一个 `await`」，为此要养一套分发模式（一个枚举成员 + 通道里两个方法 + `ctx` 上一个成员 + 一份文档表格）。更要紧的是它自带一个**只在运行期才暴露的语义陷阱**：异步监听器返回的 Promise 恒为 truthy，会被判成「已拦截」，于是后面真正有答案的监听器被跳过、调用方拿到一个 Promise 而不是结果 —— 此前靠一道按返回值形状判错的运行时检查兜住，而那道检查本身就是在给一个不该存在的模式兜底。实测**消费方零调用**，本仓自己的用例也全部落在 `serial` 上。
+  ★ **`isBailed` 保留**：它是「这个返回值算不算一个回应」的判据，由 `serial` / `waterfall` 共用，与分发模式无关。
+  ★ **不升 `KERNEL_API_VERSION`**：删除落在 **0.3.0 内**，而 0.3.0 尚未发版 —— 没有任何**已发布**的契约版本包含它，因此不存在需要迁移的消费者。
 
 ### Fixed
 

@@ -1,0 +1,24 @@
+{
+  // 类型检查配置 —— 源码是纯 .mjs，类型来自 JSDoc（**唯一真相源**），不引入 .ts 源文件。
+  //
+  // ★ 为什么用 JSDoc 而不是手写 .d.ts：手写声明 = 第二份真相源，会漂；
+  //   而本仓反复踩过「同一份知识两处各写一份」的坑。生成式派生把漂移降为可机械检测。
+  // ★ 为什么不开 strict：实测本仓在 strict 下会一次报出近五百条（绝大多数是隐式 any），
+  //   一步到位既改不完也看不清真问题。分档推进：先 strict:false 归零，再逐档收紧。
+  // ★ `types: ["node"]` 必须显式写：新版本 TS 起该选项默认是空数组，
+  //   不写则 `process` / `node:*` 全报「找不到名称」。
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": false,
+    "strictNullChecks": false,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["packages/kernel/src/**/*.mjs", "packages/plugins/src/**/*.mjs"]
+}

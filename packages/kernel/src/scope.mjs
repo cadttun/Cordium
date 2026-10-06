@@ -6,6 +6,16 @@
 import { CordiumError, ErrorCode } from './errors.mjs';
 import { runWithTimeout } from './host-util.mjs';
 
+/**
+ * 宿主注入本作用域的三个释放回调（构造函数第二参；独立使用时可不传）。
+ * 宿主经它交付「按 scope 身份释放」的能力，而不交出宿主实例本身。
+ *
+ * @typedef {object} ScopeReleaseCallbacks
+ * @property {(serviceName: string, scope: EffectScope) => void} [releaseService]
+ * @property {(contributionId: string, ownerId: string) => void} [releaseUIContribution]
+ * @property {(ownerId: string, err: unknown) => void} [onDisposeError] 清理回调抛错的上报口（缺省退回 console）
+ */
+
 export class EffectScope {
   /**
    * 宿主注入的两个释放回调 —— 【硬私有】。
@@ -19,8 +29,7 @@ export class EffectScope {
    *
    * 对外只保留四个清理登记接口（+ untrackTimer）与宿主专用的 dispose：
    * addDisposer / trackTimer / trackService / trackUIContribution。
-   * @type {{ releaseService?: (serviceName: string, scope: EffectScope) => void,
-   *          releaseUIContribution?: (contributionId: string, ownerId: string) => void }}
+   * @type {ScopeReleaseCallbacks}
    */
   #release;
 
@@ -95,7 +104,7 @@ export class EffectScope {
 
   /**
    * @param {string} ownerId 拥有者标识 (如插件 ID)
-   * @param {{ releaseService?: Function, releaseUIContribution?: Function } | null} [release]
+   * @param {ScopeReleaseCallbacks | null} [release]
    *   释放回调；缺省 ⇒ 独立使用时只清理定时器与 disposer
    * @param {symbol | null} [releaseKey] 释放令牌；给定后 dispose 必须出示同一个令牌
    */

@@ -15,11 +15,21 @@
     "node": ">=22.13.0"
   },
   "files": [
-    "src"
+    "src",
+    "types"
   ],
   "exports": {
-    ".": "./src/index.mjs",
-    "./internal": "./src/internal.mjs",
+    ".": {
+      "types": "./types/index.d.mts",
+      "default": "./src/index.mjs"
+    },
+    "./internal": {
+      "types": "./types/internal.d.mts",
+      "default": "./src/internal.mjs"
+    },
     "./package.json": "./package.json"
+  },
+  "scripts": {
+    "types:emit": "tsc -p tsconfig.emit.json"
   }
 }

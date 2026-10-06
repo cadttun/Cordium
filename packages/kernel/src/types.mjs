@@ -65,7 +65,8 @@ export const SERVICE_ACCESS_VALUES = Object.freeze(Object.values(ServiceAccess))
  * @returns {boolean}
  */
 export function isValidServiceAccess(value) {
-  return SERVICE_ACCESS_VALUES.includes(value);
+  // 入参是 unknown，而值集是具体字面量联合 ⇒ 用 unknown 视图比较（值集本身不变）
+  return /** @type {readonly unknown[]} */ (SERVICE_ACCESS_VALUES).includes(value);
 }
 
 /**
@@ -130,7 +131,8 @@ export const PLUGIN_KIND_VALUES = Object.freeze(Object.values(PluginKind));
  * @returns {boolean}
  */
 export function isValidPluginKind(value) {
-  return PLUGIN_KIND_VALUES.includes(value);
+  // 入参是 unknown，而值集是具体字面量联合 ⇒ 用 unknown 视图比较（值集本身不变）
+  return /** @type {readonly unknown[]} */ (PLUGIN_KIND_VALUES).includes(value);
 }
 
 /**
@@ -169,7 +171,8 @@ export const LOG_LEVEL_VALUES = Object.freeze(Object.values(LogLevel));
  * @returns {boolean}
  */
 export function isValidLogLevel(value) {
-  return LOG_LEVEL_VALUES.includes(value);
+  // 入参是 unknown，而值集是具体字面量联合 ⇒ 用 unknown 视图比较（值集本身不变）
+  return /** @type {readonly unknown[]} */ (LOG_LEVEL_VALUES).includes(value);
 }
 
 /**
@@ -182,7 +185,7 @@ export function isValidLogLevel(value) {
  *   ⇒ 与 VS Code 1.74 起「由 `contributes` 隐式推导 activationEvents」是**同一方向**：少声明、多推导。
  *
  * ★★ 触发点为什么不能接在**服务取用**或**事件派发**上（这是设计里最硬的一条约束）：
- *   `getService` 与 `emit` / `bail` / `waterfall` 都是**同步返回**的，
+ *   `getService` 与 `emit` / `waterfall` 都是**同步返回**的，
  *   而激活是异步的（`activate` 可以是 async、有超时）。把激活挂上去就得把这些 API 改成 async
  *   —— 那等于换一个框架。**不是取舍，是无解。**
  *   对照：OSGi 能靠「类加载 / 服务请求」驱动懒激活（Java 的类加载可被阻塞等待）；
@@ -206,7 +209,8 @@ export const ACTIVATION_POLICY_VALUES = Object.freeze(Object.values(ActivationPo
  * @returns {boolean}
  */
 export function isValidActivationPolicy(value) {
-  return ACTIVATION_POLICY_VALUES.includes(value);
+  // 入参是 unknown，而值集是具体字面量联合 ⇒ 用 unknown 视图比较（值集本身不变）
+  return /** @type {readonly unknown[]} */ (ACTIVATION_POLICY_VALUES).includes(value);
 }
 
 
@@ -547,7 +551,7 @@ export function diffServiceContractFields(serviceName, input, output) {
  *   函数自身无法知道；而按【字段归属】分级**无需调用方提供额外信息**。
  *
  * @param {'kernel'|'plugin'} path 该次校验属于哪一层 schema
- * @param {object} input 原始输入
+ * @param {Record<string, unknown>} input 原始输入（形状未校验）
  * @param {object} output 白名单重建后的结果
  * @param {string} [pluginId] 用于诊断归属（缺失时回退 `input.id`）
  * @returns {null|{path:string, pluginId:string, fields:string[],
@@ -628,8 +632,36 @@ export function isApiVersionCompatible(kernelApiVersion, pluginApiVersion) {
 export const PLUGIN_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
 /**
+ * 内核运行时契约的**归一化 manifest 形状**（`validateManifest` 的产物）。
+ *
+ * ⚠️ 字段集 == `MANIFEST_FIELD_TABLE.kernel`；本 `@typedef` 是**类型层的描述**，
+ *   运行时的唯一真相源仍是那张表（校验产出的键由既有门禁与表比对）。
+ *   加字段时两处都要跟 —— 表驱动运行时的白名单重建，本处只让类型检查器认识产物形状。
+ *
+ * @typedef {object} PluginManifest
+ * @property {string} id
+ * @property {string} version
+ * @property {string} apiVersion
+ * @property {string} displayName
+ * @property {string} description
+ * @property {string[]} provides
+ * @property {Record<string,string>} dependencies
+ * @property {Record<string,string>} optionalDependencies
+ * @property {string[]} permissions
+ * @property {boolean} hotReload
+ * @property {string} kind `'core'` | `'business'`
+ * @property {string} activation `'eager'` | `'lazy'`
+ */
+
+/**
  * 校验 Manifest 合法性
- * @param {any} manifest
+ *
+ * 入参是**调用方自报的原始 manifest**（形状未校验：可能是任意对象、带 getter 的对象或 Proxy），
+ * 故参数类型是 `unknown` 而非具体形状 —— 本函数负责把它判成 `PluginManifest`。
+ *
+ * @param {unknown} manifest 调用方自报的 manifest，形状未校验
+ * @returns {PluginManifest} 白名单重建后的归一化 manifest
+ * @throws {CordiumError} 非法时抛 `invalid_manifest`；apiVersion 不兼容时抛 `incompatible_api_version`
  */
 export function validateManifest(manifest) {
   if (!manifest || typeof manifest !== 'object') {

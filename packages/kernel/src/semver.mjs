@@ -203,6 +203,9 @@ function cmpVersion(a, b) {
  * ★ SemVer 优先级比较（`<0` / `0` / `>0`）—— 与 satisfiesSemVer 共用同一套解析与比较（对齐 npm semver）。
  *   catalog 原先手写了一份，`split('-', 2)` 截断含连字符的预发布段
  *   ⇒ `1.0.0-rc-2 → 1.0.0-rc-1` 的降级被放行。全仓只该有这一份比较知识。
+ * @param {string} a 版本 A（须为合法 SemVer，否则抛 TypeError）
+ * @param {string} b 版本 B（须为合法 SemVer，否则抛 TypeError）
+ * @returns {number} `<0` / `0` / `>0`
  * @throws {TypeError} 任一参数不是合法 SemVer
  */
 export function compareSemVer(a, b) {
@@ -216,6 +219,8 @@ export function compareSemVer(a, b) {
  *   parseVersion 本身是宽松的（照 npm semver：会 trim、吃掉 v 前缀）；manifest 若以宽松形式入库，
  *   原样保存的字符串与其它层的判定就会分叉（实测：内核层放行 'v1.0.0' 而插件层拒绝）。
  *   两层 manifest 校验都走这里，保证同一输入同一结论。
+ * @param {unknown} value 任意值；非字符串一律 false
+ * @returns {boolean}
  */
 export function isValidSemVer(value) {
   if (typeof value !== 'string') return false;
@@ -316,9 +321,13 @@ function hyphenReplace(_0, from, fM, fm, fp, fpr, _fb, to, tM, tm, tp, tpr) {
 }
 
 // ─────────────────────────────────────── Comparator
-const ANY = Symbol('SemVer ANY');
+// ★ 两者导出【只为让 parseRange 的返回类型可被声明生成器命名】——
+//   parseRange 经 semver-api 转出，其返回类型引用 Comparator / ANY；
+//   不导出时生成的 .d.mts 会因「引用了不可访问的 unique symbol」而失败。
+//   它们不在 index.mjs / internal.mjs 的转出清单里，公开面不受影响。
+export const ANY = Symbol('SemVer ANY');
 
-class Comparator {
+export class Comparator {
   constructor(comp) {
     const m = comp.match(RE_COMPARATOR);
     if (!m) throw new TypeError(`Invalid comparator: ${comp}`);

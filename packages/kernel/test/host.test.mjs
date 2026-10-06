@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { hasCode } from './fixtures/errors.mjs';
 import { CordiumHost, LifecycleState } from '../src/index.mjs';
 // ★ 诊断快照的字段契约以 MANIFEST_FIELD_TABLE.kernel 为**唯一真相源**（见下方门禁说明）。
@@ -293,13 +296,101 @@ test('★ 公开面门禁：插件 ctx 成员清单（定稿；增删改名 = �
   host.registerPlugin({ id: 'plugin.ctx', version: '1.0.0', apiVersion: '1.0.0' }, { activate(c) { ctx = c; } });
   await host.boot();
   const expected = [
-    'bail', 'dispatchAction', 'emit', 'getService', 'log', 'manifest', 'on', 'once', 'parallel',
+    'dispatchAction', 'emit', 'getService', 'log', 'manifest', 'on', 'once', 'parallel',
     'pluginId', 'privateScope', 'provideService', 'registerAction', 'registerUIContribution',
     'scope', 'scoped', 'serial', 'watchPluginState', 'watchService', 'waterfall'
   ];
   assert.deepEqual(Object.keys(ctx).sort(), expected);
   assert.deepEqual(Object.keys(ctx.scoped('s')).sort(), expected, 'scoped() 派生的 ctx 必须同形');
   assert.deepEqual(Object.keys(ctx.privateScope()).sort(), expected, 'privateScope() 派生的 ctx 必须同形');
+});
+
+// ════════════ PLUGIN_GUIDE §3 的 ctx 成员表 vs 运行时 ════════════
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const NL = String.fromCharCode(10);   // ★ 本文件里的字符串一律不写转义（见下方说明）
+
+/** 取 `PLUGIN_GUIDE.md` 里 §3 那一段（到 §4 标题为止）。找不到边界 ⇒ 返回 null。 */
+function guideCtxSection(guide) {
+  const from = guide.indexOf('## 3. ctx');
+  if (from < 0) return null;
+  const to = guide.indexOf('## 4. ', from);
+  return to < 0 ? null : guide.slice(from, to);
+}
+
+/**
+ * 从 §3 里抽成员名 —— 取每张表格行首的反引号标识符（三档的表都是同一形状）。
+ * @returns {string[]} 按出现顺序；解析不出任何一行 ⇒ `[]`
+ */
+function ctxMembersInSection(section) {
+  const out = [];
+  for (const line of section.split(NL)) {
+    if (!line.startsWith('| `')) continue;
+    const end = line.indexOf('`', 3);
+    if (end < 0) continue;
+    // ★ 成员列写的是**签名**（`provideService(name, impl)`）⇒ 只取首个 `(` 之前的名字。
+    //   漏了这一步会静默只抽到不带参数的那几个（本文件的自检正是这么把它抓出来的）。
+    const name = line.slice(3, end).split('(')[0].trim();
+    if (/^[A-Za-z]+$/.test(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * ★★ §3 的成员表必须与运行时 `ctx` **同集**，判据取自**运行时**而不是另一份手抄清单。
+ *
+ * 为什么需要它：§3 是插件作者读的第一张表，而它此前**零门禁** ——
+ *   往 `host.mjs` 加一个 ctx 成员，上面那条成员清单门禁会红；但**文档表**少一行 / 多一行
+ *   可以静默存在，读者照着写就得到「不是函数」。
+ * ★ 判据来源是 `Object.keys(ctx)`（唯一真相源），文档是**被测对象** ——
+ *   若拿另一份手写清单来比，就是循环论证（判据取自被检查对象自身）。
+ * ★ 「解析不出」与「检查通过」分开报（同 boundary.test.mjs 的版本声明门先例）。
+ */
+test('★★ PLUGIN_GUIDE §3 的 ctx 成员表与运行时 ctx 同集，且三档不重不漏', async () => {
+  const host = new CordiumHost();
+  let ctx = null;
+  host.registerPlugin({ id: 'plugin.doc', version: '1.0.0', apiVersion: '1.0.0' }, { activate(c) { ctx = c; } });
+  await host.boot();
+
+  // 行尾归一放在读入那一刻：抽取以行首为锚，CRLF 会让它整条失效
+  const guide = fs.readFileSync(path.join(ROOT, 'PLUGIN_GUIDE.md'), 'utf8').split('\r\n').join(NL);
+  const section = guideCtxSection(guide);
+  assert.ok(section !== null, '★ 判据失效：PLUGIN_GUIDE 里找不到 §3 与 §4 的边界（标题改了？）—— 这不是「检查通过」');
+
+  const doc = ctxMembersInSection(section);
+  assert.ok(doc.length > 0, '★ 判据失效：§3 里一个成员都没解析出来（表换了形状？）—— 这不是「检查通过」');
+  assert.equal(new Set(doc).size, doc.length, '§3 的三档之间不得重复列出同一成员');
+
+  assert.deepEqual([...doc].sort(), Object.keys(ctx).sort(),
+    '§3 的成员表与运行时 ctx 不一致 —— 这张表是插件作者读的第一张表，必须与实现同集');
+});
+
+test('★ 门禁自检：§3 的解析与比对真的能判别（否则是恒真假绿）', async () => {
+  const host = new CordiumHost();
+  let ctx = null;
+  host.registerPlugin({ id: 'plugin.doc', version: '1.0.0', apiVersion: '1.0.0' }, { activate(c) { ctx = c; } });
+  await host.boot();
+  const runtime = Object.keys(ctx).sort();
+
+  // 正向：解析器必须真的从真实文档里抽到全部成员（否则下面两条负向断言可能只是恒真）
+  const guide = fs.readFileSync(path.join(ROOT, 'PLUGIN_GUIDE.md'), 'utf8').split('\r\n').join(NL);
+  assert.equal(ctxMembersInSection(guideCtxSection(guide)).length, runtime.length,
+    '解析器必须真的抽到全部成员');
+
+  // 负向①：少一行的表必须与运行时不同集（模拟「加了 ctx 成员却忘了写进文档」）
+  const oneRow = ['| 成员 | 返回 | 用途 |', '|---|---|---|', '| `pluginId` | string | x |'].join(NL) + NL;
+  assert.notDeepEqual(ctxMembersInSection(oneRow).sort(), runtime, '少列成员必须被判出');
+
+  // 负向②：多一行的表必须把多出来的名字解析出来（模拟「删了成员却没删文档」）
+  //   ⚠️ 名字要写成解析器认得的形状（纯字母）：写 `__ghost__` 会被 `[A-Za-z]+` 滤掉，
+  //      于是这条断言测的就成了「解析器漏了什么」而不是「多列能不能被看见」。
+  const extra = oneRow + '| `ghostMember(name)` | x | x |' + NL;
+  assert.ok(ctxMembersInSection(extra).includes('ghostMember'), '多列的成员必须被解析出来（否则漏报）');
+  assert.notDeepEqual(ctxMembersInSection(extra).sort(), runtime, '多列的成员必须让「同集」比对失败');
+
+  // ★ 判据失效与检查通过分开：找不到小节边界必须返回 null，不能拿空段当「通过」
+  assert.equal(guideCtxSection('## 3. ctx' + NL + '没有第四章' + NL), null, '找不到 §4 必须报判据失效');
+  assert.equal(guideCtxSection('没有第三章' + NL), null, '找不到 §3 必须报判据失效');
 });
 
 test('★ 同一插件 id 不得重复注册（此前无任何测试守护：删掉查重仍全绿）', () => {
@@ -329,7 +420,6 @@ test('★ 公开面门禁：ctx 各方法的同步 / 异步形状钉死（调用
       shape.on = kind(ctx.on('x', () => {}));
       shape.once = kind(ctx.once('y', () => {}));
       shape.emit = kind(ctx.emit('e'));
-      shape.bail = kind(ctx.bail('e'));
       shape.waterfall = kind(ctx.waterfall('e', () => 0));
       const p = ctx.parallel('e'); shape.parallel = kind(p); await p;
       const s = ctx.serial('e'); shape.serial = kind(s); await s;

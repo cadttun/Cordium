@@ -1,0 +1,22 @@
+{
+  // 声明文件生成配置（`@cordium/plugins`）。理由与 `packages/kernel/tsconfig.emit.json` 同。
+  //
+  // ⚠️ 生成顺序：**先 kernel 后 plugins**。本包的源码 `import '@cordium/kernel'`，
+  //   生成的声明里会保留这条 import —— 内核的 `types/` 不存在时，这里的解析会失败。
+  //   两包的 `types:emit` 由根脚本按这个顺序串起来。
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "./src",
+    "outDir": "./types",
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": false
+  },
+  "include": ["src/**/*.mjs"]
+}

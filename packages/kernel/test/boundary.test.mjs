@@ -127,14 +127,60 @@ test('★ exports 清单定稿（增删子路径 = 有意的 API 变更，必须
     ['./catalog', './ecosystem', './isolation', './loader', './package.json', './reload', './runtime']);
 });
 
+/**
+ * 把 `exports` 的一个子路径目标摊平成 `[条件名, 相对路径]` 列表。
+ * ★ 必须支持**两种形状**：字符串（`"./src/index.mjs"`）与条件对象
+ *   （`{ types: …, default: … }`）—— 后者是类型声明的挂载点。
+ *   旧版只认字符串，条件对象进来会拿一个 object 去 `path.join`，当场 TypeError。
+ * @returns {[string, string][]}
+ */
+function exportTargets(target) {
+  if (typeof target === 'string') return [['', target]];
+  if (target !== null && typeof target === 'object') {
+    return Object.entries(target).filter(([, v]) => typeof v === 'string');
+  }
+  return [];
+}
+
+/** 摊平某个包全部子路径的目标。 */
+const allExportTargets = (pkg) =>
+  Object.entries(pkg.exports).flatMap(([sub, target]) =>
+    exportTargets(target).map(([cond, file]) => ({ sub, cond, file })));
+
 test('★ 每个 exports 目标文件都存在（改名 / 删文件不同步即红）', () => {
   const missing = [];
   for (const rel of ['packages/kernel', 'packages/plugins']) {
-    for (const [sub, target] of Object.entries(readPkg(rel).exports)) {
-      if (!fs.existsSync(path.join(ROOT, rel, target))) missing.push(`${rel} ${sub} → ${target}`);
+    for (const { sub, cond, file } of allExportTargets(readPkg(rel))) {
+      if (!fs.existsSync(path.join(ROOT, rel, file))) missing.push(`${rel} ${sub}${cond && ` [${cond}]`} → ${file}`);
     }
   }
   assert.deepEqual(missing, []);
+});
+
+// ★ 条件对象的**键序**是语义的一部分，不是排版：
+//   Node 官方文档对 `exports` 逐字写着「This condition should always be included first」（`types`）
+//   与「This condition should always come last」（`default`），并强调「key order is significant」。
+//   顺序错了在 Node 侧可能仍然「能跑」（`default` 恰好在后），却会让类型解析拿不到声明 —— 静默失效。
+test('★ exports 的条件对象必须 `types` 在前、`default` 在后（顺序是语义，不是排版）', () => {
+  const bad = [];
+  for (const rel of ['packages/kernel', 'packages/plugins']) {
+    for (const [sub, target] of Object.entries(readPkg(rel).exports)) {
+      const keys = exportTargets(target).map(([c]) => c);
+      if (keys.length === 1 && keys[0] === '') continue;      // 纯字符串，无条件可排
+      if (keys[0] !== 'types') bad.push(`${rel} ${sub}: 首个条件是 '${keys[0]}'，必须是 'types'`);
+      if (keys[keys.length - 1] !== 'default') bad.push(`${rel} ${sub}: 末个条件是 '${keys[keys.length - 1]}'，必须是 'default'`);
+    }
+  }
+  assert.deepEqual(bad, [], '\n' + bad.join('\n'));
+});
+
+test('★ 门禁自检：两种 exports 形状都要被摊平（否则条件对象会让上面两条恒真）', () => {
+  assert.deepEqual(exportTargets('./src/x.mjs'), [['', './src/x.mjs']]);
+  assert.deepEqual(exportTargets({ types: './t/x.d.mts', default: './src/x.mjs' }),
+    [['types', './t/x.d.mts'], ['default', './src/x.mjs']]);
+  // 顺序必须按对象自身的键序取（不能排序），否则「types 在前」那条就没判别力
+  assert.deepEqual(exportTargets({ default: './a', types: './b' }).map(([c]) => c), ['default', 'types']);
+  assert.deepEqual(exportTargets(null), []);
 });
 
 test('★ 版本同步（lockstep）：两包 version 相等，plugins 对 kernel 的依赖钉在同一版本', () => {

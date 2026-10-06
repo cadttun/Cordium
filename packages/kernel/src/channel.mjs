@@ -25,21 +25,20 @@
  *   emit       广播，不等回执
  *   parallel   广播 + 等全部完成（失败 ⇒ CordiumError(listener_failed)，原始错误在 cause.errors）
  *   serial     串行，【第一个有回应的赢】
- *   bail       serial 的同步版
  *   waterfall  ★ 中间件：可停留 / 传输 / 变换
  *
  * ── 失败口径 ────────────────────────────────
  *   监听器抛出的任意值 ⇒ CordiumError(listener_failed)，原值在 cause（parallel 是多个，cause 为 AggregateError）。
- *   此前只有 parallel 这么做，serial / bail / waterfall 原样透传 —— 同一文件两套口径，
+ *   此前只有 parallel 这么做，serial / waterfall 原样透传 —— 同一文件两套口径，
  *   抛字符串时调用方拿不到码与栈（实测）。
- *   不包的：本层自己的用法错误（bail 收到 Promise、next() 调两次）；waterfall 兜底函数（调用方自己的）抛的错。
+ *   不包的：本层自己的用法错误（next() 调两次）；waterfall 兜底函数（调用方自己的）抛的错。
  */
 
 import { CordiumError, ErrorCode } from './errors.mjs';
 import { summarizeCause } from './host-util.mjs';
 import { ScopeTree } from './scope-tree.mjs';
 
-/** 监听器失败的信封（serial / bail / waterfall 共用） */
+/** 监听器失败的信封（serial / waterfall 共用） */
 function listenerFailed(mode, name, err, owner) {
   return new CordiumError(ErrorCode.LISTENER_FAILED,
     `MessageChannel.${mode}('${String(name)}'): a listener${owner ? ` of plugin '${owner}'` : ''} failed: ${summarizeCause(err)}`,
@@ -51,7 +50,6 @@ export const DispatchMode = Object.freeze({
   EMIT: 'emit',
   PARALLEL: 'parallel',
   SERIAL: 'serial',
-  BAIL: 'bail',
   WATERFALL: 'waterfall'
 });
 
@@ -198,7 +196,7 @@ export class MessageChannel {
    *   打了「祖先」tag 的监听器能收到**后代** key 的事件，**反之不行**。
    *
    * @param {{ scopeLabel: string | null, global: boolean }} record
-   * @param {string | undefined} dispatchKey
+   * @param {string | symbol | undefined} dispatchKey 派发作用域键（私有作用域是 symbol）
    * @param {Set<string | symbol> | null} ancestors dispatchKey 自身及其祖先（由 #snapshot 每次派发算一次）
    */
   #admit(record, dispatchKey, ancestors) {
@@ -256,7 +254,7 @@ export class MessageChannel {
    *   再加一个 options 对象会与"事件的普通参数"混淆（无法区分）。
    *   所以作用域走独立入口，由宿主 ctx 闭包提供 —— 与身份注入同一模式。
    *
-   * @param {'emit'|'parallel'|'serial'|'bail'|'waterfall'} mode
+   * @param {'emit'|'parallel'|'serial'|'waterfall'} mode
    * @param {string} name
    * @param {string | undefined} scopeKey 调用方作用域；undefined = 全局
    * @param {any[]} args
@@ -266,7 +264,6 @@ export class MessageChannel {
       case DispatchMode.EMIT: return this.#emit(name, scopeKey, args);
       case DispatchMode.PARALLEL: return this.#parallel(name, scopeKey, args);
       case DispatchMode.SERIAL: return this.#serial(name, scopeKey, args);
-      case DispatchMode.BAIL: return this.#bail(name, scopeKey, args);
       case DispatchMode.WATERFALL: return this.#waterfall(name, scopeKey, args);
       default: throw new CordiumError(ErrorCode.INVALID_USAGE, `MessageChannel.dispatch: unknown mode '${mode}'`);
     }
@@ -369,33 +366,6 @@ export class MessageChannel {
         result = await listener(...args);
       } catch (err) {
         throw listenerFailed('serial', name, err, owner);
-      }
-      if (isBailed(result)) return result;
-    }
-    return undefined;
-  }
-
-  /** `serial` 的同步版（监听器本身是同步函数时用） */
-  bail(name, ...args) {
-    return this.#bail(name, undefined, args);
-  }
-
-  #bail(name, scopeKey, args) {
-    for (const { listener, owner } of this.#snapshot(name, scopeKey)) {
-      let result;
-      try {
-        result = listener(...args);
-      } catch (err) {
-        throw listenerFailed('bail', name, err, owner);
-      }
-      // ★ bail 是【同步】链：async 监听器返回的 Promise 恒为 truthy，会被误判为「已拦截」，
-      //   后面真正有答案的监听器被跳过，调用方拿到的还是个 Promise。⇒ 响亮失败，指向 serial。
-      if (result && typeof result.then === 'function') {
-        // 已拒绝使用它：接住拒绝（免得 unhandledRejection），但原因照样上报，不能静默丢证据
-        result.then(undefined, error => this.#reportError(name, error, owner));
-        throw new CordiumError(ErrorCode.INVALID_USAGE,
-          `MessageChannel.bail('${String(name)}'): a listener returned a Promise — bail is synchronous; use serial() for async listeners`
-        );
       }
       if (isBailed(result)) return result;
     }

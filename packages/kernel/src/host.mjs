@@ -64,6 +64,41 @@ const PLUGIN_STATE = Symbol('cordium.plugin-state');
  */
 const EMPTY_CONFIG = Object.freeze({});
 
+/**
+ * 插件 `activate(ctx, config)` 收到的**冻结上下文对象**。
+ *
+ * ★ 成员清单与运行时 `#buildPluginCtx` 返回的对象**逐项对应**（19 项），
+ *   也与 `PLUGIN_GUIDE.md` §3 的三档清单一致：
+ *   · 主干 8：pluginId / manifest / provideService / getService / registerAction /
+ *     dispatchAction / on / log
+ *   · 作用域 3：scope / scoped / privateScope
+ *   · 通道与观察 8：once / emit / parallel / serial / waterfall / watchService /
+ *     watchPluginState / registerUIContribution
+ *   ⚠️ 运行时的唯一真相源仍是 `#buildPluginCtx` 的返回对象；本 typedef 是它的类型投影，
+ *     改一处必须同步另一处。
+ *
+ * @typedef {object} PluginContext
+ * @property {string} pluginId
+ * @property {import('./types.mjs').PluginManifest} manifest 冻结的 manifest 副本
+ * @property {import('./scope.mjs').EffectScope} scope 本次激活的资源作用域
+ * @property {(name: string, impl: object) => void} provideService
+ * @property {(name: string) => unknown} getService 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
+ * @property {(name: string, listener: Function, options?: object) => void} watchService
+ * @property {(listener: (change: { id: string, from: string | null, to: string | null }) => void) => void} watchPluginState
+ * @property {(label: string) => PluginContext} scoped
+ * @property {() => PluginContext} privateScope
+ * @property {(name: string, listener: Function, options?: object) => void} on
+ * @property {(name: string, listener: Function, options?: object) => void} once
+ * @property {(name: string, ...args: unknown[]) => void} emit
+ * @property {(name: string, ...args: unknown[]) => Promise<unknown>} parallel
+ * @property {(name: string, ...args: unknown[]) => Promise<unknown>} serial
+ * @property {(name: string, ...args: unknown[]) => unknown} waterfall
+ * @property {(name: string, options?: object) => void} registerAction
+ * @property {(name: string, payload?: unknown) => Promise<unknown>} dispatchAction
+ * @property {(contribution: object | string) => void} registerUIContribution
+ * @property {(level: string, message: unknown, details?: unknown) => void} log
+ */
+
 /** 超时类选项：不传 ⇒ 用默认；0 / 负数 = 不限；正数须 ≤ MAX_TIMER_MS（超出 Node 会改成 1ms ⇒ 立即超时） */
 function assertTimeoutOption(label, value) {
   if (value !== undefined && (typeof value !== 'number' || Number.isNaN(value) || value > MAX_TIMER_MS)) {
@@ -96,11 +131,11 @@ function assertStringArg(method, name, value) {
  * 否则调用方 `diagnostics.plugins[0].provides.push(...)` 就能改到内核的登记表。
  * 标量（字符串 / 布尔 / null）按值传，无需特殊处理。
  *
- * @param {object} manifest 已由 validateManifest 归一化的 manifest
- * @returns {object} 只读快照片段（字段集 == MANIFEST_FIELD_TABLE.kernel）
+ * @param {import('./types.mjs').PluginManifest} manifest 已由 validateManifest 归一化的 manifest
+ * @returns {import('./types.mjs').PluginManifest} 只读快照片段（字段集 == MANIFEST_FIELD_TABLE.kernel）
  */
 function manifestSnapshot(manifest) {
-  const out = {};
+  const out = /** @type {import('./types.mjs').PluginManifest} */ ({});
   for (const field of MANIFEST_FIELD_TABLE.kernel) {
     const value = manifest[field];
     out[field] = Array.isArray(value) ? [...value]
@@ -190,31 +225,56 @@ export class CordiumHost {
   #auditLogs;
   #errorLogs;
   #manifestDiagnostics;
+  /** @type {number} 因超出留存上限而被丢弃的 manifest 诊断条数 */
   #manifestDiagnosticsDropped;
+  /** @type {string} */
   #hostVersion;
+  /** @type {number} */
   #maxLogSize;
+  /** @type {number} */
   #maxErrorLogSize;
+  /** @type {number} */
   #maxManifestDiagnostics;
+  /** @type {number} */
   #defaultActionTimeoutMs;
+  /** @type {number} */
   #lifecycleTimeoutMs;
+  /** @type {number} */
   #maxInFlightActions;
+  /** @type {boolean} */
   #booted;
 
-  /** 宿主应用自身的版本（只读） */
+  /** 宿主应用自身的版本（只读）
+   * @returns {string}
+   */
   get hostVersion() { return this.#hostVersion; }
-  /** 是否已成功 boot（只读；boot 失败回滚后为 false） */
+  /** 是否已成功 boot（只读；boot 失败回滚后为 false）
+   * @returns {boolean}
+   */
   get booted() { return this.#booted; }
-  /** 审计日志环形缓冲上限（只读，构造时定） */
+  /** 审计日志环形缓冲上限（只读，构造时定）
+   * @returns {number}
+   */
   get maxLogSize() { return this.#maxLogSize; }
-  /** 错误日志独立留存上限（只读，构造时定） */
+  /** 错误日志独立留存上限（只读，构造时定）
+   * @returns {number}
+   */
   get maxErrorLogSize() { return this.#maxErrorLogSize; }
-  /** Manifest 诊断留存上限（只读，构造时定） */
+  /** Manifest 诊断留存上限（只读，构造时定）
+   * @returns {number}
+   */
   get maxManifestDiagnostics() { return this.#maxManifestDiagnostics; }
-  /** 动作默认执行上限毫秒数（只读，构造时定；0 或负数 = 不限） */
+  /** 动作默认执行上限毫秒数（只读，构造时定；0 或负数 = 不限）
+   * @returns {number}
+   */
   get defaultActionTimeoutMs() { return this.#defaultActionTimeoutMs; }
-  /** 生命周期钩子（activate / deactivate + 清理回调）的默认执行上限毫秒数（只读，构造时定；0 或负数 = 不限） */
+  /** 生命周期钩子（activate / deactivate + 清理回调）的默认执行上限毫秒数（只读，构造时定；0 或负数 = 不限）
+   * @returns {number}
+   */
   get lifecycleTimeoutMs() { return this.#lifecycleTimeoutMs; }
-  /** 同时在途的动作派发数上限（只读，构造时定） */
+  /** 同时在途的动作派发数上限（只读，构造时定）
+   * @returns {number}
+   */
   get maxInFlightActions() { return this.#maxInFlightActions; }
 
   // ════════════════ 构造 ════════════════
@@ -223,6 +283,11 @@ export class CordiumHost {
    * @param {object} [options]
    * @param {string} [options.hostVersion='1.0.0']
    * @param {number} [options.maxLogSize=500]
+   * @param {number} [options.maxErrorLogSize=100] 错误日志独立留存上限
+   * @param {number} [options.actionTimeoutMs=30000] 动作默认执行上限（0 / 负数 = 不限）
+   * @param {number} [options.lifecycleTimeoutMs=30000] 生命周期钩子默认上限（0 / 负数 = 不限）
+   * @param {number} [options.maxInFlightActions=10000] 同时在途动作派发数上限
+   * @param {number} [options.maxManifestDiagnostics=200] manifest 诊断留存上限
    */
   constructor(options) {
     // null / undefined 视同不传；字符串 / 数组 / 数字 ⇒ invalid_option（此前静默展开后全部落回默认值）
@@ -649,13 +714,13 @@ export class CordiumHost {
   // ════════════════ 插件表：注册 / 拓扑 ════════════════
 
   /**
-   * 发现并注册插件
-   * @param {any} rawManifest
-   * @param {any} [entry] 插件执行入口 (可选对象，包含 activate/deactivate)
-   */
-  /**
-   * @param {object} rawManifest
-   * @param {{ activate?: Function, deactivate?: Function } | null} [entry]
+   * 发现并注册插件。
+   *
+   * `rawManifest` 是**调用方自报的原始 manifest，形状未校验**（可能是任意对象 / 带 getter 的对象 / Proxy），
+   * 故参数类型是 `unknown`；本方法经 `validateManifest` 把它判成并归一化为 `PluginManifest`。
+   *
+   * @param {unknown} rawManifest 调用方自报的 manifest，形状未校验
+   * @param {{ activate?: Function, deactivate?: Function } | null} [entry] 插件执行入口 (可选对象，包含 activate/deactivate)
    * @param {{ lifecycleTimeoutMs?: number }} [options] 宿主侧对【这一个】插件的设置（装配方写，不是插件自己写）
    */
   registerPlugin(rawManifest, entry = null, options) {
@@ -664,7 +729,8 @@ export class CordiumHost {
     const manifest = validateManifest(rawManifest);
     // ★★ 白名单重建会【静默丢弃】未列出的字段 —— 本项目已因此踩过两次坑。
     //   此处把「输入有、输出没有」的字段显式记入结构化诊断（宿主 log + 诊断快照）。
-    const droppedDiagnostic = diffManifestFields('kernel', rawManifest, manifest, manifest.id);
+    //   rawManifest 走到这里已过 validateManifest（必为对象），故可读成键值视图比对丢字段。
+    const droppedDiagnostic = diffManifestFields('kernel', /** @type {Record<string, unknown>} */ (rawManifest), manifest, manifest.id);
     if (droppedDiagnostic) {
       this.recordManifestDiagnostic(droppedDiagnostic);
     }
@@ -795,7 +861,8 @@ export class CordiumHost {
     };
     assertDependentsSatisfied();
     this.#assertNoNewCycle(id, manifest);
-    const droppedDiagnostic = diffManifestFields('kernel', rawManifest, manifest, id);
+    // rawManifest 已过 validateManifest（必为对象）⇒ 读成键值视图比对丢字段
+    const droppedDiagnostic = diffManifestFields('kernel', /** @type {Record<string, unknown>} */ (rawManifest), manifest, id);
     if (droppedDiagnostic) this.recordManifestDiagnostic(droppedDiagnostic);
 
     const run = this.#serializeLifecycle(id, async () => {
@@ -1566,7 +1633,8 @@ export class CordiumHost {
    *
    * @param {string} pluginId
    * @param {import('./scope.mjs').EffectScope} scope
-   * @param {string | null} scopeKey
+   * @param {string | symbol | null} scopeKey 作用域键；`null` = 全局，symbol = 私有作用域
+   * @returns {PluginContext}
    */
   #buildPluginCtx(pluginId, scope, scopeKey) {
     const record = this.#plugins.get(pluginId);
@@ -1632,7 +1700,7 @@ export class CordiumHost {
        * 得到的新 ctx 有三件事变了：
        *   ① `getService` 按该作用域解析（就近优先，找不到回退全局）；
        *   ② `provideService` 注册进该作用域（同名服务可与全局实现共存）；
-       *   ③ `on/once` 打上该作用域的标签，`emit/parallel/serial/bail/waterfall`
+       *   ③ `on/once` 打上该作用域的标签，`emit/parallel/serial/waterfall`
        *      以该作用域为派发键 —— 于是事件只在【本作用域及其祖先】之间流动。
        *
        * ★ 可以继续 `.scoped()` 派生子作用域，形成祖先链；
@@ -1644,7 +1712,7 @@ export class CordiumHost {
        *   插件依然是同进程内不受沙箱约束的代码（与 OpenClaw 的自我定位一致）。
        *
        * @param {string} label
-       * @returns {object} 新的 ctx
+       * @returns {PluginContext} 新的 ctx
        */
       scoped: (label) => {
         if (typeof label !== 'string' || !label) {
@@ -1702,7 +1770,7 @@ export class CordiumHost {
        *   且明确不想和任何"碰巧同名"的插件混在一起。
        * ⚠️ 反过来说：**私有作用域无法被共享** —— 要跨插件共享，请用 `scoped(label)`。
        *
-       * @returns {object} 绑定到新私有作用域的新 ctx
+       * @returns {PluginContext} 绑定到新私有作用域的新 ctx
        */
       privateScope: () => {
         // ★ 生命周期门禁：与 `scoped()` 对齐。
@@ -1744,7 +1812,6 @@ export class CordiumHost {
       emit: (name, ...args) => publish(DispatchMode.EMIT, name, args),
       parallel: (name, ...args) => publish(DispatchMode.PARALLEL, name, args),
       serial: (name, ...args) => publish(DispatchMode.SERIAL, name, args),
-      bail: (name, ...args) => publish(DispatchMode.BAIL, name, args),
       waterfall: (name, ...args) => publish(DispatchMode.WATERFALL, name, args),
       registerAction: (action, options) => this.#registerAction(action, pluginId, options, scope),
       // 插件内部发起 Action 调度时，强制绑定该插件的实际真实身份，严禁外部字符串伪造
@@ -1764,7 +1831,7 @@ export class CordiumHost {
    * @param {string} providerId 提供者插件 ID
    * @param {any} implementation
    * @param {import('./scope.mjs').EffectScope | null} scope
-   * @param {string | null} [scopeKey] 该实现服务的逻辑作用域；null = 全局（兜底）。
+   * @param {string | symbol | null} [scopeKey] 该实现服务的逻辑作用域；null = 全局（兜底），symbol = 私有作用域。
    *   来源是 ctx.scoped(label) 的【闭包注入】，不是插件能改的字段。
    */
   #registerService(serviceName, providerId, implementation, scope, scopeKey = null) {
@@ -2154,9 +2221,9 @@ export class CordiumHost {
    *   链上都找不到才回退【全局】实现。⇒ 全局实现永远是兜底，不会被作用域实现挤掉，
    *   而作用域实现也绝不会泄漏给链外的调用方。
    *
-   * @param {{ providers: Map<string, any>, providerEpochs: Map<string, number>, scopedProviders: Map<string, Map<string, any>> }} contract
-   * @param {string | null} scopeKey 调用方的作用域；null = 全局
-   * @returns {{ providerId: string, impl: any, epoch: number, slotKey: string | null } | null}
+   * @param {{ providers: Map<string, any>, providerEpochs: Map<string, number>, scopedProviders: Map<string | symbol, Map<string, any>> }} contract
+   * @param {string | symbol | null} scopeKey 调用方的作用域；null = 全局，symbol = 私有作用域
+   * @returns {{ providerId: string, impl: any, epoch: number, slotKey: string | symbol | null } | null}
    *   没有实现时返回 null（由调用方决定报什么错）。
    *   ★ `slotKey` 是这个实现【实际所在的槽】，它未必等于调用方的 scopeKey ——
    *     兜底到全局时 slotKey 是 null，沿祖先链命中时 slotKey 是那个祖先。
@@ -2174,9 +2241,9 @@ export class CordiumHost {
   /**
    * 取【单个作用域】里的实现（不含祖先查找、不含全局回退）。
    *
-   * @param {object} contract
-   * @param {string | null} scopeKey 要查的槽
-   * @returns {{ providerId: string, impl: any, epoch: number, slotKey: string | null } | null}
+   * @param {{ providers: Map<string, any>, providerEpochs: Map<string, number>, scopedProviders: Map<string | symbol, Map<string, any>> }} contract
+   * @param {string | symbol | null} scopeKey 要查的槽
+   * @returns {{ providerId: string, impl: any, epoch: number, slotKey: string | symbol | null } | null}
    */
   #providerInScope(contract, scopeKey) {
     if (scopeKey === null) {
@@ -2266,10 +2333,10 @@ export class CordiumHost {
    *
    * @param {string} pluginId 订阅者（ctx 闭包注入，出错时报归属用）
    * @param {import('./scope.mjs').EffectScope} scope
-   * @param {string} name
+   * @param {string | symbol} name 事件名（宿主内部通知用模块私有 symbol）
    * @param {Function} listener
    * @param {{ prepend?: boolean, global?: boolean }} [options]
-   * @param {string | null} scopeKey 调用方作用域，由 ctx 闭包提供
+   * @param {string | symbol | null} [scopeKey] 调用方作用域，由 ctx 闭包提供
    */
   #subscribeForPlugin(pluginId, scope, name, listener, options, scopeKey) {
     // ★ scopeLabel 由【闭包】决定，并放在展开之后覆盖插件传的值 ——
@@ -2360,7 +2427,7 @@ export class CordiumHost {
    * @param {string} pluginId 订阅方（闭包注入，不可伪造）
    * @param {import('./scope.mjs').EffectScope} scope
    * @param {(change: {id: string, from: string, to: string}) => void} listener
-   * @param {string | null} scopeKey
+   * @param {string | symbol | null} scopeKey
    */
   #watchPluginStateForPlugin(pluginId, scope, listener, scopeKey) {
     if (typeof listener !== 'function') {
@@ -2382,7 +2449,7 @@ export class CordiumHost {
    * ⚠️ 中间态（`activating` / `stopping`）也照实广播，不合并、不节流：
    *   「正在起」与「起来了」对界面是两件事（前者该显示加载态）。
    *
-   * @param {object} record 插件记录
+   * @param {{ state: string, manifest: import('./types.mjs').PluginManifest }} record 插件记录
    * @param {string} next 新状态
    */
   #setState(record, next) {
@@ -2434,7 +2501,7 @@ export class CordiumHost {
     //   先把所有仍在等触发的懒插件拉起来，再重试一次。
     //
     //   ── 为什么这是本内核唯一可行的触发点（不是设计取舍，是契约约束）──
-    //   `getService` 与 `emit` / `bail` / `waterfall` 都**同步返回**，而激活是异步的
+    //   `getService` 与 `emit` / `waterfall` 都**同步返回**，而激活是异步的
     //   （`activate` 可以是 async、有超时）。把激活挂到服务取用或事件派发上，
     //   就得把这些 API 改成 async —— 那等于换一个框架。
     //   `dispatchAction` 本来就是 `async`，所以只有它能承载激活。

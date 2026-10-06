@@ -12,10 +12,22 @@ import * as raw from './semver.mjs';
 import { CordiumError, ErrorCode } from './errors.mjs';
 import { describeError } from './host-util.mjs';
 
+/**
+ * 把裸 semver 函数包一层「带码错误」外壳，并**原样保留**它的签名。
+ *
+ * ★ `@template` 是必需的：没有它，返回的包装器会被推成 `(...args: any[]) => any`，
+ *   于是 `compareSemVer` / `parseRange` 这些公开符号生成出来全是 any —— 公开面就烂了。
+ *   泛型参数 F 捕获被包函数的完整签名，`Parameters` / `ReturnType` 把它逐字交回。
+ *
+ * @template {(...args: never[]) => unknown} F
+ * @param {F} fn 被包的裸函数（semver.mjs 的导出）
+ * @param {string} what 报错前缀（如 `compareSemVer`）
+ * @returns {(...args: Parameters<F>) => ReturnType<F>}
+ */
 function coded(fn, what) {
   return (...args) => {
     try {
-      return fn(...args);
+      return /** @type {ReturnType<F>} */ (fn(...args));
     } catch (err) {
       if (err instanceof CordiumError) throw err;
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `${what}: ${describeError(err)}`, { cause: err });

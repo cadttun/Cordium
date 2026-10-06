@@ -15,18 +15,40 @@
     "node": ">=22.13.0"
   },
   "files": [
-    "src"
+    "src",
+    "types"
   ],
   "dependencies": {
     "@cordium/kernel": "0.3.0"
   },
+  "scripts": {
+    "types:emit": "tsc -p tsconfig.emit.json"
+  },
   "exports": {
-    "./runtime": "./src/runtime.mjs",
-    "./ecosystem": "./src/ecosystem.mjs",
-    "./catalog": "./src/catalog.mjs",
-    "./isolation": "./src/isolation.mjs",
-    "./loader": "./src/loader.mjs",
-    "./reload": "./src/reload.mjs",
+    "./runtime": {
+      "types": "./types/runtime.d.mts",
+      "default": "./src/runtime.mjs"
+    },
+    "./ecosystem": {
+      "types": "./types/ecosystem.d.mts",
+      "default": "./src/ecosystem.mjs"
+    },
+    "./catalog": {
+      "types": "./types/catalog.d.mts",
+      "default": "./src/catalog.mjs"
+    },
+    "./isolation": {
+      "types": "./types/isolation.d.mts",
+      "default": "./src/isolation.mjs"
+    },
+    "./loader": {
+      "types": "./types/loader.d.mts",
+      "default": "./src/loader.mjs"
+    },
+    "./reload": {
+      "types": "./types/reload.d.mts",
+      "default": "./src/reload.mjs"
+    },
     "./package.json": "./package.json"
   }
 }

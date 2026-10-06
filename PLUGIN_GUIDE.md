@@ -113,30 +113,47 @@ export function deactivate() {
 
 ## 3. ctx：插件能用的全部能力
 
-`activate` 收到的 `ctx` 是冻结对象，成员如下：
+`activate` 收到的 `ctx` 是冻结对象，**19 个成员分三档**。第一次读只需看第一档，其余按需查阅。
+
+### 3.1 主干（8 个）
+
+每个插件几乎都会用到。实测消费方对这 8 个全部有调用点。
 
 | 成员 | 返回 | 用途 |
 |---|---|---|
 | `pluginId` | string | 本插件 id |
 | `manifest` | object | 冻结的 manifest 副本 |
-| `scope` | EffectScope | 本次激活的资源作用域，见 [§8](#8-生命周期与资源回收) |
 | `provideService(name, impl)` | undefined | 提供服务，见 [§4](#4-服务) |
 | `getService(name)` | 服务句柄 | 取用服务 |
-| `watchService(name, listener)` | 退订函数 | 监听某个服务的注册 / 注销 |
-| `watchPluginState(listener)` | 退订函数 | 监听**任意插件**的状态变更（注册 / 启停 / 等触发 / 激活失败）。回调收到冻结的 `{ id, from, to }`；`from` 为 `null` 表示新注册，`to` 为 `null` 表示已移出。中间态（`activating` / `stopping`）也会推 |
 | `registerAction(name, options)` | undefined | 注册动作，见 [§5](#5-动作) |
 | `dispatchAction(name, payload)` | **Promise** | 调用动作 |
 | `on(name, listener, options?)` | 退订函数 | 订阅事件，见 [§6](#6-事件) |
+| `log(level, message, details?)` | undefined | 写宿主审计日志。`level` **必须是** `debug` / `info` / `warn` / `error` 之一，写别的（包括 `'Error'`、`'err'` 这类拼法）当场抛 `invalid_argument` —— 只有 `error` 级会进诊断的专用错误缓冲并附栈，拼错就等于让出错证据消失 |
+
+### 3.2 作用域（3 个）
+
+三个成员同属一套机制（见 [§7](#7-作用域)）—— 需要按 agent / 会话隔离时才读。实测消费方只用到 `scope`。
+
+| 成员 | 返回 | 用途 |
+|---|---|---|
+| `scope` | EffectScope | 本次激活的资源作用域，见 [§8](#8-生命周期与资源回收) |
+| `scoped(label)` | 新 ctx | 进入命名作用域，见 [§7](#7-作用域) |
+| `privateScope()` | 新 ctx | 进入只属于这一次调用的私有作用域 |
+
+### 3.3 通道与观察（8 个）
+
+事件派发的其余形态，加上「订阅服务 / 插件状态的变化」。场景明确，但不常用 —— 实测消费方对其中 5 个（`once` / `parallel` / `serial` / `watchService` / `watchPluginState`）零调用。
+
+| 成员 | 返回 | 用途 |
+|---|---|---|
 | `once(name, listener, options?)` | 退订函数 | 只触发一次的订阅 |
 | `emit(name, ...args)` | undefined | 广播，不等回执 |
 | `parallel(name, ...args)` | **Promise** | 广播并等待所有监听器完成 |
 | `serial(name, ...args)` | **Promise** | 依次询问，第一个给出结果的胜出 |
-| `bail(name, ...args)` | 结果 | `serial` 的同步版 |
 | `waterfall(name, ...args, fallback)` | 结果（链上有 async 时为 Promise） | 中间件链 |
-| `scoped(label)` | 新 ctx | 进入命名作用域，见 [§7](#7-作用域) |
-| `privateScope()` | 新 ctx | 进入只属于这一次调用的私有作用域 |
+| `watchService(name, listener)` | 退订函数 | 监听某个服务的注册 / 注销 |
+| `watchPluginState(listener)` | 退订函数 | 监听**任意插件**的状态变更（注册 / 启停 / 等触发 / 激活失败）。回调收到冻结的 `{ id, from, to }`；`from` 为 `null` 表示新注册，`to` 为 `null` 表示已移出。中间态（`activating` / `stopping`）也会推 |
 | `registerUIContribution(item)` | undefined | 登记一条 UI 贡献（`{ id, type, ... }` 或字符串 id）。`type` 由装配方用 `host.declareUIContributionTypes([...])` 声明值集；声明了之后写别的值当场抛 `invalid_argument`（没声明则不做校验） |
-| `log(level, message, details?)` | undefined | 写宿主审计日志。`level` **必须是** `debug` / `info` / `warn` / `error` 之一，写别的（包括 `'Error'`、`'err'` 这类拼法）当场抛 `invalid_argument` —— 只有 `error` 级会进诊断的专用错误缓冲并附栈，拼错就等于让出错证据消失 |
 
 - `dispatchAction` 总是返回 Promise；`parallel` / `serial` 正常调用返回 Promise（旧 `ctx` 上会先同步抛 `scope_disposed`，见下条）。`waterfall` 在**实际走到**的监听器与 `fallback` 都同步时直接返回结果，实际走到某一环返回 Promise 时整条链返回 Promise，稳妥的写法是一律 `await`。其余方法都是同步的。
 - 插件停用后，手里留着的旧 `ctx` 基本都失效：除 `log` 外，登记、发布、取服务、派发动作、事件订阅与派发、`scoped` / `privateScope`，调用时都抛 `scope_disposed`。两处例外：`log` 不报错（只留日志，便于收尾）；`provideService` 在服务名未声明契约时，先报 `undeclared_service`（该项检查在生命周期门之前）。`dispatchAction` 是异步的，错误只会经 Promise 拒绝送达；`parallel` / `serial` 正常调用时监听器错误也走 Promise 拒绝，但生命周期门是**同步检查** —— 旧 `ctx` 上调用会**同步抛** `scope_disposed`。旧 `ctx` 的调用一律用 `try { await … } catch` 包住（同步抛与 Promise 拒绝都能接住）。
@@ -270,7 +287,6 @@ ctx.emit('task/created', { id: 1 });
 | `emit(name, ...args)` | 依次调用所有监听器，不等待，不返回结果 | 不影响其它监听器，错误写进宿主日志 |
 | `await parallel(name, ...args)` | 同时调用并等待全部完成 | 全部跑完后抛 `listener_failed`，各原始错误在 `err.cause.errors` |
 | `await serial(name, ...args)` | 依次 `await` 每个监听器，第一个返回「有效值」的胜出并作为结果 | 立即抛 `listener_failed`，原始错误在 `err.cause` |
-| `bail(name, ...args)` | `serial` 的同步版；监听器返回 Promise 会抛 `invalid_usage` | 同上 |
 | `waterfall(name, ...args, fallback)` | 中间件链：监听器签名 `(...args, next)`，调 `next()` 往下传，`next(新参数)` 改写参数，不调则就此返回；都放行时由 `fallback(...args)` 收尾 | 同上；`fallback` 自己抛的错原样抛出 |
 
 「有效值」指 `undefined`、`null`、`false` 以外的返回值（`0` 和 `''` 也算有效）。
@@ -391,7 +407,7 @@ try {
 
 ### 定位出错位置
 
-同步抛出的调用（服务方法、`bail`，以及旧 `ctx` 上的发布方法 `emit` / `parallel` / `serial`）的错误直接抛给调用方；`waterfall` 按**实际走到的那一环**决定 —— 同步结束（监听器直接返回或抛错，链就此中断）时错误同步抛；实际走到 `async` 环、整条链升级为 Promise 时，错误经拒绝送达（见 [§6](#6-事件) 的说明）。返回 Promise 的调用（`dispatchAction` 总是，`parallel` / `serial` 正常调用时，走到异步环的 `waterfall`）—— 监听器与动作里的错误在 Promise 拒绝里，**必须 `await` 才接得住**（同步 `try` / `catch` 抓不到）。两种情况下 `err.code` 是错误码，`err.pluginId` 是出错插件（部分场景为 `null`），`err.cause.stack` 是插件原始错误的完整栈。
+同步抛出的调用（服务方法，以及旧 `ctx` 上的发布方法 `emit` / `parallel` / `serial`）的错误直接抛给调用方；`waterfall` 按**实际走到的那一环**决定 —— 同步结束（监听器直接返回或抛错，链就此中断）时错误同步抛；实际走到 `async` 环、整条链升级为 Promise 时，错误经拒绝送达（见 [§6](#6-事件) 的说明）。返回 Promise 的调用（`dispatchAction` 总是，`parallel` / `serial` 正常调用时，走到异步环的 `waterfall`）—— 监听器与动作里的错误在 Promise 拒绝里，**必须 `await` 才接得住**（同步 `try` / `catch` 抓不到）。两种情况下 `err.code` 是错误码，`err.pluginId` 是出错插件（部分场景为 `null`），`err.cause.stack` 是插件原始错误的完整栈。
 
 没有调用方能接住的失败会进宿主日志（`host.getDiagnostics().recentLogs` / `recentErrors`）。这类失败包括 `emit` 监听器、清理回调、`activate` / `deactivate` 和启动回滚。日志报文末尾会附上错误码和源头位置：
 
