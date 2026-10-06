@@ -12,11 +12,14 @@
  *     除非他改的是源码里的 JSDoc。**手改在结构上失效**，漂移在结构上不可能。
  *
  * ── 为什么非要把产物提交进版本库 ────────────────────────────────────────────
- *   消费方经 `file:` + symlink 直连本仓源码。`file:` 依赖**不安装**依赖方的
- *   devDependencies，但**会跑**依赖方的 `prepare`（实测）—— 所以「让消费方在安装时生成」
- *   并非不可能，只是：`prepare` 里的 `tsc` 只能从**被链接源仓自己的 `node_modules`** 找到，
- *   源仓干净 clone / CI `--omit=dev` 时必然 `MODULE_NOT_FOUND`，而 **`prepare` 失败会让
- *   消费方的 `npm install` 整单失败**（实测 exit 3）。
+ *   消费方经 `file:` + symlink 直连本仓源码。默认（软链）模式下，`file:` 依赖**既不装**
+ *   它自己的 `dependencies`、**也不装**它的 `devDependencies`（本机实测：`is-odd` 与
+ *   `left-pad` 两个都缺席，`node_modules` 里只有那条软链），但**会跑**依赖方的 `prepare`。
+ *   ⇒ 所以「让消费方在安装时生成」并非不可能，只是：`prepare` 里的 `tsc` 只能从
+ *   **被链接源仓自己的 `node_modules`** 找到，源仓干净 clone / CI `--omit=dev` 时必然
+ *   `MODULE_NOT_FOUND`，而 **`prepare` 失败会让消费方的 `npm install` 整单失败**（实测 exit 3）。
+ *   ★ 换 `--install-links` 也不是出路：它只补上 `dependencies`（实测 `is-odd` 到场），
+ *     **仍然不装 `devDependencies`**（`left-pad` 依旧缺席）⇒ `tsc` 照样不在。
  *   ⇒ 那条路是**把风险从消费方的编辑器挪到消费方的安装**，不划算。
  *   不提交 = 消费方的 IDE 拿不到任何补全（实测：`exports` 里没有 `types` 条件时，
  *   TypeScript 会报「找不到声明文件，该模块隐式为 any」—— 它**不会**去读
