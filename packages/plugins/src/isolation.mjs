@@ -30,6 +30,18 @@
  *     适合「偶尔跑一段不可信 / 可能卡死的计算」，不适合高频小调用。
  *   · 三道闸（见「并发与内存闸」）：同时存活数 ≤ 上限（默认 CPU 核数，超出排队）；排队数有上限；
  *     在途负载总字节数有上限 —— 后两者超了立即抛 `isolation_busy`（背压：调用方稍后重试），不无限堆积。
+ *     ⚠️ 两道闸的**口径要先知道**（都不是缺陷，是此前没写出来）：
+ *       ① **`timeoutMs` 只算执行段，不含排队等待。** 计时器从 `spawn()` 起算（见 `awaitReply`），
+ *          而排队发生在 `acquire()` 里、在它之前。排队位排满（`maxQueued` 默认 256）时，一个调用
+ *          可能先等最多 `maxQueued × timeoutMs`（默认口径约 12.8 分钟）才轮到执行，而它拿到的
+ *          报文写的是 `timed out after 3000ms`。★ 本模块**没有导出队列深度查询** ⇒ 调用方
+ *          **无法从外部区分「在排队」与「在执行」**，要卡总预算只能在外层自己加。
+ *       ② **上限对两档的硬度不同。** `worker` 档的 `kill` 是 `w.terminate()`（返回 Promise），
+ *          `await` 真的等到线程停；`process` 档是 `c.kill()`（返回 boolean），`await` 是**空操作**，
+ *          只是「信号已发出」。Windows 上两者等价（`kill` 走 `TerminateProcess`，子进程根本收不到
+ *          `SIGTERM`，本机实测）；POSIX 上目标只要装了 `SIGTERM` 处理函数，Node 的默认终止行为就被
+ *          移除，此时这道上限**不成立**（槽已归还、进程还活着，攥着最多 `maxMemoryMb` 不放）。
+ *          ★ 本机（win32）**复现不出来** ⇒ 未改行为，登记在 `docs/开工中/README.md` §二。
  *   · 单个隔离环境的 JS 堆有上限（`maxMemoryMb`，默认 1024）：超了只杀它自己，报 `isolated_call_failed`。
  *     ⇒ 这是给「纯计算 / 数据进数据出」的插件逻辑用的，**不是**把整个插件（含 ctx）搬进隔离区。
  *
@@ -218,6 +230,9 @@ export async function callIsolated(module, exportName = 'default', args = [], op
         // ★ serialization: 'advanced' —— fork 默认走 JSON：Map / TypedArray 变普通对象、Date 变字符串、
         //   undefined 变 null、BigInt 直接抛（实测）。advanced 即结构化克隆，与 worker 档同一语义。
         const c = fork(RUNNER, [], { execArgv, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: {}, serialization: 'advanced' });
+        // ⚠️ `c.kill()` 返回 boolean，`await` 是**空操作** —— 本档**不等子进程真退出**就归还并发槽
+        //   （worker 档的 `w.terminate()` 返回 Promise，会等）。Windows 上无差别（`TerminateProcess`
+        //   无条件）；POSIX 上目标若接管了 `SIGTERM` 则收不掉。详见文件头「三道闸」②。
         const kill = () => { c.kill(); };
         // send 遇到不可克隆的值同步抛 ⇒ 必须先收掉子进程，否则它挂着 IPC 永不退出
         try { c.send(request); } catch (err) {
