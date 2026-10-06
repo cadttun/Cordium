@@ -642,6 +642,7 @@ const result = await callIsolated('/abs/path/heavy.mjs', 'crunch', [data], {
   - 类实例能传，但到对面只剩自有字段，变成普通对象，原型和方法都丢了。
 - 大块二进制可用 `transfer: [arrayBuffer]` 零拷贝移交（仅 worker 模式，移交后调用方那块变空）。
 - 同时运行数、排队数、在途数据量都有上限，超出时抛 `isolation_busy`，稍后重试即可；装配方可用 `configureIsolation` 调整。
+- 失败时外层 `err.code` 一律是 `isolated_call_failed`（管**归属**），**具体原因在 `err.cause.code`**（管**语义**）。隔离端自己产出的两个码导出为 `IsolationCode`（`import { IsolationCode } from '@cordium/plugins/isolation'`）；你在插件里 `throw` 出来的 `err.code` 会**原样透传**，取值任意 ⇒ **`IsolationCode` 是不完备表**，只用来判「是不是隔离端自产的」（详见 [§13](#13-测试与调试) 的两个反直觉点）。
 - ⚠️ 这不是安全沙箱，不能用来运行不可信的恶意代码。
 
 ## 12. 约束速查
@@ -783,6 +784,21 @@ try {
 
 ★ 精确说法：`err.stack` 的**首行会回显 `err.message`**，所以对 `err.stack` 做字符串搜索**能**搜到位置；但**帧**不指向插件。要**程序化**取插件栈，用 `err.cause.stack`。
 ★ `err.cause` 是**跨边界 DTO**（`{ ok, name, code, message, stack }`），不是活体 `Error` —— 读 `cause.code` / `cause.message` / `cause.stack`，**别用 `instanceof Error` 判**（原因见 [§11](#11-执行隔离可选)）。
+
+★★ **但别把这句话推广到「隔离调用失败就一定如此」** —— `cause` 的形状是**分路径**的：
+
+| 失败路径 | `cause` |
+|---|---|
+| 隔离端**回了一条失败报文**（插件里抛错、导出不是函数、结果不可克隆） | 上面的 wire DTO ✅ |
+| 隔离环境**崩溃** | **活体 `Error`**，其 `code` 是 Node / OS 码（`ERR_*` / `E*`），**不是**下面那张表里的值 |
+| 隔离环境**无结果退出** / **超时** | **不挂 `cause`** |
+
+★ `cause.code` 是**第二码域**（外层 `err.code` 管**归属**，`cause.code` 管**语义**）。它**只有一半可枚举**：
+
+- **隔离端自产的码**（`not_a_function` / `result_not_cloneable`）导出为 `IsolationCode`（`@cordium/plugins/isolation`）；
+- **插件自报的码**（你在插件里 `throw` 的那个 `err.code`）由隔离端**原样透传**，取值任意、**结构上不可枚举**。
+
+⇒ 所以 `IsolationCode` **是不完备表**：**别**写 `Object.values(IsolationCode).includes(cause.code)` 来判断「我认全了没有」—— 未命中只说明「不是隔离端自产的」，那多半是插件自己的码。判「是不是隔离端自产」才是它的用途。
 
 ### 没有测试替身，照这样自建
 

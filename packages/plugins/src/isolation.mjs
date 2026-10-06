@@ -78,6 +78,10 @@ const waiting = [];
  * @param {{ maxConcurrent?: number, maxQueued?: number, maxPendingBytes?: number }} [next] 只改给出的键
  * @returns {Readonly<{ maxConcurrent: number, maxQueued: number, maxPendingBytes: number }>} 生效后的上限
  */
+// ★ `err.cause.code` 的**第二码域**（隔离端自产的码）。本表**不完备**：插件自报的码由隔离端
+//   原样透传、不可枚举。详见 isolation-codes.mjs 的文件头。
+export { IsolationCode } from './isolation-codes.mjs';
+
 export function configureIsolation(next) {
   if (next !== undefined) {
     if (next === null || typeof next !== 'object' || Array.isArray(next)) {
@@ -249,16 +253,20 @@ async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId }) {
       channel.once('message', (msg) => {
         if (msg?.ok) return resolve(msg.value);
         // ★ 隔离端回来的栈指向插件文件：报文里带上源头位置，cause.stack 保留全栈（跨进程也能定位到行）
-        // ★★ `cause` 是【wire DTO】不是活体 Error：`{ ok, name, code, message, stack }`，每个字段都是
-        //   隔离端 `field()` 强制过的**原始字符串**（非字符串回退默认值）。**这不是不一致，是有意的形态** ——
-        //   · 进程内那两条路径（action / service）的 cause 是**活体 Error**，因为那个对象没跨过边界；
+        // ★★ 【本条路径】（隔离端回了一条失败报文）的 `cause` 是【wire DTO】不是活体 Error：
+        //   `{ ok, name, code, message, stack }`，每个字段都是隔离端 `field()` 强制过的**原始字符串**
+        //   （非字符串回退默认值）。**这不是不一致，是有意的形态** ——
         //   · 跨边界时，**Error 的原型本就带不过来**，能带过来的只有值。而 `structuredClone` 对 Error
         //     只保证 `name` / `message` / `stack` —— **自定义属性 `code` 会丢**（Node 实测）。
         //     所以隔离端**主动把 `code` 抽成普通对象**：**DTO 才是能无损携带 `code` 的形态**。
         //   ⇒ 消费方读 `cause.code` / `cause.message` / `cause.stack`，**不要用 `instanceof Error` 判**。
         //   ⇒ `errorDetails()`（本仓唯一的通用 cause 消费者）走的是鸭子类型 `readField`，两种形状**逐字段等价**。
-        //   ⚠️ 安全：只搬运已清洗的原始字符串，**绝不把 wire 上的对象引用挂成 cause**
-        //     （vm2 CVE-2026-47686：未清洗的 `Error.cause` 可遍历到宿主对象 ⇒ 沙箱逃逸 RCE）。
+        // ⚠️ **`cause` 的形状是【分路径】的，别把本条推广到全部失败**（下面三个分支各不相同）：
+        //   · 隔离环境崩溃（`channel.once('error')`）⇒ cause 是**活体 Error**，其 `code` 是 Node / OS 码（`ERR_*` / `E*`）；
+        //   · 无结果退出（`channel.once('exit')`）与超时 ⇒ **不挂 cause**。
+        //   进程内那两条路径（action / service）的 cause 同样是活体 Error（对象没跨过边界）。
+        // ⚠️ 安全：只搬运已清洗的原始字符串，**绝不把 wire 上的对象引用挂成 cause**
+        //   （vm2 CVE-2026-47686：未清洗的 `Error.cause` 可遍历到宿主对象 ⇒ 沙箱逃逸 RCE）。
         const at = firstFrame(msg?.stack);
         reject(new CordiumError(ErrorCode.ISOLATED_CALL_FAILED,
           `Plugin '${pluginId}' isolated call failed: ${msg?.name ?? 'Error'}${msg?.code ? ` [${msg.code}]` : ''}: ${msg?.message ?? ''}${at ? ` (at ${at})` : ''}`,

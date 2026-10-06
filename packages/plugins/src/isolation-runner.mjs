@@ -12,6 +12,7 @@
  *   本环境发完结果就被终止，这些内存留着也没人用。
  */
 import { transferables } from './transferables.mjs';
+import { IsolationCode } from './isolation-codes.mjs';
 
 // 被抛出的可以是任何值（undefined / symbol / 无原型对象 / message 是抛错的 getter）：取文本本身不得再抛。
 // ★ 不从 @cordium/kernel/internal 取 describeError：process 档的权限模型只放行本目录与目标模块目录的读权限。
@@ -19,14 +20,14 @@ const text = (v) => { try { return String(v); } catch { return Object.prototype.
 const errorText = (err) => { try { if (err !== null && typeof err === 'object' && 'message' in err) return text(err.message); } catch { /* 见上 */ } return text(err); };
 const field = (err, key, fallback) => { try { const v = err?.[key]; return typeof v === 'string' ? v : fallback; } catch { return fallback; } };
 const stackText = (err) => { const s = field(err, 'stack', null); return s === null ? null : s.slice(0, 4096); };
-const notCloneable = err => ({ ok: false, name: 'DataCloneError', code: 'result_not_cloneable', message: errorText(err), stack: null });
+const notCloneable = err => ({ ok: false, name: 'DataCloneError', code: IsolationCode.RESULT_NOT_CLONEABLE, message: errorText(err), stack: null });
 
 async function run({ href, exportName, args }) {
   try {
     const mod = await import(href);
     const fn = mod[exportName];
     if (typeof fn !== 'function') {
-      return { ok: false, name: 'TypeError', code: 'not_a_function', message: `export '${exportName}' is not a function`, stack: null };
+      return { ok: false, name: 'TypeError', code: IsolationCode.NOT_A_FUNCTION, message: `export '${exportName}' is not a function`, stack: null };
     }
     return { ok: true, value: await fn(...args) };
   } catch (err) {

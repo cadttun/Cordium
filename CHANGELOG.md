@@ -25,6 +25,10 @@
 - 诊断字段 `unresolvedDependencies` 的 `reason` 从 2 类扩到 4 类：新增 `'cycle'`（与这个依赖**互相**可达 ⇒ 拓扑排序必然失败）与 `'not_running'`（依赖在、版本也对，但**此刻它跑不起来**：等触发的懒插件 / 被停用 / 已失败 / 它自己也被上游的环挡住）。
   （此前只有 `'missing'` / `'version_mismatch'` ⇒ **环依赖**与**依赖没跑起来**这两种情况下，插件同样停在 `discovered`、`error: null`，而这一项是**空数组** —— 与当初立这个字段要修的症状一模一样，换了个成因又回来了。★ 前两类与 `boot()` 的拒绝同源；后两类**不会**让 `boot()` 抛错，它们回答的是「它为什么没起来」。⚠️ `'not_running'` 只在宿主启动过之后才可能出现 —— `boot()` 之前人人都是 `discovered`，那不是「跑不起来」，否则 boot 前那份纯查询会误报。）
 
+- `@cordium/plugins/isolation` 新导出 `IsolationCode`：隔离端**自己产出**的失败码词表（`not_a_function` / `result_not_cloneable`）。它补的是 `err.cause.code` 这个**第二码域**里**唯一可枚举**的那一半 —— 另一半是**插件自报的码**（插件里 `throw` 出来的 `err.code`），由隔离端**原样透传**，取值任意、结构上不可枚举。
+  ★ **本表不完备，这是设计而非疏漏**：此前要认全这些值只能跨仓读实现或暴力探测；现在至少有一份点名的清单，但**不得**用它判断「我认全了没有」（未命中只说明「不是隔离端自产的」）。
+  ★ 没有配 `isValidIsolationCode`：本仓的 `isValidXxx` 三件套是给**入口输入**做成员校验的；本表是**输出词表**（同 `LifecycleState` / `DispatchMode`）。而且真给 `cause.code` 加值域校验反而有害 —— 会把插件的合法自报码当非法值吞掉。
+
 ### Changed
 
 - ★ `apiVersion` 判据的**破坏边界**改为「版本号里**最左的非零位**」（node-semver 对 caret 的定义原话）：
@@ -47,6 +51,8 @@
   （口径取自本仓自己的分界线：**选项袋硬拒、声明式字段表才丢弃+诊断** —— 与 `CordiumHost` 构造 / `registerPlugin` / `replacePlugin` 同族。）
   ★ **零迁移（实测）**：消费方 4 处 `registerAction` 全部只传 `requiredPermission` + `handler`。
   ⚠️ **行为变更**：插件若传了未知键（含拼错的键），从此会在 `activate` 期被拒 —— 这正是修的目的。
+- `PLUGIN_GUIDE` 澄清 `err.cause` 的形状是**分路径**的：只有「隔离端**回了一条失败报文**」这条路径是 wire DTO；**崩溃**路径挂的是**活体 `Error`**（其 `code` 是 Node / OS 码），**无结果退出**与**超时**路径**根本不挂 `cause`**。
+  此前那句话写成了通称，读者会以为「隔离调用失败一律如此」—— 而它只对三条路径中的一条成立。
 
 ### Removed
 
@@ -68,6 +74,17 @@
   ★ **不另加 pattern**：权限名的形状已由 `declarePermissions` 的 `PLUGIN_ID_PATTERN` 保证（一处定义、插件 id / 服务名 / 权限名三处复用），再加一遍是冗余且必漂。
   ★ **零迁移（实测）**：消费方 4 处 `requiredPermission` 全是非空字符串。
 - `@cordium/plugins` 六个入口的**导出面此前零门禁**（只钉了子路径键名，没钉每个入口里导出什么）：加一个 `export` ⇒ **全量测试全绿、无人拦**；而改名会红（既有测试在调它）—— 即**改名有人管、加导出无人管**，导出面可以无声膨胀。现补 `packages/plugins/test/public-surface.test.mjs` 逐字钉死（与内核侧 `public-surface.test.mjs` 同一口径）。
+- ★★ **错误模型门禁只钉住了它宣示的一半**：`error-model.test.mjs` 写着「src 下一切抛错都带稳定 code；码表清单钉死」，而实测 —— 写一个**裸字符串码**（`new CordiumError('typo_code', …)`）**全绿**（文本门禁只查裸 `new Error(` 与 `ErrorCode.X` 的拼写），新增一个**从不抛出**的码也全绿。现补两道：
+  · `new CordiumError` 的**首参必须是 `ErrorCode.X`**（唯一豁免：`host-util.mjs` 的 `readOptions` —— 它的第 4 个形参就是码，3 个抛点原样转发，是全仓唯一透传口）；
+  · **码表反向可达性**：每个码至少要有一个直接构造点或透传点（裸引用不算 —— 否则「加一行 + 引用一下」就能骗过）。
+  另加一条守卫：**不得给 `CordiumError` / `ErrorCode` 起别名** —— 别名能同时绕过上面两道（正则与真 AST 都绕不过它），今天 src 内 0 处。
+  ★ 两道新门禁上线时**全绿**（48/48 个码都已有直接构造点），属防未来回归；三条各自用**忠实变异体**验证变红。
+  ★ 顺带统一了该文件里**三套各写各的**源码清洗：旧的一处 `line.replace(/\/\/.*$/, '')` 会把 `'https://…'` 之后的代码**整段截掉**（漏判），且两套都不处理字符串字面量。新的清洗器抹注释、抹字符串为占位符，并**逐字符保留换行**（否则跨行模板字面量会让后面所有行号前移）。
+- ★ **`design/removed-apis.md` 与 `CHANGELOG` 之间没有任何机制**：0.3.0 的 2 条 `### Removed` 在留档里**曾一条都没有**（两处各写一份「已删集合」，谁也不知道漂了）。现补交叉核对门禁（`packages/plugins/test/removed-apis.test.mjs`）：CHANGELOG 每个 `### Removed` 条目必须在留档里有对应条目，或在条目末尾写 `（无需留档）` **显式**豁免。
+  ★ **只钉单向**（CHANGELOG ⇒ 留档）：留档是有意**超集**（实测前 8 条在整个 CHANGELOG 零出现；第 9 条 `restartRequired` 的删除记在 `### Changed`）—— 硬钉反向会立刻误报 9 条。
+  ★ **不合并两处、也不由一方生成另一方**：一处是面向读者的变更叙事，一处是「勿加回」的原文留档，合并必然损坏其中一个。对标 Node（手写的 `doc/api/deprecations.md` 才是源，`deprecations.json` 是产物）与 GitLab（CI 跑 `check_deprecations` 校验源与产物一致）。
+  ★ 判据从条目**首行冒号之前**取：冒号之后是理由，实测含 `{}` / `warn` 这类 token —— 不切会让任一条目被**别的条目的理由**蹭中（假绿）。
+  ★ 「找不到 `### Removed` 小节」「留档解析不出条目」报**判据失效**并失败，不是通过。
 
 ## 契约演进约定（服务契约的 `methods`）
 

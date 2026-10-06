@@ -4,10 +4,11 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { hasCode } from './fixtures/errors.mjs';
-import { callIsolated as rawCallIsolated } from '../src/isolation.mjs';
+import { callIsolated as rawCallIsolated, IsolationCode } from '../src/isolation.mjs';
 
 const TARGET = fileURLToPath(new URL('./fixtures/isolated/targets.mjs', import.meta.url));
 
@@ -58,6 +59,41 @@ for (const mode of ['worker', 'process']) {
     await assert.rejects(callIsolated(TARGET, 'giveFunction', [], { mode }), hasCode('isolated_call_failed', /result_not_cloneable|DataClone/));
   });
 }
+
+// ─────────── `err.cause.code`：第二码域（隔离端自产码）的契约 ───────────
+// 外层 `code` 管归属（`isolated_call_failed`），`cause` 里的 `code` 管语义。
+// ★ 本表【不完备】：插件抛出的 code 由隔离端原样透传、结构上不可枚举 ⇒ 只钉「自产的这两个」。
+
+test('★ 隔离端自产码表定稿（增删改 = 破坏性变更，同 ErrorCode 口径）', () => {
+  assert.ok(Object.isFrozen(IsolationCode));
+  assert.deepEqual(Object.values(IsolationCode).sort(), ['not_a_function', 'result_not_cloneable']);
+  for (const [k, v] of Object.entries(IsolationCode)) assert.equal(k, v.toUpperCase());
+});
+
+for (const mode of ['worker', 'process']) {
+  test(`${mode} ★ 真实产出与码表一致；插件自报码【不进】表（第二码域开放的判别性证据）`, async () => {
+    const fail = (fn, args) => callIsolated(TARGET, fn, args, { mode }).then(() => null, e => e);
+
+    const notFn = await fail('notAFunction', []);
+    assert.equal(notFn.cause.code, IsolationCode.NOT_A_FUNCTION, '★ 隔离端自产码必须与表逐字一致');
+
+    const badClone = await fail('giveFunction', []);
+    assert.equal(badClone.cause.code, IsolationCode.RESULT_NOT_CLONEABLE, '★ 隔离端自产码必须与表逐字一致');
+
+    const boom = await fail('boom', []);
+    assert.equal(boom.cause.code, 'plugin_boom', '★ 插件自报码必须原样带回（信息不得被信封吞掉）');
+    assert.equal(Object.values(IsolationCode).includes(boom.cause.code), false,
+      '★ 插件自报码不得出现在表里 —— 这正是「本表不完备」的判别性证据');
+  });
+}
+
+test('★ isolation-runner 不得写裸 code 字面量：自产码一律走 IsolationCode（新增码必须入表）', () => {
+  const src = fs.readFileSync(new URL('../src/isolation-runner.mjs', import.meta.url), 'utf8');
+  const bare = [...src.matchAll(/code:\s*'([^']*)'/g)].map(m => m[1]);
+  assert.deepEqual(bare, [], '\n隔离端自产码必须是 IsolationCode.X（否则新增的码进不了契约、也没门禁保护）：\n' + bare.join('\n'));
+  // ★ 非恒真：扫描必须确实看到了 code: 字段，否则「全绿」只是空扫
+  assert.ok(/code:\s*IsolationCode\./.test(src), '隔离端一条 IsolationCode 都没用上 —— 扫描或接线疑似失效');
+});
 
 test('★ process：默认禁读目标模块目录之外的文件；显式 allowFsRead 后放行', async () => {
   await assert.rejects(callIsolated(TARGET, 'readFile', [OUTSIDE], { mode: 'process' }), hasCode('isolated_call_failed', /ERR_ACCESS_DENIED/));

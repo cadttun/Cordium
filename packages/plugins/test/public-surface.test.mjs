@@ -33,7 +33,7 @@ const EXPECTED = {
   './runtime': ['PLUGIN_API_VERSION', 'validatePluginManifest', 'validatePluginManifestDetailed'],
   './ecosystem': ['callWithTimeout', 'normalizeDependencies', 'resolvePluginDependencies'],
   './catalog': ['createPluginCatalog'],
-  './isolation': ['callIsolated', 'configureIsolation'],
+  './isolation': ['callIsolated', 'configureIsolation', 'IsolationCode'],
   './loader': ['loadPlugins'],
   './reload': ['reloadPlugin', 'watchPlugins']
 };
