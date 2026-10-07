@@ -235,10 +235,34 @@ test('configureIsolation：只读 / 局部修改 / 校验；调大并发立刻�
 
 for (const mode of ['worker', 'process']) {
   test(`★ ${mode}：堆超 maxMemoryMb ⇒ 只终止该环境，isolated_call_failed，宿主无恙`, async () => {
-    const t0 = Date.now();
-    // 超时给足 20s：必须是内存闸先触发（32MB 约 0.2s 撑满；没有闸则一路涨到默认堆上限，要 10s 以上）
-    await assert.rejects(callIsolated(TARGET, 'heapHog', [], { mode, maxMemoryMb: 32, timeoutMs: 20000 }), hasCode('isolated_call_failed'));
-    assert.ok(Date.now() - t0 < 3000, `内存闸应在数百毫秒内生效，实际 ${Date.now() - t0}ms`);
+    // ★★ 判据【不看墙钟】。此前这里写的是 `Date.now() - t0 < 3000` —— 它把「runner 慢」判成了
+    //   「内存闸失效」。实测：本机 266ms、CI windows/Node 24 是 527ms、
+    //   ubuntu 是 1.8–2.2s、windows/Node 26 是 **4481ms**（唯一变红的那格）；而本机「没有闸」
+    //   也只要 8637ms ⇒ 阈值 3000 落在分布中间，**任何绝对墙钟阈值都不可能同时适配**：
+    //   CI 上「有闸」的 4.5s 已经越过本机「无闸」8.6s 所能划出的判别区间的下半。
+    //   ⇒ 改用【有界】分配器 `heapFill`：它会不会死，只取决于上限装不装得下，与机器快慢无关。
+    const N = 2_000_000;   // ≈ 64–128 MB 的 JS 对象；标定见 fixtures/isolated/targets.mjs
+
+    // ① 【接线】上限装不下 ⇒ 必死。
+    //   ★ 这条才是真正的门禁：若 `maxMemoryMb` 没接线（子进程走默认堆 ≈4GB），N 个对象装得下
+    //     ⇒ 这里会【成功】⇒ 本用例变红。且判定不依赖任何计时。
+    await assert.rejects(
+      callIsolated(TARGET, 'heapFill', [N], { mode, maxMemoryMb: 32, timeoutMs: 20000 }),
+      hasCode('isolated_call_failed'),
+      `上限 32MB 装不下 ${N} 个对象 ⇒ 必须报 isolated_call_failed`);
+
+    // ② 【正向对照】（规矩 42）：同一段代码、同一批对象，上限给足 ⇒ 必须【成功】。
+    //   没有这条，① 可能只是因为 `heapFill` 自己总抛错 —— 那样它恒真，什么也证明不了。
+    assert.equal(await callIsolated(TARGET, 'heapFill', [N], { mode, maxMemoryMb: 256, timeoutMs: 20000 }), N,
+      `上限 256MB 装得下 ${N} 个对象 ⇒ 必须正常返回`);
+
+    // ③ 【无界分配】`heapHog` 永远撞上限 ⇒ 同样必须报 isolated_call_failed，而不是拖到 call_timeout。
+    //   ⚠️ 如实说明：这条的判别力**弱于** ① —— 摘掉接线它也会死（只是慢），本机实测无闸 8637ms
+    //      仍在 20s 预算内 ⇒ **它拦不住「接线被摘掉」这个变异体**，别把它当接线门禁用。
+    await assert.rejects(callIsolated(TARGET, 'heapHog', [], { mode, maxMemoryMb: 32, timeoutMs: 20000 }),
+      hasCode('isolated_call_failed'));
+
+    // ④ 宿主无恙：被闸掉的环境收干净之后，同 mode 的调用照常。
     assert.equal(await callIsolated(TARGET, 'add', [1, 2], { mode }), 3);
   });
 }
