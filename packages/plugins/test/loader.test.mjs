@@ -115,11 +115,12 @@ test('★ 依赖里的语法错 ⇒ 报的是【依赖文件】的位置；导�
   assert.match(link.message, /at file:.*bad-import-name\.mjs:2\n.*doesNotExist/);
 });
 
-test('★ 定位探测只解析不执行：顶层执行期的 SyntaxError（JSON.parse）不追加位置，模块只被执行 1 次', async () => {
+test('★ 定位探测只解析不执行：顶层执行期的 SyntaxError（JSON.parse）不追加位置，模块只被执行 1 次', async (t) => {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cordium-')), 'eval.log');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cordium-'));
+  const log = path.join(dir, 'eval.log');
   process.env.CORDIUM_EVAL_LOG = log;
   try {
     const err = await loadPlugins(makeHost(), [{ module: at('runtime-syntax-error.mjs') }]).then(() => null, e => e);
@@ -129,6 +130,13 @@ test('★ 定位探测只解析不执行：顶层执行期的 SyntaxError（JSON
     assert.equal(fs.readFileSync(log, 'utf8'), 'evaluated\n', '子进程探测不得执行插件顶层代码');
   } finally {
     delete process.env.CORDIUM_EVAL_LOG;
+    // ★ 清理失败只留痕（t.diagnostic），绝不掩盖断言失败。
+    //   force: true 只忽略 ENOENT，不吞 EBUSY/EPERM ⇒ maxRetries 兜住 Windows 上子进程刚释放的句柄。
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+    } catch (err) {
+      t.diagnostic(`临时目录清理失败：${dir} —— ${err.message}`);
+    }
   }
 });
 

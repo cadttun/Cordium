@@ -16,6 +16,17 @@ import { reloadPlugin, watchPlugins } from '@cordium/plugins/reload';
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cordium-reload-'));
 
+/** 删临时目录；清理失败只留痕（t.diagnostic），绝不掩盖测试本身的失败。
+ *  force: true 只忽略 ENOENT，不吞 EBUSY/EPERM ⇒ 靠 maxRetries: 3 兜住 Windows 上的句柄延迟释放。 */
+function cleanup(dir, t) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  } catch (err) {
+    const msg = `临时目录清理失败：${dir} —— ${err.message}`;
+    if (t?.diagnostic) t.diagnostic(msg); else process.emitWarning(msg);
+  }
+}
+
 /** 一个提供 service.demo 的插件源码；tag 区分版本 */
 function source({ tag, version = '1.0.0', hotReload = true, activateThrows = false }) {
   return `export const manifest = { id: 'demo.hot', version: '${version}', apiVersion: '1.0.0', provides: ['service.demo']${hotReload ? ', hotReload: true' : ''} };
@@ -36,8 +47,9 @@ function makeHost() {
   return host;
 }
 
-async function setup(opts = {}) {
+async function setup(t, opts = {}) {
   const dir = tmpDir();
+  t.after(() => cleanup(dir, t));   // 断言失败也删
   const file = path.join(dir, 'hot.mjs');
   fs.writeFileSync(file, source({ tag: 'v1', ...opts }));
   const host = makeHost();
@@ -49,8 +61,8 @@ async function setup(opts = {}) {
 
 const who = host => host.getInternalService('service.demo').who();
 
-test('改文件后 reloadPlugin ⇒ 换上新代码（同一路径不吃模块缓存），config 仍按清单注入', async () => {
-  const { file, host, entry } = await setup();
+test('改文件后 reloadPlugin ⇒ 换上新代码（同一路径不吃模块缓存），config 仍按清单注入', async (t) => {
+  const { file, host, entry } = await setup(t);
   assert.equal(who(host), 'v1:x');
 
   fs.writeFileSync(file, source({ tag: 'v2', version: '1.0.1' }));
@@ -63,8 +75,8 @@ test('改文件后 reloadPlugin ⇒ 换上新代码（同一路径不吃模块�
   assert.equal(who(host), 'v3:x', '第二次重载同样拿到新内容');
 });
 
-test('★ 依赖方被停下再拉起，重新取到新实现', async () => {
-  const { dir, file, host, entry } = await setup();
+test('★ 依赖方被停下再拉起，重新取到新实现', async (t) => {
+  const { dir, file, host, entry } = await setup(t);
   const userFile = path.join(dir, 'user.mjs');
   fs.writeFileSync(userFile, USER);
   globalThis.__cordiumReloadSeen = [];
@@ -78,8 +90,8 @@ test('★ 依赖方被停下再拉起，重新取到新实现', async () => {
   delete globalThis.__cordiumReloadSeen;
 });
 
-test('★ 未声明 hotReload ⇒ invalid_usage 拒绝，旧代码原样在跑；force 可跳过', async () => {
-  const { file, host, entry } = await setup({ hotReload: false });
+test('★ 未声明 hotReload ⇒ invalid_usage 拒绝，旧代码原样在跑；force 可跳过', async (t) => {
+  const { file, host, entry } = await setup(t, { hotReload: false });
   fs.writeFileSync(file, source({ tag: 'v2', hotReload: false }));
   await assert.rejects(reloadPlugin(host, entry), hasCode('invalid_usage', /running version and the new version/));
   assert.equal(who(host), 'v1:x');
@@ -88,15 +100,15 @@ test('★ 未声明 hotReload ⇒ invalid_usage 拒绝，旧代码原样在跑�
   assert.equal(who(host), 'v2:x');
 });
 
-test('正在跑的版本声明了、新版本去掉了 hotReload ⇒ 同样拒绝（两边都要写）', async () => {
-  const { file, host, entry } = await setup();
+test('正在跑的版本声明了、新版本去掉了 hotReload ⇒ 同样拒绝（两边都要写）', async (t) => {
+  const { file, host, entry } = await setup(t);
   fs.writeFileSync(file, source({ tag: 'v2', hotReload: false }));
   await assert.rejects(reloadPlugin(host, entry), hasCode('invalid_usage', /the new version does not/));
   assert.equal(who(host), 'v1:x');
 });
 
-test('★ 新代码激活失败 ⇒ 抛原始错误，旧代码仍在跑；语法错 ⇒ plugin_load_failed 且带位置', async () => {
-  const { file, host, entry } = await setup();
+test('★ 新代码激活失败 ⇒ 抛原始错误，旧代码仍在跑；语法错 ⇒ plugin_load_failed 且带位置', async (t) => {
+  const { file, host, entry } = await setup(t);
   fs.writeFileSync(file, source({ tag: 'v2', activateThrows: true }));
   await assert.rejects(reloadPlugin(host, entry), /broken on purpose/);
   assert.equal(who(host), 'v1:x');
@@ -106,8 +118,9 @@ test('★ 新代码激活失败 ⇒ 抛原始错误，旧代码仍在跑；语�
   assert.equal(who(host), 'v1:x');
 });
 
-test('入口校验：未注册的插件 / 非本地文件 / 清单拼错', async () => {
+test('入口校验：未注册的插件 / 非本地文件 / 清单拼错', async (t) => {
   const dir = tmpDir();
+  t.after(() => cleanup(dir, t));
   const file = path.join(dir, 'hot.mjs');
   fs.writeFileSync(file, source({ tag: 'v1' }));
   await assert.rejects(reloadPlugin(makeHost(), { module: file }), hasCode('plugin_not_found', /loadPlugins first/));
@@ -127,8 +140,8 @@ async function waitFor(predicate, ms = 5000) {
   }
 }
 
-test('★ watchPlugins：保存即重载；出错交给 onError 且监视继续；close 后不再重载', async () => {
-  const { file, host, entry } = await setup();
+test('★ watchPlugins：保存即重载；出错交给 onError 且监视继续；close 后不再重载', async (t) => {
+  const { file, host, entry } = await setup(t);
   const reloads = [];
   const errors = [];
   const watcher = watchPlugins(host, [entry], { debounceMs: 20, onReload: r => reloads.push(r.version), onError: e => errors.push(e) });

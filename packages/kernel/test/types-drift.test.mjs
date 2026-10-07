@@ -63,6 +63,26 @@ function runTsc(args, cwd = ROOT) {
   return { status: res.status, output: (res.stdout || '') + (res.stderr || '') };
 }
 
+/**
+ * 建一个临时工作目录，并把它挂到 `t.after` 上 —— **无论用例通过还是断言失败，都一定会删**。
+ * ★ 这个目录是交给 `tsc` 当工作目录的，可能被编译器进程（或杀软扫描）短暂占用 ⇒
+ *   删除必须带 `maxRetries`，否则 Windows 上会因 EPERM/EBUSY 删不掉而漏目录。
+ * ★ 清理失败绝不掩盖用例自身的失败：只 `t.diagnostic` 留痕，**不抛出**。
+ *   抛出的话：用例已失败时会被 Node 静默吞掉（看不到清理失败）；用例通过时又会把
+ *   一次偶发锁（Windows 上 tsc 句柄）判成红。留痕是「不静默」与「不误伤」的折中。
+ */
+function tmpWorkspace(t, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  t.after(() => {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+    } catch (err) {
+      t.diagnostic(`★ 临时目录清理失败：${dir}\n${err && err.message}`);
+    }
+  });
+  return dir;
+}
+
 test('★★ 源码必须通过类型检查（JSDoc 是类型的唯一真相源，写错了这里就红）', { timeout: 180_000 }, () => {
   assert.ok(fs.existsSync(TSC), `★ 判据失效：找不到 ${path.relative(ROOT, TSC)}（依赖没装？）—— 这不是「检查通过」`);
   const { status, output } = runTsc(['--noEmit', '-p', path.join(ROOT, 'tsconfig.json')]);
@@ -70,59 +90,51 @@ test('★★ 源码必须通过类型检查（JSDoc 是类型的唯一真相源�
     + '不要用 `any` 当消音器，也不要 `@ts-ignore` —— 那只是把错误藏起来。');
 });
 
-test('★ 门禁自检：类型检查真的会因源码里的类型错误而变红（否则是恒真假绿）', { timeout: 180_000 }, () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cordium-typecheck-selfcheck-'));
-  try {
-    // 一个必然报错的探针：把 string 赋给 number。与真实配置同档（allowJs + checkJs）。
-    fs.writeFileSync(path.join(tmp, 'bad.mjs'), 'const n = 1;\n/** @type {number} */\nconst s = n;\n/** @type {string} */ const wrong = n;\n');
-    fs.writeFileSync(path.join(tmp, 'tsconfig.json'), JSON.stringify({
-      compilerOptions: { allowJs: true, checkJs: true, noEmit: true, target: 'es2023', module: 'nodenext', moduleResolution: 'nodenext', types: [] },
-      include: ['bad.mjs']
-    }));
-    const bad = runTsc(['--noEmit', '-p', path.join(tmp, 'tsconfig.json')], tmp);
-    assert.notEqual(bad.status, 0, `★ 判据失效：一个必然类型出错的探针竟然通过了 —— 这条门禁是恒真的。输出：${bad.output}`);
+test('★ 门禁自检：类型检查真的会因源码里的类型错误而变红（否则是恒真假绿）', { timeout: 180_000 }, (t) => {
+  const tmp = tmpWorkspace(t, 'cordium-typecheck-selfcheck-');
+  // 一个必然报错的探针：把 string 赋给 number。与真实配置同档（allowJs + checkJs）。
+  fs.writeFileSync(path.join(tmp, 'bad.mjs'), 'const n = 1;\n/** @type {number} */\nconst s = n;\n/** @type {string} */ const wrong = n;\n');
+  fs.writeFileSync(path.join(tmp, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: { allowJs: true, checkJs: true, noEmit: true, target: 'es2023', module: 'nodenext', moduleResolution: 'nodenext', types: [] },
+    include: ['bad.mjs']
+  }));
+  const bad = runTsc(['--noEmit', '-p', path.join(tmp, 'tsconfig.json')], tmp);
+  assert.notEqual(bad.status, 0, `★ 判据失效：一个必然类型出错的探针竟然通过了 —— 这条门禁是恒真的。输出：${bad.output}`);
 
-    // 正向对照：同一个探针改成正确类型 ⇒ 必须通过（否则「红」可能只是环境问题）
-    fs.writeFileSync(path.join(tmp, 'bad.mjs'), 'const n = 1;\n/** @type {number} */ const ok = n;\n');
-    const good = runTsc(['--noEmit', '-p', path.join(tmp, 'tsconfig.json')], tmp);
-    assert.equal(good.status, 0, `★ 正向对照失败（正确代码不得报错）：${good.output}`);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
+  // 正向对照：同一个探针改成正确类型 ⇒ 必须通过（否则「红」可能只是环境问题）
+  fs.writeFileSync(path.join(tmp, 'bad.mjs'), 'const n = 1;\n/** @type {number} */ const ok = n;\n');
+  const good = runTsc(['--noEmit', '-p', path.join(tmp, 'tsconfig.json')], tmp);
+  assert.equal(good.status, 0, `★ 正向对照失败（正确代码不得报错）：${good.output}`);
 });
 
-test('★★ 已提交的 types/*.d.mts 必须逐字节等于重新生成的结果（手改在结构上失效）', { timeout: 180_000 }, () => {
+test('★★ 已提交的 types/*.d.mts 必须逐字节等于重新生成的结果（手改在结构上失效）', { timeout: 180_000 }, (t) => {
   assert.ok(fs.existsSync(TSC),
     `★ 判据失效：找不到 ${path.relative(ROOT, TSC)}（依赖没装？）—— 这不是「检查通过」`);
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cordium-types-'));
+  const tmp = tmpWorkspace(t, 'cordium-types-');
   const judged = [];
   const drifted = [];
 
-  try {
-    // ★ 顺序承重：plugins 的声明 `import '@cordium/kernel'`，内核的 types 不存在时它解析不了。
-    for (const pkg of PKGS) {
-      const pkgDir = path.join(ROOT, 'packages', pkg);
-      const outDir = path.join(tmp, pkg);
-      const res = spawnSync(process.execPath, [TSC, '-p', path.join(pkgDir, 'tsconfig.emit.json'), '--outDir', outDir],
-        { cwd: ROOT, encoding: 'utf8' });
-      if (res.status !== 0) {
-        judged.push(`生成 ${pkg} 的声明失败（exit ${res.status}）：\n${(res.stdout || '') + (res.stderr || '')}`);
-        continue;
-      }
-      const fresh = readTypes(outDir);
-      const committed = readTypes(path.join(pkgDir, 'types'));
-      if (fresh.size === 0) { judged.push(`生成 ${pkg} 的声明产出为空 —— 判据失效`); continue; }
-      if (committed.size === 0) { judged.push(`${pkg}/types 是空的 —— 跑一次 \`npm run types:emit\` 并提交产物`); continue; }
-
-      for (const [rel, text] of fresh) {
-        if (!committed.has(rel)) drifted.push(`${pkg}/types 少了 ${rel}`);
-        else if (committed.get(rel) !== text) drifted.push(`${pkg}/types/${rel} 与重新生成的结果不一致`);
-      }
-      for (const rel of committed.keys()) if (!fresh.has(rel)) drifted.push(`${pkg}/types/${rel} 是重新生成结果里没有的（旧产物？）`);
+  // ★ 顺序承重：plugins 的声明 `import '@cordium/kernel'`，内核的 types 不存在时它解析不了。
+  for (const pkg of PKGS) {
+    const pkgDir = path.join(ROOT, 'packages', pkg);
+    const outDir = path.join(tmp, pkg);
+    const res = spawnSync(process.execPath, [TSC, '-p', path.join(pkgDir, 'tsconfig.emit.json'), '--outDir', outDir],
+      { cwd: ROOT, encoding: 'utf8' });
+    if (res.status !== 0) {
+      judged.push(`生成 ${pkg} 的声明失败（exit ${res.status}）：\n${(res.stdout || '') + (res.stderr || '')}`);
+      continue;
     }
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    const fresh = readTypes(outDir);
+    const committed = readTypes(path.join(pkgDir, 'types'));
+    if (fresh.size === 0) { judged.push(`生成 ${pkg} 的声明产出为空 —— 判据失效`); continue; }
+    if (committed.size === 0) { judged.push(`${pkg}/types 是空的 —— 跑一次 \`npm run types:emit\` 并提交产物`); continue; }
+
+    for (const [rel, text] of fresh) {
+      if (!committed.has(rel)) drifted.push(`${pkg}/types 少了 ${rel}`);
+      else if (committed.get(rel) !== text) drifted.push(`${pkg}/types/${rel} 与重新生成的结果不一致`);
+    }
+    for (const rel of committed.keys()) if (!fresh.has(rel)) drifted.push(`${pkg}/types/${rel} 是重新生成结果里没有的（旧产物？）`);
   }
 
   assert.deepEqual(judged, [], '\n' + judged.join('\n'));
@@ -131,17 +143,13 @@ test('★★ 已提交的 types/*.d.mts 必须逐字节等于重新生成的结�
     + '不要直接编辑 types/*.d.mts —— 它不是手写的。');
 });
 
-test('★ 门禁自检：比对必须真的能判别内容差异与增删（否则是恒真假绿）', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cordium-types-selfcheck-'));
-  try {
-    fs.mkdirSync(path.join(tmp, 'a'));
-    fs.writeFileSync(path.join(tmp, 'a', 'x.d.mts'), 'export declare const A: 1;\r\n');
-    const got = readTypes(path.join(tmp, 'a'));
-    assert.equal(got.size, 1, '必须读到文件');
-    // ★ CRLF 归一：写进去是 \r\n，读出来必须是 \n（否则 Windows 上恒假红）
-    assert.equal(got.get('x.d.mts'), 'export declare const A: 1;\n', 'CRLF 必须归一');
-    assert.deepEqual(readTypes(path.join(tmp, 'nope')), new Map(), '不存在的目录 ⇒ 空表（调用方据此报判据失效）');
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
+test('★ 门禁自检：比对必须真的能判别内容差异与增删（否则是恒真假绿）', (t) => {
+  const tmp = tmpWorkspace(t, 'cordium-types-selfcheck-');
+  fs.mkdirSync(path.join(tmp, 'a'));
+  fs.writeFileSync(path.join(tmp, 'a', 'x.d.mts'), 'export declare const A: 1;\r\n');
+  const got = readTypes(path.join(tmp, 'a'));
+  assert.equal(got.size, 1, '必须读到文件');
+  // ★ CRLF 归一：写进去是 \r\n，读出来必须是 \n（否则 Windows 上恒假红）
+  assert.equal(got.get('x.d.mts'), 'export declare const A: 1;\n', 'CRLF 必须归一');
+  assert.deepEqual(readTypes(path.join(tmp, 'nope')), new Map(), '不存在的目录 ⇒ 空表（调用方据此报判据失效）');
 });

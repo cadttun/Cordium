@@ -29,6 +29,17 @@ import { pathToFileURL } from 'node:url';
 
 const M = (extra = {}) => ({ id: 'plugin.a', name: 'A', version: '1.0.0', apiVersion: '1.0.0', ...extra });
 
+/** 删临时目录；清理失败只留痕（t.diagnostic），绝不掩盖测试本身的失败。
+ *  force: true 只忽略 ENOENT，不吞 EBUSY/EPERM ⇒ 靠 maxRetries: 3 兜住 Windows 上的句柄延迟释放。 */
+function cleanup(dir, t) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  } catch (err) {
+    const msg = `临时目录清理失败：${dir} —— ${err.message}`;
+    if (t?.diagnostic) t.diagnostic(msg); else process.emitWarning(msg);
+  }
+}
+
 // ═══════════════ ① 冻结必须【按类型泛化】，不按字段名 ═══════════════
 
 test('★★ 交付的 manifest 里【每个容器字段】都必须被冻结 —— 不枚举字段名', async () => {
@@ -63,8 +74,10 @@ test('★ 交付副本与宿主持有的那份【不共享容器引用】—— 
     '★ 交付副本必须是拷贝，不能是宿主内部数组的引用');
 });
 
-test('★ config 逐层冻结：嵌套对象/数组一并冻住（清单条目）', () => {
-  const mod = pathToFileURL(join(mkdtempSync(join(tmpdir(), 'cordium-cfg-')), 'x.mjs')).href;
+test('★ config 逐层冻结：嵌套对象/数组一并冻住（清单条目）', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'cordium-cfg-'));
+  t.after(() => cleanup(dir, t));   // 断言失败也删
+  const mod = pathToFileURL(join(dir, 'x.mjs')).href;
   const out = normalizeEntry({ module: mod, config: { a: { b: ['x'] } } }, 'test');
   assert.ok(Object.isFrozen(out.config), 'config 顶层必须冻结');
   assert.ok(Object.isFrozen(out.config.a), '★ 嵌套对象必须冻结（浅冻结挡不住改它）');
@@ -164,7 +177,7 @@ function makeFixtureDir() {
   };
 }
 
-test('★★ 注册中途失败 ⇒ 回滚【必须真的清空】，不得留半装状态（依赖方在前撤销）', async () => {
+test('★★ 注册中途失败 ⇒ 回滚【必须真的清空】，不得留半装状态（依赖方在前撤销）', async (t) => {
   const fx = makeFixtureDir();
   try {
     const host = new CordiumHost();
@@ -180,11 +193,11 @@ test('★★ 注册中途失败 ⇒ 回滚【必须真的清空】，不得留�
       `★ 回滚后宿主必须为空，实际残留 ${JSON.stringify(left)} —— `
       + `按清单顺序撤销时，撤 base 会被「user 仍依赖它」拒绝，而该失败此前被空 catch 吞掉`);
   } finally {
-    rmSync(fx.dir, { recursive: true, force: true });
+    cleanup(fx.dir, t);
   }
 });
 
-test('★ 回滚失败必须【可见】，不得静默（空 catch 的反面）', async () => {
+test('★ 回滚失败必须【可见】，不得静默（空 catch 的反面）', async (t) => {
   const fx = makeFixtureDir();
   try {
     const host = new CordiumHost();
@@ -196,7 +209,7 @@ test('★ 回滚失败必须【可见】，不得静默（空 catch 的反面）
     const left = host.getDiagnostics().plugins;
     assert.equal(left.length, 0, '正常路径下应清空（失败路径的可见性由下一条断言保障）');
   } finally {
-    rmSync(fx.dir, { recursive: true, force: true });
+    cleanup(fx.dir, t);
   }
 });
 
@@ -259,7 +272,7 @@ test('★ 聚合诊断不得放松严格性门：空串/重复元素仍须被拒
 
 // ═══════════════ ⑦ TypedArray config 不再被误报为「不可克隆」 ═══════════════
 
-test('★ TypedArray config：可克隆 ⇒ 必须通过（此前被误报 "must be structured-cloneable"）', () => {
+test('★ TypedArray config：可克隆 ⇒ 必须通过（此前被误报 "must be structured-cloneable"）', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'cordium-ta-'));
   const mod = pathToFileURL(join(dir, 'x.mjs')).href;
   try {
@@ -268,17 +281,17 @@ test('★ TypedArray config：可克隆 ⇒ 必须通过（此前被误报 "must
     const out = normalizeEntry({ module: mod, config: new Uint8Array([1, 2, 3]) }, 'test');
     assert.ok(out.config instanceof Uint8Array, '视图类型原样保留');
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    cleanup(dir, t);
   }
 });
 
-test('★ 真正不可克隆的 config 仍须拦下（归因拆分不得削弱这道门）', () => {
+test('★ 真正不可克隆的 config 仍须拦下（归因拆分不得削弱这道门）', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'cordium-nc-'));
   const mod = pathToFileURL(join(dir, 'x.mjs')).href;
   try {
     assert.throws(() => normalizeEntry({ module: mod, config: { f: () => {} } }, 'test'),
       (e) => e.code === 'invalid_argument' && /structured-cloneable/.test(e.message));
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    cleanup(dir, t);
   }
 });

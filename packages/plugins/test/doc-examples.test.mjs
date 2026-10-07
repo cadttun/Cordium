@@ -19,6 +19,17 @@ import { validatePluginManifest } from '../src/runtime.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const DOCS = ['README.md', 'PLUGIN_GUIDE.md'];
 
+/** 删临时目录；清理失败只留痕（t.diagnostic），绝不掩盖测试本身的失败。
+ *  force: true 只忽略 ENOENT，不吞 EBUSY/EPERM ⇒ 靠 maxRetries: 3 兜住 Windows 上的句柄延迟释放。 */
+function cleanup(dir, t) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  } catch (err) {
+    const msg = `临时目录清理失败：${dir} —— ${err.message}`;
+    if (t?.diagnostic) t.diagnostic(msg); else process.emitWarning(msg);
+  }
+}
+
 /**
  * ★★ 行尾归一 —— **读文档前必须先做**。
  *
@@ -160,7 +171,7 @@ const parseAsAsyncBody = (code) => new (Object.getPrototypeOf(async function () 
  *   · **完整模块**（含 `export` / `import`）⇒ 必须交给真解析器（`node --check`），
  *     `new Function` 一族都不接受模块语法
  */
-function parseFence(code) {
+function parseFence(code, t) {
   try { parseAsAsyncBody(code); return null; } catch (bodyErr) {
     // 片段形状不成立 ⇒ 按模块再试一次（写临时文件让 node 自己判，避免自造解析器）
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cordium-docfence-'));
@@ -174,17 +185,17 @@ function parseFence(code) {
       const raw = String(modErr.stderr || modErr.message).split('\n').find(l => l.includes('SyntaxError')) || String(bodyErr.message);
       return raw.trim();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      cleanup(dir, t);
     }
   }
 }
 
-test('★ 每个 js 围栏都必须能【解析】（语法层；拼错关键字 / 括号不配对当场红）', () => {
+test('★ 每个 js 围栏都必须能【解析】（语法层；拼错关键字 / 括号不配对当场红）', (t) => {
   const failures = [];
   for (const file of DOCS) {
     const text = readDoc(file);
     for (const { line, code } of jsFenceBlocks(text)) {
-      const reason = parseFence(code);
+      const reason = parseFence(code, t);
       if (reason) failures.push(`${file}:${line} ${reason}`);
     }
   }
