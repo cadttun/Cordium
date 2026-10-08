@@ -370,7 +370,7 @@ test('★ 服务名与插件 id 同一格式：非法名 ⇒ invalid_contract，
       err => err instanceof CordiumError && err.code === 'invalid_contract', `拒绝：${String(bad)}`);
   }
   assert.deepEqual(host.getDiagnostics().services, [], '★ 非法名不得落表');
-  for (const ok of ['service.provider', 'svc.agent_loop', 'a-b.c_d', 'x1']) {
+  for (const ok of ['service.demo', 'svc.demo_name', 'a-b.c_d', 'x1']) {
     assert.doesNotThrow(() => host.declareServiceContract(ok, { access: 'public' }), `合法：${ok}`);
   }
 });

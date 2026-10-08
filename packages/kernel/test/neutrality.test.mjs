@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
-// ★ 枚举式词表永远补不完（`service.provider` 就漏过）⇒ 对【源码】加一道模式门：
+// ★ 枚举式词表永远补不完（**具体服务名会漏过** —— 词表是枚举式的）⇒ 对【源码】加一道模式门：
 //   不得出现 `service.<名>` 形式的具体服务名。只扫 src —— 测试夹具合法地使用 `service.demo` 等占位名。
 const SRC_DIRS = ['packages/kernel/src', 'packages/plugins/src'];
 // ★ 前面不得是 `.` 或标识符字符：`\b` 会误伤属性访问 `this.service.get()`（`.` 与 `s` 之间也是词边界）。
@@ -34,7 +34,7 @@ test('★ 源码（含注释）不得出现具体服务名 service.<名>（服�
 });
 
 test('★ 门禁自检：服务名模式能判别，且不误伤通用标识符', () => {
-  assert.ok(SERVICE_NAME.test('// 见 service.provider'));
+  assert.ok(SERVICE_NAME.test('// 见 service.some_thing'));
   assert.ok(SERVICE_NAME.test("declareServiceContract('service.ui', …)"));
   // ★ 数字开头的合法服务名必须拦下（此前 `[a-z]` 整类漏判）
   assert.ok(SERVICE_NAME.test("declareServiceContract('service.9', …)"), 'service.9 是合法服务名，必须拦下');
