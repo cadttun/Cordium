@@ -276,7 +276,7 @@ test('★ 公开面门禁：实例字段与原型方法必须与清单一致（�
   const getters = Object.entries(Object.getOwnPropertyDescriptors(CordiumHost.prototype))
     .filter(([, d]) => d.get).map(([k, d]) => [k, typeof d.set]);
   assert.deepEqual(getters.sort(), [
-    ['booted', 'undefined'], ['defaultActionTimeoutMs', 'undefined'], ['hostVersion', 'undefined'], ['lifecycleTimeoutMs', 'undefined'],
+    ['booted', 'undefined'], ['defaultActionTimeoutMs', 'undefined'], ['events', 'undefined'], ['hostVersion', 'undefined'], ['lifecycleTimeoutMs', 'undefined'],
     ['maxErrorLogSize', 'undefined'], ['maxInFlightActions', 'undefined'], ['maxLogSize', 'undefined'], ['maxManifestDiagnostics', 'undefined']
   ], '只读 getter：不得带 setter');
   const methods = Object.entries(Object.getOwnPropertyDescriptors(CordiumHost.prototype))

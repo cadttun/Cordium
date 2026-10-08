@@ -100,6 +100,34 @@ const EMPTY_CONFIG = Object.freeze({});
  * @property {(level: string, message: unknown, details?: unknown) => void} log
  */
 
+/**
+ * 装配层事件入口（`host.events`）—— 宿主**以自身身份**用的窄事件面。
+ *
+ * ── 为什么需要（这是「通道私有化」漏掉的一格）──────────────────────────
+ *   `#channel` 私有化的目的是**不让插件绕过作用域隔离**（插件必须走 `ctx.on/emit`）。
+ *   但装配层（外壳）**不是插件** —— 它没有 ctx，却合法地需要「以根作用域发布 / 订阅」：
+ *   它要派发 agent 事件给插件观察，也要订阅这些事件来驱动 UI。
+ *   私有化把这一格一并关掉了 ⇒ 装配层此前只能读一个**已不存在**的 `host.channel`
+ *   （实测 `undefined`）⇒ 事件端口恒为 `null` ⇒ 整条事件机制在产线静默失效。
+ *
+ * ── 与 `ctx` 的关系 ──────────────────────────────────────────────
+ *   等价于「**根作用域** ctx 的事件三件套」：`scopeLabel` 为 `null`（无标签）——
+ *   发布按根作用域派发（`dispatchKey === undefined` ⇒ 无标签监听器收得到），
+ *   订阅是无标签监听器（按放行表，任何派发键都收得到）。
+ *   ★ 只给事件三件套，**不给** `provideService` / `registerAction` 等：那些宿主已有
+ *     `getInternalService` / `dispatchActionAsHost`，无需在事件入口里重复
+ *     （本仓口径：没有消费者的能力不预先建设）。
+ *
+ * ── 归属 ──────────────────────────────────────────────────────────
+ *   订阅的监听器出错时 `owner` 记 `HOST_CALLER`（`'@host'`）—— 与 `dispatchActionAsHost`
+ *   同一诚实口径，审计里认得出「这条是宿主自己干的」，而不是某个被借身份的插件。
+ *
+ * @typedef {object} HostEvents
+ * @property {(name: string, ...args: unknown[]) => void} emit 以根作用域**广播**（不等回执）；单个监听器抛错不阻断其他，错误进审计。
+ * @property {(name: string, ...args: unknown[]) => unknown} waterfall 中间件派发：`waterfall(name, ...args, fallback)`，最后一个参数是兜底函数。
+ * @property {(name: string, listener: Function) => () => boolean} subscribe 订阅（无标签监听器），返回退订函数。★ 宿主没有 EffectScope ⇒ 调用方须自行保管退订。
+ */
+
 /** 超时类选项：不传 ⇒ 用默认；0 / 负数 = 不限；正数须 ≤ MAX_TIMER_MS（超出 Node 会改成 1ms ⇒ 立即超时） */
 function assertTimeoutOption(label, value) {
   if (value !== undefined && (typeof value !== 'number' || Number.isNaN(value) || value > MAX_TIMER_MS)) {
@@ -226,6 +254,13 @@ export class CordiumHost {
    *   日志 / 诊断经 getDiagnostics() 读副本；配置与状态经下方只读 getter。
    */
   #channel;
+  /**
+   * ★★ 装配层事件入口（`host.events`）—— 宿主以自身身份发布 / 订阅。
+   *   与 `#channel` 一样硬私有：外部只能经 `get events()` 拿到这个【窄】对象，
+   *   拿不到通道本身（改不了钩子 / 上限 / 作用域表）。详见 `HostEvents` typedef。
+   * @type {HostEvents}
+   */
+  #events;
   #auditLogs;
   #errorLogs;
   #manifestDiagnostics;
@@ -280,6 +315,20 @@ export class CordiumHost {
    * @returns {number}
    */
   get maxInFlightActions() { return this.#maxInFlightActions; }
+  /**
+   * ★★ 装配层事件入口 —— 宿主**以自身身份**发布 / 订阅（形状详见 `HostEvents`）。
+   *
+   * ── 修的洞（「通道私有化」漏掉的一格）─────────────────────────────────
+   *   `#channel` 私有化是为了**不让插件绕过作用域隔离**，但**装配层不是插件**：
+   *   它没有 ctx，却合法地需要「以根作用域发布 / 订阅」。
+   *   私有化把这一格一并关掉了 ⇒ 装配层读 `host.channel` 得 `undefined`
+   *   ⇒ 事件端口恒为 `null` ⇒ 整条事件机制在产线**静默失效**
+   *   （分发侧与订阅侧都写了代码，中间那根线是断的）。本入口把那一格补回来。
+   *
+   * ★ 与 `dispatchActionAsHost` / `getInternalService` **同一族**：宿主以自身身份的诚实出口。
+   * @returns {HostEvents}
+   */
+  get events() { return this.#events; }
 
   // ════════════════ 构造 ════════════════
 
@@ -386,6 +435,28 @@ export class CordiumHost {
         + `(a scope position is fixed at first creation — later users can only join, never re-parent)`
       );
     };
+
+    // ★★ 装配层事件入口（见 get events / HostEvents typedef）。
+    //   三个方法都是【根作用域】语义：发布走 channel 的公开方法（dispatchKey = undefined），
+    //   订阅打 scopeLabel=null（无标签）—— 与插件在根 ctx 上 ctx.on / ctx.emit 完全同形。
+    //   ★ 冻结：与 ctx 同一口径（宿主交出去的一切都不可变）。
+    //   ★ name 走 assertStringArg：与宿主其余公开方法同一道入口门（错类型当场 invalid_argument，
+    //     不让它流进通道再炸成裸 TypeError）。
+    this.#events = Object.freeze({
+      emit: (name, ...args) => {
+        assertStringArg('host.events.emit', 'name', name);
+        return this.#channel.emit(name, ...args);
+      },
+      waterfall: (name, ...args) => {
+        assertStringArg('host.events.waterfall', 'name', name);
+        return this.#channel.waterfall(name, ...args);
+      },
+      subscribe: (name, listener) => {
+        assertStringArg('host.events.subscribe', 'name', name);
+        // ★ owner 记 HOST_CALLER：监听器出错时审计认得出是宿主自己挂的，而非某个被借身份的插件。
+        return this.#channel.subscribe(name, listener, { scopeLabel: null, owner: HOST_CALLER });
+      }
+    });
 
     /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
     this.#auditLogs = [];

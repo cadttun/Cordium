@@ -41,6 +41,20 @@ export type PluginContext = {
     registerUIContribution: (contribution: object | string) => void;
     log: (level: string, message: unknown, details?: unknown) => void;
 };
+export type HostEvents = {
+    /**
+     * 以根作用域**广播**（不等回执）；单个监听器抛错不阻断其他，错误进审计。
+     */
+    emit: (name: string, ...args: unknown[]) => void;
+    /**
+     * 中间件派发：`waterfall(name, ...args, fallback)`，最后一个参数是兜底函数。
+     */
+    waterfall: (name: string, ...args: unknown[]) => unknown;
+    /**
+     * 订阅（无标签监听器），返回退订函数。★ 宿主没有 EffectScope ⇒ 调用方须自行保管退订。
+     */
+    subscribe: (name: string, listener: Function) => () => boolean;
+};
 export declare class CordiumHost {
     #private;
     /** 宿主应用自身的版本（只读）
@@ -75,6 +89,20 @@ export declare class CordiumHost {
      * @returns {number}
      */
     get maxInFlightActions(): number;
+    /**
+     * ★★ 装配层事件入口 —— 宿主**以自身身份**发布 / 订阅（形状详见 `HostEvents`）。
+     *
+     * ── 修的洞（「通道私有化」漏掉的一格）─────────────────────────────────
+     *   `#channel` 私有化是为了**不让插件绕过作用域隔离**，但**装配层不是插件**：
+     *   它没有 ctx，却合法地需要「以根作用域发布 / 订阅」。
+     *   私有化把这一格一并关掉了 ⇒ 装配层读 `host.channel` 得 `undefined`
+     *   ⇒ 事件端口恒为 `null` ⇒ 整条事件机制在产线**静默失效**
+     *   （分发侧与订阅侧都写了代码，中间那根线是断的）。本入口把那一格补回来。
+     *
+     * ★ 与 `dispatchActionAsHost` / `getInternalService` **同一族**：宿主以自身身份的诚实出口。
+     * @returns {HostEvents}
+     */
+    get events(): HostEvents;
     /**
      * @param {object} [options]
      * @param {string} [options.hostVersion='1.0.0']

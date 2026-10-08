@@ -7,6 +7,17 @@
 破坏兼容的改动必须走 minor —— 0.x 的 patch 位会被下游的 `^0.x.0` 自动纳入，承载不了破坏性变更。
 `KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
 
+## [Unreleased]
+
+### Added
+
+- ★★ **装配层事件入口 `host.events`**（`{ emit, waterfall, subscribe }`）—— 宿主**以自身身份**发布 / 订阅。
+  **修的是「通道私有化」漏掉的一格**：把 `#channel` 私有化的本意是**不让插件绕过作用域隔离**（插件必须走 `ctx.on` / `ctx.emit`），但**装配层（外壳）不是插件** —— 它没有 ctx，却合法地需要「以根作用域发布 / 订阅」（派发 agent 事件给插件观察、并订阅这些事件驱动 UI）。私有化把这一格一并关掉了 ⇒ 消费方读 `host.channel` 得 `undefined` ⇒ 事件端口恒为 `null` ⇒ **整条事件机制在产线静默失效**（分发侧与订阅侧都写了代码，中间那根线是断的；测试用进程内假端口，因此从未抓到）。
+  ★ 形状等价于「**根作用域** ctx 的事件三件套」：发布按根作用域派发（`dispatchKey === undefined` ⇒ 无标签监听器收得到），订阅是**无标签**监听器（按放行表任何派发键都收得到）。只给这三件，**不给** `provideService` / `registerAction` —— 那些宿主已有 `getInternalService` / `dispatchActionAsHost`（本仓口径：没有消费者的能力不预先建设）。
+  ★ 与 `dispatchActionAsHost` / `getInternalService` **同一族**：宿主以自身身份的诚实出口。订阅监听器出错时 `owner` 记 `HOST_CALLER`（`'@host'`），审计里认得出「这条是宿主自己挂的」，而不是某个被借身份的插件。
+  ★ 新增 `HostEvents` 类型投影，并纳入 `typedef-drift` 的**运行时同集**门禁（真相源 = `Object.keys(host.events)`）；`public-surface` 的宿主 getter 清单门禁同步 +1。
+  ⚠️ **不升 `KERNEL_API_VERSION`**：插件 ctx 未变（19 项逐字不变），本入口只在**宿主侧**，插件兼容性判据不受影响。
+
 ## [0.3.0] - 2026-10-07
 
 ### Added

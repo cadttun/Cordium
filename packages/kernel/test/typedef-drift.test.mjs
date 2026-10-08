@@ -4,11 +4,12 @@
  *   **运行时的唯一真相源**同集。
  *
  * ── 为什么需要它 ────────────────────────────────────────────────────────────
- *   引入类型检查后，`PluginManifest` / `PluginDescriptor` / `PluginContext` 这三个
- *   `@typedef` 各写了一份**字段清单**。它们本身没错，但它们是**投影**，不是源头：
+ *   引入类型检查后，`PluginManifest` / `PluginDescriptor` / `PluginContext` / `HostEvents`
+ *   这几个 `@typedef` 各写了一份**字段清单**。它们本身没错，但它们是**投影**，不是源头：
  *     · `PluginManifest`   ← `MANIFEST_FIELD_TABLE.kernel`
  *     · `PluginDescriptor` ← `MANIFEST_FIELD_TABLE.plugin`
  *     · `PluginContext`    ← 运行时 `#buildPluginCtx` 返回对象的键
+ *     · `HostEvents`       ← 运行时 `host.events` 的键
  *   本仓已经因为「同一份知识两处各写一份」栽过两次（ctx 成员清单、诊断字段表），
  *   两个方向都会错且都**无声**：多列 ⇒ 假绿放行坏示例；漏列 ⇒ 假红误拒好示例。
  *   而 `@typedef` 尤其危险 —— 它只活在注释里，**没有任何运行时消费者**，
@@ -112,6 +113,8 @@ function allTypedefs() {
  */
 async function typedefCases() {
   const ctx = await liveCtx();
+  // ★ 装配层入口在构造时就绪（不依赖插件），直接取一个空宿主的即可。
+  const host = new CordiumHost();
   return [
     { what: 'PluginManifest', file: 'packages/kernel/src/types.mjs',
       truth: MANIFEST_FIELD_TABLE.kernel, from: 'MANIFEST_FIELD_TABLE.kernel' },
@@ -119,6 +122,8 @@ async function typedefCases() {
       truth: MANIFEST_FIELD_TABLE.plugin, from: 'MANIFEST_FIELD_TABLE.plugin' },
     { what: 'PluginContext', file: 'packages/kernel/src/host.mjs',
       truth: Object.keys(ctx), from: '运行时 ctx 的键' },
+    { what: 'HostEvents', file: 'packages/kernel/src/host.mjs',
+      truth: Object.keys(host.events), from: '运行时 host.events 的键' },
   ];
 }
 
