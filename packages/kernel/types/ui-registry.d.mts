@@ -36,6 +36,11 @@ export declare class UIRegistry {
     register(contribution: string | object, ownerId: string, scope: import('./scope.mjs').EffectScope | null): void;
     /** 按属主注销（非属主的注销请求不生效） */
     unregister(contributionId: any, ownerId: any): void;
-    /** 列出贡献项的副本（按 type 过滤） */
-    list(type: any): any[];
+    /**
+     * 列出贡献项的副本（按 type 过滤）
+     *
+     * @param {string} [type] 可选。按 `type` **精确相等**过滤；**省略 ⇒ 返回全部**。
+     * @returns {any[]} 贡献项的副本（逐条浅拷贝）
+     */
+    list(type?: string): any[];
 }

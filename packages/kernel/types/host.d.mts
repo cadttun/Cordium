@@ -343,8 +343,14 @@ export declare class CordiumHost {
     dispatchActionAsHost(action: string, payload?: any): Promise<any>;
     /**
      * 获取当前所有可见的 UI 贡献（副本）
+     *
+     * @param {string} [type] 可选。按 `type` **精确相等**过滤；**省略 ⇒ 返回全部**。
+     *   「全部」是**消费者侧概念** —— 内核只做「按字符串相等过滤」，不认识任何具体 `type`
+     *   （合法值由装配方登记，见 `UIRegistryQueries`）。
+     * @returns {any[]} 贡献项的**副本**（逐条浅拷贝，外部改动不回写内部表）；
+     *   传 `type` 时为匹配项，省略时为全部。
      */
-    getUIContributions(type: any): any[];
+    getUIContributions(type?: string): any[];
     /**
      * 获取当前运行时完整诊断拓扑 (可用于空内核自检或可视化呈现)
      *

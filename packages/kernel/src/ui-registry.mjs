@@ -94,7 +94,12 @@ export class UIRegistry {
     }
   }
 
-  /** 列出贡献项的副本（按 type 过滤） */
+  /**
+   * 列出贡献项的副本（按 type 过滤）
+   *
+   * @param {string} [type] 可选。按 `type` **精确相等**过滤；**省略 ⇒ 返回全部**。
+   * @returns {any[]} 贡献项的副本（逐条浅拷贝）
+   */
   list(type) {
     // ★ 交副本：此前交出内部条目本身，外部改 ownerId 即可让属主的 disposer 删不掉它（幽灵贡献）。
     const all = Array.from(this.#items.values(), c => ({ ...c }));

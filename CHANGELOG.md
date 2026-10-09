@@ -7,6 +7,12 @@
 破坏兼容的改动必须走 minor —— 0.x 的 patch 位会被下游的 `^0.x.0` 自动纳入，承载不了破坏性变更。
 `KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
 
+## [Unreleased]
+
+### Fixed
+
+- ★ **`host.getUIContributions(type)` 的 `type` 参数由「必需」改「可选」**（`@cordium/kernel`）：实现一直把 `type` 当**可选**（不传 ⇒ 返回全部），但公开类型把它标成**必需** —— 因为该方法此前**没有 JSDoc**，`tsc --emitDeclarationOnly` 把参数推成 `any`（必需）⇒ 消费方在类型层面**无法省略** `type`，只能靠断言绕过。现补齐 JSDoc（`@param {string} [type]`），使声明与实现对齐；返回类型仍为 `any[]`（不变）。`UIRegistry.list(type)` 同款修正，保持两者一致。**行为零变化**，纯类型声明订正。
+
 ## [0.4.0] - 2026-10-09
 
 ### Added
