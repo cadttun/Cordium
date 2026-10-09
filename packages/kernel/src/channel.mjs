@@ -93,7 +93,7 @@ export class MessageChannel {
    * ⚠️ 数组顺序即分发顺序 —— **必须是确定的**，不可依赖 Map 迭代顺序做优先级。
    * `prepend` 决定插队首还是队尾（对齐 Cordis `EventOptions.prepend`）。
    *
-   * @type {Map<string, Array<{ listener: Function, prepend: boolean, scopeLabel: string | null, global: boolean, owner: string | null }>>}
+   * @type {Map<string | symbol, Array<{ listener: Function, prepend: boolean, scopeLabel: string | null, global: boolean, owner: string | null }>>}
    */
   #handlers = new Map();
 
@@ -120,7 +120,7 @@ export class MessageChannel {
 
   /**
    * 监听器数超限钩子。宿主接到审计日志。
-   * @type {(name: string, count: number) => void}
+   * @type {(name: string | symbol, count: number) => void}
    */
   onListenerOverflow = () => {};
 
@@ -132,7 +132,7 @@ export class MessageChannel {
    *   发布方与订阅方的首次握手会形成竞态。
    *   （依据：Qwen Code `EventBus` 官方文档明确把同步注册列为设计点。）
    *
-   * @param {string} name 事件名，约定 `domain/action`（如 `task/created`）
+   * @param {string | symbol} name 事件名，约定 `domain/action`（如 `task/created`）；也接受 symbol（宿主内部通知用）
    * @param {Function} listener
    * @param {{ prepend?: boolean, scopeLabel?: string | null, global?: boolean, owner?: string | null }} [options]
    *   owner：订阅者身份（宿主注入插件 id）—— 只用于出错时报「是谁的监听器」，不参与派发
@@ -231,15 +231,37 @@ export class MessageChannel {
   }
 
   // ── 作用域层级（已抽成内部类 ScopeTree，这里只委托；签名与语义不变）──
-  /** 见 ScopeTree#declareScope：决定位置（已有不同父级 ⇒ 抛 scope_conflict） */
+  /**
+   * 见 ScopeTree#declareScope：决定位置（已有不同父级 ⇒ 抛 scope_conflict）
+   * @param {string} childKey
+   * @param {string | symbol | null} [parentKey=null]
+   * @returns {string | symbol}
+   */
   declareScope(childKey, parentKey = null) { return this.#scopes.declareScope(childKey, parentKey); }
-  /** 见 ScopeTree#ensureScope：取得句柄（已有 ⇒ 加入，绝不改写位置） */
+  /**
+   * 见 ScopeTree#ensureScope：取得句柄（已有 ⇒ 加入，绝不改写位置）
+   * @param {string} childKey
+   * @param {string | symbol | null} [parentKey=null]
+   * @returns {{ key: string | symbol, parent: string | symbol | null, created: boolean }}
+   */
   ensureScope(childKey, parentKey = null) { return this.#scopes.ensureScope(childKey, parentKey); }
-  /** 见 ScopeTree#releaseScope：引用计数 -1，归零才回收 */
+  /**
+   * 见 ScopeTree#releaseScope：引用计数 -1，归零才回收
+   * @param {string | symbol} key
+   * @returns {boolean}
+   */
   releaseScope(key) { return this.#scopes.releaseScope(key); }
-  /** @returns {string | symbol | null | undefined} `null` = 顶层；`undefined` = 该键未声明 */
+  /**
+   * 某作用域的父 key
+   * @param {string | symbol} scopeKey
+   * @returns {string | symbol | null | undefined} `null` = 顶层；`undefined` = 该键未声明
+   */
   scopeParentOf(scopeKey) { return this.#scopes.scopeParentOf(scopeKey); }
-  /** 从 key 自身沿祖先链向上的键序列（只读快照，含 key 本身；未声明的键只产出它自己） */
+  /**
+   * 从 key 自身沿祖先链向上的键序列（只读快照，含 key 本身；未声明的键只产出它自己）
+   * @param {string | symbol} scopeKey
+   * @returns {(string | symbol)[]}
+   */
   scopeAncestors(scopeKey) { return [...this.#scopes.ancestors(scopeKey)]; }
   /** 当前已声明的键数（诊断用；含顶层键） */
   scopeCount() { return this.#scopes.scopeCount(); }
@@ -264,7 +286,10 @@ export class MessageChannel {
     return this.#handlers.get(name)?.length ?? 0;
   }
 
-  /** 当前已注册的事件名列表（诊断用，顺序确定） */
+  /**
+   * 当前已注册的事件名列表（诊断用，顺序确定）
+   * @returns {(string | symbol)[]} 含 symbol 名（宿主内部通知用 symbol 注册，见 `subscribe`）
+   */
   eventNames() {
     return Array.from(this.#handlers.keys());
   }

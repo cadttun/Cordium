@@ -351,10 +351,33 @@ export declare const DIAGNOSTICS_CONTRACT: Readonly<{
  * @returns {string[]}
  */
 export declare function normalizeStringList(value: any): string[];
-export declare function normalizeDependencyMap(value: any, { field, pluginId }?: {
+/**
+ * ★★ 规范化依赖映射（**两层 schema + ecosystem 共享的单一实现**）
+ *
+ * ★ **只收一种形状**：
+ *   · `Object` —— `{ 'plugin.a':'^1' }` ⇒ 原样（键值均裁剪空白，空范围取 `'*'`）
+ *   · `Array`  —— **已取消**，一律 fail-loud 抛 `invalid_manifest`。
+ *     理由**不是**「生产代码没人用」，而是它**结构上写不下版本范围**：数组项没有位置放
+ *     range，只能一律当 `'*'` ⇒ 「用数组声明依赖」= **自动放弃版本约束**，且零提示。
+ *     （它同时是本函数下面那处静默数据损坏的入口 —— 两件事同源。）
+ *
+ * ⚠️ **本函数修掉一个静默数据损坏**：
+ *   此前内核层写的是 `typeof x === 'object' ? { ...x } : {}`，
+ *   而 **`typeof [] === 'object'`**（【官方】MDN《Spread syntax》：对象展开会枚举
+ *   数组的下标属性，`{...['a']}` ⇒ `{ 0: 'a' }`）⇒ **数组被静默展开成 `{0:'a'}`**
+ *   ⇒ `boot()` 抛 `Missing dependency '0'`，且鉴权快照 `pluginDependencies`
+ *   被污染成 `Set(['0'])`，导致**合法的数组写法伪装成 `Security Violation`**。
+ *
+ * ⚠️ **类型错误一律抛 `invalid_manifest`**（内核层 / 插件层 / ecosystem 三处入口同一判定）。
+ *
+ * @param {unknown} value
+ * @param {{ field?: string, pluginId?: string | null }} [options] 仅用于错误归属 / 报文（`field` 默认 `'dependencies'`）
+ * @returns {Record<string,string>}
+ */
+export declare function normalizeDependencyMap(value: unknown, { field, pluginId }?: {
     field?: string;
-    pluginId?: any;
-}): {};
+    pluginId?: string | null;
+}): Record<string, string>;
 /**
  * ★★ 通用判定：**白名单重建**中被丢弃的字段 —— 【这条知识的唯一落点】。
  *

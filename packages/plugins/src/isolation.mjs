@@ -80,20 +80,21 @@ const DEFAULT_LIMITS = Object.freeze({
 //      于是没有任何用例能判别 hasOwn 那一行。防线数量超过测试能判别的数量，
 //      等于把一处可验证的检查换成了两处不可验证的。只留 hasOwn。
 const LIMIT_MIN = { maxConcurrent: 1, maxQueued: 0, maxPendingBytes: 1 };
+/** @type {{ maxConcurrent: number, maxQueued: number, maxPendingBytes: number }} */
 let limits = { ...DEFAULT_LIMITS };
 let live = 0;
 let pendingBytes = 0;
 const waiting = [];
+
+// ★ `err.cause.code` 的**第二码域**（隔离端自产的码）。本表**不完备**：插件自报的码由隔离端
+//   原样透传、不可枚举。详见 isolation-codes.mjs 的文件头。
+export { IsolationCode } from './isolation-codes.mjs';
 
 /**
  * 读 / 改本进程 callIsolated 的三道闸。不传参 ⇒ 只读。改动立即生效（上限调大会马上放行排队中的调用）。
  * @param {{ maxConcurrent?: number, maxQueued?: number, maxPendingBytes?: number }} [next] 只改给出的键
  * @returns {Readonly<{ maxConcurrent: number, maxQueued: number, maxPendingBytes: number }>} 生效后的上限
  */
-// ★ `err.cause.code` 的**第二码域**（隔离端自产的码）。本表**不完备**：插件自报的码由隔离端
-//   原样透传、不可枚举。详见 isolation-codes.mjs 的文件头。
-export { IsolationCode } from './isolation-codes.mjs';
-
 export function configureIsolation(next) {
   if (next !== undefined) {
     if (next === null || typeof next !== 'object' || Array.isArray(next)) {
@@ -158,16 +159,16 @@ const PERMISSION_FLAG = '--permission';
  *
  * @param {string|URL} module 绝对路径或 file: URL（相对路径不收：相对谁会随调用方漂移）
  * @param {string} [exportName='default']
- * @param {any[]} [args=[]] 须可结构化克隆
+ * @param {readonly any[]} [args=[]] 须可结构化克隆
  * @param {object} [options]
  * @param {'worker'|'process'} [options.mode='worker']
  * @param {number} [options.timeoutMs=3000] 超时即**终止**隔离环境（不是停止等待）
  * @param {string} [options.pluginId='unknown'] 报错归属
- * @param {string[]} [options.allowFsRead=[]] 仅 `process`：额外可读路径（模块自身所在目录自动放行）
- * @param {string[]} [options.allowFsWrite=[]] 仅 `process`：可写路径
+ * @param {readonly string[]} [options.allowFsRead=[]] 仅 `process`：额外可读路径（模块自身所在目录自动放行）
+ * @param {readonly string[]} [options.allowFsWrite=[]] 仅 `process`：可写路径
  * @param {number} [options.maxMemoryMb=1024] 隔离环境的 JS 堆上限（MB）；超了只终止这个环境 ⇒ isolated_call_failed。
  *   ⚠️ ArrayBuffer / Buffer 的数据不在 JS 堆里，不受此限（Node 的限制，实测）。
- * @param {ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（须出现在 args 里）。
+ * @param {readonly ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（须出现在 args 里）。
  *   移交后调用方手里的那块内存被清空（byteLength 变 0）—— 这是零拷贝的代价，调用后别再用它。
  * @returns {Promise<any>}
  * @throws {CordiumError} `isolation_busy`：排队已满或在途字节超限（见 configureIsolation）—— 未起任何环境，可重试
@@ -276,7 +277,7 @@ async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId }) {
         //     所以隔离端**主动把 `code` 抽成普通对象**：**DTO 才是能无损携带 `code` 的形态**。
         //   ⇒ 消费方读 `cause.code` / `cause.message` / `cause.stack`，**不要用 `instanceof Error` 判**。
         //   ⇒ `errorDetails()`（本仓唯一的通用 cause 消费者）走的是鸭子类型 `readField`，两种形状**逐字段等价**。
-        // ⚠️ **`cause` 的形状是【分路径】的，别把本条推广到全部失败**（下面三个分支各不相同）：
+        // ⚠️ **`cause` 的形状是【分路径】的，别把本条推广到全部失败**（下面三条分支里，**只有崩溃那条挂 cause**）：
         //   · 隔离环境崩溃（`channel.once('error')`）⇒ cause 是**活体 Error**，其 `code` 是 Node / OS 码（`ERR_*` / `E*`）；
         //   · 无结果退出（`channel.once('exit')`）与超时 ⇒ **不挂 cause**。
         //   进程内那两条路径（action / service）的 cause 同样是活体 Error（对象没跨过边界）。

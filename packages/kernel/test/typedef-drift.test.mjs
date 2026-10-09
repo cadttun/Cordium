@@ -137,6 +137,7 @@ const NO_TRUTH_SOURCE = new Map([
   ['UIRegistryQueries', '同上'],
   ['ScopeReleaseCallbacks', '宿主内部回调袋，形状没有外部真相源'],
   ['IsolationRequest', '隔离端 IPC 报文协议；形状未校验，源码里已注明'],
+  ['CatalogEntry', 'catalog 条目的 DTO 形状，由 `add()` 的对象字面量唯一构造 —— 它不在任何白名单重建路径上，没有独立字段表'],
 ]);
 
 test('★★ 手抄的类型字段表都必须与运行时唯一真相源同集', async () => {

@@ -144,9 +144,11 @@ export declare class CordiumHost {
      *   补 `[details]` 让产物转出 `details?: unknown`（用 `unknown` 而非 `object`：`ctx.log`
      *   的转发 `data` 是 `unknown`，收 `object` 会让内核自身报 `TS2345`）。
      *
+     * @param {string} level 日志级别（成员校验：须是 `LogLevel` 取值之一）
+     * @param {unknown} message 日志正文（任意值，内部 `describeValue` 转字符串）
      * @param {unknown} [details] 附加诊断细节（可选；存【快照】不存引用）
      */
-    log(level: any, message: any, details?: unknown): void;
+    log(level: string, message: unknown, details?: unknown): void;
     /**
      * ★★ 记录一条 Manifest 字段诊断（结构化留存 + 即时日志）。
      *
@@ -155,12 +157,12 @@ export declare class CordiumHost {
      *   · **宿主 log**（warn 级）—— 装插件那一刻即时可见。
      * 只做前者会「事后才发现」，只做后者会被环形缓冲冲掉。
      *
-     * @param {{ path: string, pluginId: string, fields: string[], severity?: string }} diagnostic
+     * @param {{ path: string, pluginId: string, fields: readonly string[], severity?: string }} diagnostic
      */
     recordManifestDiagnostic(diagnostic: {
         path: string;
         pluginId: string;
-        fields: string[];
+        fields: readonly string[];
         severity?: string;
     }): void;
     /**
@@ -172,14 +174,14 @@ export declare class CordiumHost {
      *
      * @param {string} serviceName
      * @param {{ access?: string, requiredPermission?: string | null, optionalProvider?: string | null,
-     *           methods?: string[] }} [options]
+     *           methods?: readonly string[] }} [options]
      *   `methods`：提供者实现必须具备的方法名；不写 ⇒ 不查形状。
      */
     declareServiceContract(serviceName: string, options?: {
         access?: string;
         requiredPermission?: string | null;
         optionalProvider?: string | null;
-        methods?: string[];
+        methods?: readonly string[];
     }): void;
     /**
      * 登记权限名（宿主装配阶段调用，须早于注册申请这些权限的插件）。
@@ -197,18 +199,18 @@ export declare class CordiumHost {
      * 由装配方在 boot 前一次性登记，插件不得自造。
      * ⚠️ 不调它 ⇒ 不校验（保持现有行为）；调了 ⇒ 登记之外的值在**注册 UI 贡献时**抛错。
      *
-     * @param {string[]} types
+     * @param {readonly string[]} types
      */
-    declareUIContributionTypes(types: string[]): void;
+    declareUIContributionTypes(types: readonly string[]): void;
     /**
      * 批量声明服务契约（宿主装配阶段调用：由上层应用在 boot 前一次性登记全部契约）
-     * @param {Record<string, { access?: string, requiredPermission?: string | null, optionalProvider?: string | null, methods?: string[] }>} table
+     * @param {Record<string, { access?: string, requiredPermission?: string | null, optionalProvider?: string | null, methods?: readonly string[] }>} table
      */
     declareServiceContracts(table: Record<string, {
         access?: string;
         requiredPermission?: string | null;
         optionalProvider?: string | null;
-        methods?: string[];
+        methods?: readonly string[];
     }>): void;
     /**
      * 发现并注册插件。
@@ -245,11 +247,11 @@ export declare class CordiumHost {
      *     ⇒ 匹配器**根本不会被求值**，测试以原始错误判失败（看不出本来想断言什么）。测试里包一层
      *     `async () => …` 把同步抛转成拒绝，才走正常断言路径。
      *
-     * @param {object} rawManifest
+     * @param {unknown} rawManifest 调用方自报的 manifest，形状未校验（与 `registerPlugin` 对齐）
      * @param {{ activate?: Function, deactivate?: Function } | null} [entry]
      * @param {{ lifecycleTimeoutMs?: number }} [options]
      */
-    replacePlugin(rawManifest: object, entry?: {
+    replacePlugin(rawManifest: unknown, entry?: {
         activate?: Function;
         deactivate?: Function;
     } | null, options?: {

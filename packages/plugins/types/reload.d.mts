@@ -31,7 +31,7 @@ export declare function reloadPlugin(host: import('@cordium/kernel').CordiumHost
  *   激活失败时宿主已换回旧代码（见 `host.replacePlugin`）。
  *
  * @param {import('@cordium/kernel').CordiumHost} host
- * @param {Array<{ module: string|URL, config?: object, lifecycleTimeoutMs?: number }>} entries
+ * @param {ReadonlyArray<{ module: string|URL, config?: object, lifecycleTimeoutMs?: number }>} entries
  * @param {object} [options]
  * @param {(result: { id: string, version: string, previousVersion: string }) => void} [options.onReload]
  * @param {(err: unknown, entry: object) => void} [options.onError] 缺省 ⇒ `console.error`
@@ -40,7 +40,7 @@ export declare function reloadPlugin(host: import('@cordium/kernel').CordiumHost
  * @param {(href: string) => Promise<any>} [options.importModule] 同 `reloadPlugin`
  * @returns {{ close(): void }}
  */
-export declare function watchPlugins(host: import('@cordium/kernel').CordiumHost, entries: Array<{
+export declare function watchPlugins(host: import('@cordium/kernel').CordiumHost, entries: ReadonlyArray<{
     module: string | URL;
     config?: object;
     lifecycleTimeoutMs?: number;

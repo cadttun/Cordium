@@ -427,6 +427,15 @@ export function normalizeStringList(value) {
 }
 
 /**
+ * ★ 以【自有属性】写入 —— `obj['__proto__'] = x` 在普通对象上是改原型而不是写键，
+ *   依赖名为 `__proto__` 时会被静默吞掉（实测）。defineProperty 让它成为普通键，
+ *   随后由依赖检查响亮地报「Missing dependency '__proto__'」。
+ */
+function setOwn(obj, key, value) {
+  Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
  * ★★ 规范化依赖映射（**两层 schema + ecosystem 共享的单一实现**）
  *
  * ★ **只收一种形状**：
@@ -445,18 +454,10 @@ export function normalizeStringList(value) {
  *
  * ⚠️ **类型错误一律抛 `invalid_manifest`**（内核层 / 插件层 / ecosystem 三处入口同一判定）。
  *
- * @param {any} value
+ * @param {unknown} value
+ * @param {{ field?: string, pluginId?: string | null }} [options] 仅用于错误归属 / 报文（`field` 默认 `'dependencies'`）
  * @returns {Record<string,string>}
  */
-/**
- * ★ 以【自有属性】写入 —— `obj['__proto__'] = x` 在普通对象上是改原型而不是写键，
- *   依赖名为 `__proto__` 时会被静默吞掉（实测）。defineProperty 让它成为普通键，
- *   随后由依赖检查响亮地报「Missing dependency '__proto__'」。
- */
-function setOwn(obj, key, value) {
-  Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
-}
-
 export function normalizeDependencyMap(value, { field = 'dependencies', pluginId = null } = {}) {
   // ★ 类型错误一律抛 invalid_manifest（此前宽容退化：`{ p: 2 }` ⇒ `'*'` 任意版本放行、
   //   `'oops'` ⇒ `{}` 依赖整体消失 —— 版本门禁的输入错了却 fail-open）。

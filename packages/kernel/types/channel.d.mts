@@ -88,9 +88,9 @@ export declare class MessageChannel {
     maxListenersPerEvent: number;
     /**
      * 监听器数超限钩子。宿主接到审计日志。
-     * @type {(name: string, count: number) => void}
+     * @type {(name: string | symbol, count: number) => void}
      */
-    onListenerOverflow: (name: string, count: number) => void;
+    onListenerOverflow: (name: string | symbol, count: number) => void;
     /**
      * 订阅一个事件。
      *
@@ -99,32 +99,54 @@ export declare class MessageChannel {
      *   发布方与订阅方的首次握手会形成竞态。
      *   （依据：Qwen Code `EventBus` 官方文档明确把同步注册列为设计点。）
      *
-     * @param {string} name 事件名，约定 `domain/action`（如 `task/created`）
+     * @param {string | symbol} name 事件名，约定 `domain/action`（如 `task/created`）；也接受 symbol（宿主内部通知用）
      * @param {Function} listener
      * @param {{ prepend?: boolean, scopeLabel?: string | null, global?: boolean, owner?: string | null }} [options]
      *   owner：订阅者身份（宿主注入插件 id）—— 只用于出错时报「是谁的监听器」，不参与派发
      * @returns {() => boolean} disposer（由调用方交给 EffectScope 托管）
      */
-    subscribe(name: string, listener: Function, options?: {
+    subscribe(name: string | symbol, listener: Function, options?: {
         prepend?: boolean;
         scopeLabel?: string | null;
         global?: boolean;
         owner?: string | null;
     }): () => boolean;
-    /** 见 ScopeTree#declareScope：决定位置（已有不同父级 ⇒ 抛 scope_conflict） */
-    declareScope(childKey: any, parentKey?: any): string | symbol;
-    /** 见 ScopeTree#ensureScope：取得句柄（已有 ⇒ 加入，绝不改写位置） */
-    ensureScope(childKey: any, parentKey?: any): {
+    /**
+     * 见 ScopeTree#declareScope：决定位置（已有不同父级 ⇒ 抛 scope_conflict）
+     * @param {string} childKey
+     * @param {string | symbol | null} [parentKey=null]
+     * @returns {string | symbol}
+     */
+    declareScope(childKey: string, parentKey?: string | symbol | null): string | symbol;
+    /**
+     * 见 ScopeTree#ensureScope：取得句柄（已有 ⇒ 加入，绝不改写位置）
+     * @param {string} childKey
+     * @param {string | symbol | null} [parentKey=null]
+     * @returns {{ key: string | symbol, parent: string | symbol | null, created: boolean }}
+     */
+    ensureScope(childKey: string, parentKey?: string | symbol | null): {
         key: string | symbol;
         parent: string | symbol | null;
         created: boolean;
     };
-    /** 见 ScopeTree#releaseScope：引用计数 -1，归零才回收 */
-    releaseScope(key: any): boolean;
-    /** @returns {string | symbol | null | undefined} `null` = 顶层；`undefined` = 该键未声明 */
-    scopeParentOf(scopeKey: any): string | symbol | null | undefined;
-    /** 从 key 自身沿祖先链向上的键序列（只读快照，含 key 本身；未声明的键只产出它自己） */
-    scopeAncestors(scopeKey: any): (string | symbol)[];
+    /**
+     * 见 ScopeTree#releaseScope：引用计数 -1，归零才回收
+     * @param {string | symbol} key
+     * @returns {boolean}
+     */
+    releaseScope(key: string | symbol): boolean;
+    /**
+     * 某作用域的父 key
+     * @param {string | symbol} scopeKey
+     * @returns {string | symbol | null | undefined} `null` = 顶层；`undefined` = 该键未声明
+     */
+    scopeParentOf(scopeKey: string | symbol): string | symbol | null | undefined;
+    /**
+     * 从 key 自身沿祖先链向上的键序列（只读快照，含 key 本身；未声明的键只产出它自己）
+     * @param {string | symbol} scopeKey
+     * @returns {(string | symbol)[]}
+     */
+    scopeAncestors(scopeKey: string | symbol): (string | symbol)[];
     /** 当前已声明的键数（诊断用；含顶层键） */
     scopeCount(): number;
     /** 当前已声明的作用域键列表（诊断用，顺序确定；与 eventNames 对称） */
@@ -141,8 +163,11 @@ export declare class MessageChannel {
     onScopeConflict: (key: string | symbol, actualParent: string | symbol | null, requestedParent: string | symbol | null) => void;
     /** 某事件当前有几个监听器（诊断用） */
     listenerCount(name: any): number;
-    /** 当前已注册的事件名列表（诊断用，顺序确定） */
-    eventNames(): string[];
+    /**
+     * 当前已注册的事件名列表（诊断用，顺序确定）
+     * @returns {(string | symbol)[]} 含 symbol 名（宿主内部通知用 symbol 注册，见 `subscribe`）
+     */
+    eventNames(): (string | symbol)[];
     /**
      * ★ 宿主用的统一派发入口 —— 带上【调用方的作用域 key】。
      *

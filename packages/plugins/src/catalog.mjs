@@ -29,6 +29,14 @@ function stripEntryFields(input) {
 }
 
 /**
+ * catalog 条目：条目字段（`source` / `packageUrl`）与归一化后的 manifest 并列。
+ * @typedef {object} CatalogEntry
+ * @property {import('./runtime.mjs').PluginDescriptor} manifest
+ * @property {string} source
+ * @property {string|null} packageUrl
+ */
+
+/**
  * @param {object} [options]
  * @param {string} [options.apiVersion]
  * @param {(diagnostic: object) => void} [options.onDiagnostic] 丢字段回调 ★ manifest 白名单重建时回调
@@ -40,6 +48,11 @@ export function createPluginCatalog(options) {
   const entries = new Map();
   const report = diagnosticSink(onDiagnostic);
 
+  /**
+   * 加入 / 覆盖一个条目（manifest 与条目字段可平铺在一层，见下）。
+   * @param {Record<string, unknown>} input
+   * @returns {CatalogEntry}
+   */
   function add(input) {
     // 平铺写法（manifest 与条目字段混在一层）：source / packageUrl 归 catalog 条目，先剥掉再校验，
     //   否则会被报成「manifest 丢字段」（误报）。校验器本就不读这两个键 ⇒ manifest 结果不变。
@@ -58,6 +71,10 @@ export function createPluginCatalog(options) {
     return clone(entries.get(manifest.id));
   }
 
+  /**
+   * 全部条目（按 id 排序，逐条 clone）。
+   * @returns {CatalogEntry[]}
+   */
   function list() {
     return [...entries.values()]
       .sort((left, right) => left.manifest.id.localeCompare(right.manifest.id))
@@ -67,10 +84,19 @@ export function createPluginCatalog(options) {
   return {
     add,
     list,
+    /**
+     * 按 id 取条目（副本）；不存在 ⇒ `null`。
+     * @param {string} id
+     * @returns {CatalogEntry|null}
+     */
     resolve(id) {
       const entry = entries.get(id);
       return entry ? clone(entry) : null;
     },
+    /**
+     * 导出目录索引（JSON 文本）。
+     * @returns {string}
+     */
     exportIndex() {
       return JSON.stringify({
         schemaVersion: 'plugin-catalog/v1',
@@ -78,6 +104,11 @@ export function createPluginCatalog(options) {
         entries: list()   // ★ 不依赖 this：解构调用（const { exportIndex } = catalog）也必须可用
       });
     },
+    /**
+     * 从 JSON 文本整体导入（原子：先全验后替换）。
+     * @param {string} raw
+     * @returns {CatalogEntry[]}
+     */
     importIndex(raw) {
       assert(typeof raw === 'string', 'catalog index must be text');
       let payload;

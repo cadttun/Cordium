@@ -4,7 +4,7 @@
 import { validatePluginManifestDetailed } from './runtime.mjs';
 import { diagnosticSink } from './diagnostic-sink.mjs';
 // ★ 已修：原先这里 `from '../../kernel/src/host.mjs'` —— 插件层【反向依赖内核的具体实现文件】，
-//   为拿一个 35 行纯函数得连带加载整个 host.mjs（1600+ 行）。
+//   为拿一个 35 行纯函数得连带加载整个 host.mjs（上千行）。
 //   现改为依赖【零依赖的中立模块】，依赖方向回到稳定侧（SDP / DIP）。
 //   现经 internal.mjs 取（它只依赖 types / semver-api / errors / host-util 等中立模块，同样不牵 host.mjs）。
 // ★★ 与两套 manifest schema 共用同一份【依赖归一化】实现（依赖方向 plugins → kernel，全仓已存在）。
@@ -17,7 +17,7 @@ import { satisfiesSemVer, normalizeDependencyMap, CordiumError, ErrorCode, MAX_T
  *
  * ★ 数组形式已取消 —— 数组项写不下版本范围，只能一律当 `'*'`，等于**静默放弃版本约束**。
  *   它与「非法范围字符串」「空串」同源 fail-open；一个字段只留一种形态，解析分支才不会重叠。
- * @param {object} dependencies
+ * @param {object} [dependencies] 省略 / `null` ⇒ `{}`（见内核 `normalizeDependencyMap`）
  * @returns {Record<string, string>}
  */
 export function normalizeDependencies(dependencies) {
@@ -36,7 +36,7 @@ export function normalizeDependencies(dependencies) {
  * Resolves plugin loading order based on declared dependencies (Topological Sort).
  * Detects missing dependencies, SemVer version mismatch, and cyclic dependency deadlocks.
  *
- * @param {Array<object>} manifests 候选插件 Manifest 列表
+ * @param {readonly object[]} [manifests] 候选插件 Manifest 列表（只读遍历，不改写）
  * @param {object} [options]
  * @param {Map<string, { manifest: any, entry?: any }>} [options.existingRegistry] 已注册的插件表
  * @param {(diagnostic: object) => void} [options.onDiagnostic] 丢字段回调 ★ 候选 manifest 时回调（形状同内核 diffManifestFields）
@@ -184,10 +184,11 @@ function topologicalOrder(candidateIds, allMap) {
  *   内核未发布，不保留旧名别名。
  *
  * @param {(...args: unknown[]) => unknown} fn 被调用的插件函数
- * @param {unknown[]} [args=[]] 透传给 fn 的参数（任意值，由调用方自定）
+ * @param {readonly unknown[]} [args=[]] 透传给 fn 的参数（任意值，由调用方自定；只展开不改写）
  * @param {object} [options]
  * @param {number} [options.timeoutMs=3000] 必须是 (0, 2^31-1] 内的有限数；
  *   此前传 Infinity / NaN / 过大值会被 Node 静默改成 1ms ⇒ 立即超时（实测）。
+ * @param {string} [options.pluginId='unknown'] 报错归属（拼进超时报文）
  */
 export async function callWithTimeout(fn, args = [], options) {
   const { timeoutMs = 3000, pluginId = 'unknown' } = readOptions(options, 'callWithTimeout', ['timeoutMs', 'pluginId']);
