@@ -68,8 +68,11 @@ export declare const DispatchMode: Readonly<{
  *
  * 语义取 Cordis `events.ts:6-8`：只有非空且非 false 的返回值才算拦截。
  * ⇒ `undefined` / `null` / `false` 都表示「我不处理，往下传」。
+ *
+ * @param {unknown} value 监听器的返回值（任意类型）
+ * @returns {boolean}
  */
-export declare function isBailed(value: any): boolean;
+export declare function isBailed(value: unknown): boolean;
 export declare class MessageChannel {
     #private;
     /**
@@ -100,14 +103,14 @@ export declare class MessageChannel {
      *   （依据：Qwen Code `EventBus` 官方文档明确把同步注册列为设计点。）
      *
      * @param {string | symbol} name 事件名，约定 `domain/action`（如 `task/created`）；也接受 symbol（宿主内部通知用）
-     * @param {Function} listener
-     * @param {{ prepend?: boolean, scopeLabel?: string | null, global?: boolean, owner?: string | null }} [options]
+     * @param {(...args: any[]) => any} listener 事件监听器；参数即事件的 `...args`（动态 ⇒ `any`）
+     * @param {{ prepend?: boolean, scopeLabel?: string | symbol | null, global?: boolean, owner?: string | null }} [options]
      *   owner：订阅者身份（宿主注入插件 id）—— 只用于出错时报「是谁的监听器」，不参与派发
      * @returns {() => boolean} disposer（由调用方交给 EffectScope 托管）
      */
-    subscribe(name: string | symbol, listener: Function, options?: {
+    subscribe(name: string | symbol, listener: (...args: any[]) => any, options?: {
         prepend?: boolean;
-        scopeLabel?: string | null;
+        scopeLabel?: string | symbol | null;
         global?: boolean;
         owner?: string | null;
     }): () => boolean;
@@ -161,8 +164,11 @@ export declare class MessageChannel {
      * @type {(key: string | symbol, actualParent: string | symbol | null, requestedParent: string | symbol | null) => void}
      */
     onScopeConflict: (key: string | symbol, actualParent: string | symbol | null, requestedParent: string | symbol | null) => void;
-    /** 某事件当前有几个监听器（诊断用） */
-    listenerCount(name: any): number;
+    /**
+     * 某事件当前有几个监听器（诊断用）
+     * @param {string | symbol} name
+     */
+    listenerCount(name: string | symbol): number;
     /**
      * 当前已注册的事件名列表（诊断用，顺序确定）
      * @returns {(string | symbol)[]} 含 symbol 名（宿主内部通知用 symbol 注册，见 `subscribe`）
@@ -177,12 +183,16 @@ export declare class MessageChannel {
      *   所以作用域走独立入口，由宿主 ctx 闭包提供 —— 与身份注入同一模式。
      *
      * @param {'emit'|'parallel'|'serial'|'waterfall'} mode
-     * @param {string} name
-     * @param {string | undefined} scopeKey 调用方作用域；undefined = 全局
+     * @param {string | symbol} name 与 `emit` / `parallel` / `serial` / `waterfall` 同一口径（也接受 symbol）
+     * @param {string | symbol | undefined} scopeKey 调用方作用域（私有作用域是 symbol）；undefined = 全局
      * @param {any[]} args
      */
-    dispatch(mode: 'emit' | 'parallel' | 'serial' | 'waterfall', name: string, scopeKey: string | undefined, args: any[]): any;
-    emit(name: any, ...args: any[]): void;
+    dispatch(mode: 'emit' | 'parallel' | 'serial' | 'waterfall', name: string | symbol, scopeKey: string | symbol | undefined, args: any[]): any;
+    /**
+     * 派发事件（**同步**调监听器，不等回执）
+     * @param {string | symbol} name
+     */
+    emit(name: string | symbol, ...args: any[]): void;
     /**
      * 宿主级广播 —— ★【绕开作用域放行规则】，送给【所有】监听器。
      *
@@ -195,23 +205,26 @@ export declare class MessageChannel {
      * ⚠️ 只供宿主内部使用，**不挂到插件 ctx 上** ——
      *   插件拿到它就等于拿到一个「发给所有人」的喇叭，会推翻作用域隔离。
      *
-     * @param {string} name
+     * @param {string | symbol} name 也接受 symbol（宿主 `SERVICE_CHANGE` 这类内部通知）
      * @param {...any} args
      */
-    broadcast(name: string, ...args: any[]): void;
+    broadcast(name: string | symbol, ...args: any[]): void;
     /**
      * 广播 + 等全部完成。有监听器失败 ⇒ 抛 CordiumError(listener_failed)，各原始错误在 err.cause.errors。
      *
      * 与 `emit` 的区别：`emit` 是「发完就走」，本方法会等所有监听器的 Promise 结算。
      * 注意 `Promise.allSettled` 语义 —— **一个失败不影响其他继续跑完**，最后统一报错。
+     * @param {string | symbol} name
+     * @returns {Promise<void>}
      */
-    parallel(name: any, ...args: any[]): Promise<void>;
+    parallel(name: string | symbol, ...args: any[]): Promise<void>;
     /**
      * 串行 await，【第一个有回应的赢】。
      *
      * 「有回应」= `isBailed(返回值)` 为真。用于「谁能处理这件事」的链式询问。
+     * @param {string | symbol} name
      */
-    serial(name: any, ...args: any[]): Promise<any>;
+    serial(name: string | symbol, ...args: any[]): Promise<any>;
     /**
      * ★ 中间件模式 —— 信息可【停留 / 传输 / 变换】。
      *
@@ -249,8 +262,9 @@ export declare class MessageChannel {
      *   那条检查在这里是恒真的空操作，故不需要。
      *   ⚠️ **但这条豁免只对同步监听器成立**：监听器若是 `async`，
      *   `next()` 会落到微任务里 ⇒ 顺序不再保证 —— 此时**必须自己 `await`**。
+     * @param {string | symbol} name
      */
-    waterfall(name: any, ...args: any[]): any;
+    waterfall(name: string | symbol, ...args: any[]): any;
     /**
      * 监听器异常上报钩子。宿主可覆盖为审计日志。owner = 订阅时登记的身份（宿主注入的插件 id；未登记为 null）。
      * @type {(name: string, error: any, owner: string | null) => void}

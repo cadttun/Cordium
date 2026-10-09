@@ -86,8 +86,12 @@ export declare class EffectScope {
      * ★ 幂等 + 可并发：第二次及以后的调用【等同一个 promise】，而不是立刻返回。
      *   旧实现是「第二次直接 return」，于是在并发 teardown 下，
      *   `await scope.dispose()` 可能在你以为"已经清干净"时其实第一次还没跑完。
+     *
+     * @param {symbol | null} releaseKey 释放令牌（宿主持有的 `#releaseKey`；插件传 `null`）
+     * @param {object} [options]
+     * @param {number} [options.timeoutMs=0] 释放回调的等待上限（0 = 不限）
      */
-    dispose(releaseKey: any, { timeoutMs }?: {
+    dispose(releaseKey: symbol | null, { timeoutMs }?: {
         timeoutMs?: number;
     }): any;
 }

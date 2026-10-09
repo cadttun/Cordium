@@ -84,12 +84,12 @@ const EMPTY_CONFIG = Object.freeze({});
  * @property {import('./scope.mjs').EffectScope} scope 本次激活的资源作用域
  * @property {(name: string, impl: object) => void} provideService
  * @property {(name: string) => unknown} getService 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
- * @property {(name: string, listener: (change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void, options?: object) => void} watchService
+ * @property {(name: string, listener: (change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void) => void} watchService
  * @property {(listener: (change: { id: string, from: string | null, to: string | null }) => void) => void} watchPluginState
  * @property {(label: string) => PluginContext} scoped
  * @property {() => PluginContext} privateScope
- * @property {(name: string, listener: Function, options?: object) => void} on
- * @property {(name: string, listener: Function, options?: object) => void} once
+ * @property {(name: string, listener: (...args: any[]) => any, options?: object) => void} on
+ * @property {(name: string, listener: (...args: any[]) => any, options?: object) => void} once
  * @property {(name: string, ...args: unknown[]) => void} emit
  * @property {(name: string, ...args: unknown[]) => Promise<unknown>} parallel
  * @property {(name: string, ...args: unknown[]) => Promise<unknown>} serial
@@ -125,7 +125,7 @@ const EMPTY_CONFIG = Object.freeze({});
  * @typedef {object} HostEvents
  * @property {(name: string, ...args: unknown[]) => void} emit 以根作用域**广播**（不等回执）；单个监听器抛错不阻断其他，错误进审计。
  * @property {(name: string, ...args: unknown[]) => unknown} waterfall 中间件派发：`waterfall(name, ...args, fallback)`，最后一个参数是兜底函数。
- * @property {(name: string, listener: Function) => () => boolean} subscribe 订阅（无标签监听器），返回退订函数。★ 宿主没有 EffectScope ⇒ 调用方须自行保管退订。
+ * @property {(name: string, listener: (...args: any[]) => any) => () => boolean} subscribe 订阅（无标签监听器），返回退订函数。★ 宿主没有 EffectScope ⇒ 调用方须自行保管退订。
  */
 
 /** 超时类选项：不传 ⇒ 用默认；0 / 负数 = 不限；正数须 ≤ MAX_TIMER_MS（超出 Node 会改成 1ms ⇒ 立即超时） */
@@ -178,9 +178,47 @@ export class CordiumHost {
   // ════════════════ 内部状态与只读属性 ════════════════
 
   // ★ 私有字段防止插件绕过API直接访问内部状态
+  /**
+   * ★ 记录形状的 `@type` 必须写在**字段声明处**（这里），不能写在构造函数里的
+   *   `this.#plugins = …` 上 —— tsc 取类字段声明的类型，构造函数里的 `@type`
+   *   对私有字段是**空操作**（本项目已踩：诊断快照 `plugins[].state` 一直是 `any`）。
+   * ★ 这也是「孤儿 JSDoc」的**第三种形态**（前两种见 jsdoc-attachment.test.mjs 的堆叠 / 再导出）：
+   *   文档没挂错，只是挂在了**一个不产生类型的位置**上，静默无感。
+   * @type {Map<string, {
+   *   manifest: any,
+   *   entry: any,
+   *   state: string,
+   *   scope: EffectScope | null,
+   *   lifecycleTimeoutMs: number | null,
+   *   activationMs: number | null,
+   *   pending: number,
+   *   transition: Promise<void>,
+   *   disabledByUser: boolean,
+   *   stoppedByCascade: boolean,
+   *   stoppedWhileReady: boolean,
+   *   error?: Error
+   * }>}
+   */
   #plugins = new Map();
   /** EffectScope 释放令牌：只有宿主能 dispose 插件的 scope / 登记宿主自有释放（见 scope.mjs #releaseKey）。须先于 #actionHandlers 初始化 */
   #scopeReleaseKey = Symbol('cordium.scope-release');
+  /**
+   * ★ 契约记录形状 —— 同 `#plugins`，`@type` 写在**字段声明处**（构造函数里的 `@type` 是空操作）。
+   *   此前完全无 `@type` ⇒ 诊断快照 `services[].name / access / requiredPermission / methods /
+   *   activeProvider / providerCount`（**全在稳定面**）退化成 `any`。
+   * @type {Map<string, {
+   *   access: string,
+   *   requiredPermission: string | null,
+   *   optionalProvider: string | null,
+   *   methods: readonly string[] | null,
+   *   declaredBy: string,
+   *   providers: Map<string, any>,
+   *   epochSeq: number,
+   *   providerEpochs: Map<string, number>,
+   *   providerScopes: Map<string, EffectScope>,
+   *   scopedProviders: Map<string | symbol, Map<string, any>>
+   * }>}
+   */
   #serviceContracts = new Map();
   // ★ 动作表抽成内部类 ActionRegistry；鉴权事实（插件状态 / 权限快照）仍留在宿主，只注入窄查询。
   #actionHandlers = new ActionRegistry({
@@ -252,6 +290,7 @@ export class CordiumHost {
    * ★ 以下原为公开可写字段 —— 拿到 host 的代码可 `auditLogs.length = 0` 清空审计、
    *   可换掉 `channel` 的钩子、可把 `booted` 改回 false。现全部硬私有：
    *   日志 / 诊断经 getDiagnostics() 读副本；配置与状态经下方只读 getter。
+   * @type {MessageChannel}
    */
   #channel;
   /**
@@ -261,8 +300,11 @@ export class CordiumHost {
    * @type {HostEvents}
    */
   #events;
+  /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
   #auditLogs;
+  /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
   #errorLogs;
+  /** @type {Array<{ path: string, pluginId: string, fields: string[], severity: string, timestamp: number }>} */
   #manifestDiagnostics;
   /** @type {number} 因超出留存上限而被丢弃的 manifest 诊断条数 */
   #manifestDiagnosticsDropped;
@@ -371,11 +413,8 @@ export class CordiumHost {
      */
     this.#maxErrorLogSize = positiveInt('maxErrorLogSize', options.maxErrorLogSize, 100);
 
-    /**
-     * 动作处理器默认执行上限（毫秒）。单条注册可用 timeoutMs 覆盖。
-     * 设为 0 或负数表示不限制（不推荐：插件处理器挂起会连带卡住调用方）。
-     * @type {number}
-     */
+    // 动作处理器默认执行上限（毫秒）。单条注册可用 timeoutMs 覆盖。
+    // 设为 0 或负数表示不限制（不推荐：插件处理器挂起会连带卡住调用方）。
     this.#defaultActionTimeoutMs = options.actionTimeoutMs ?? 30000;
 
     /**
@@ -402,18 +441,15 @@ export class CordiumHost {
      */
     this.#maxInFlightActions = positiveInt('maxInFlightActions', options.maxInFlightActions, 10000);
 
-    /** @type {Map<string, { manifest: any, entry: any, state: string, scope: EffectScope | null, error?: Error }>} */
     this.#plugins = new Map();
-    /**
-     * ★ 信息中转层 —— 内核里【只负责搬运消息】的那一层。
-     *
-     * 它与服务是**两种不同的语义**（见 channel.mjs 文件头）：
-     *   服务 = 点对点、调用方知道对方是谁、必须有回执；
-     *   通道 = 一对多、发布方【不知道谁在听】、回执可有可无、**就是设计来被拦截的**。
-     * 因此独立成层，宿主只做编排。
-     *
-     * @type {MessageChannel}
-     */
+    // ★ 信息中转层 —— 内核里【只负责搬运消息】的那一层。
+    //
+    // 它与服务是**两种不同的语义**（见 channel.mjs 文件头）：
+    //   服务 = 点对点、调用方知道对方是谁、必须有回执；
+    //   通道 = 一对多、发布方【不知道谁在听】、回执可有可无、**就是设计来被拦截的**。
+    // 因此独立成层，宿主只做编排。
+    // ★ 类型 `@type {MessageChannel}` 写在【字段声明处】（见上），不是这里 ——
+    //   构造函数里对 `this.#x = …` 的 `@type` 是**空操作**（tsc 取类字段声明的类型）。
     this.#channel = new MessageChannel();
 
     // 监听器异常与泄漏都进审计日志 —— 否则"一个坏插件静默吃掉所有人的通知"无从发现。
@@ -458,54 +494,43 @@ export class CordiumHost {
       }
     });
 
-    /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
     this.#auditLogs = [];
 
     /**
      * ★ 错误的独立留存（不被 info 冲掉，且带栈）。见 log() 的说明。
-     * @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>}
      */
     this.#errorLogs = [];
 
-    /**
-     * ★★ Manifest 字段诊断（结构化，带归属）。
-     *
-     * 为什么不是「一个全局 droppedFields 数组」：
-     *   本项目有【两套】manifest schema（内核 / 插件），丢字段是【分层】问题；
-     *   无归属的全局数组无法区分「是哪一层丢的」⇒ 排障时会指向错误的代码。
-     *   ⇒ 每条诊断必须带 `path`（哪一层）+ `pluginId`（哪个插件）。
-     *
-     * ★ 有界：见 `maxManifestDiagnostics`。丢弃**不是静默的** —— 会累计到
-     *   `manifestDiagnosticsDropped` 并在 `getDiagnostics()` 里暴露。
-     * @type {Array<{ path: string, pluginId: string, fields: string[], severity: string, timestamp: number }>}
-     */
+    // ★★ Manifest 字段诊断（结构化，带归属）。
+    //
+    // 为什么不是「一个全局 droppedFields 数组」：
+    //   本项目有【两套】manifest schema（内核 / 插件），丢字段是【分层】问题；
+    //   无归属的全局数组无法区分「是哪一层丢的」⇒ 排障时会指向错误的代码。
+    //   ⇒ 每条诊断必须带 `path`（哪一层）+ `pluginId`（哪个插件）。
+    //
+    // ★ 有界：见 `maxManifestDiagnostics`。丢弃**不是静默的** —— 会累计到
+    //   `manifestDiagnosticsDropped` 并在 `getDiagnostics()` 里暴露。
+    // ★ 类型写在字段声明处（见上）—— 构造函数里对 `this.#x = …` 的 `@type` 是空操作。
     this.#manifestDiagnostics = [];
 
-    /**
-     * Manifest 诊断的留存上限。
-     *
-     * ★ 为什么必须有界：本数组曾是**唯一无上限**的诊断容器（审计 500 / 错误 100 都有环），
-     *   而 `getDiagnostics()` 每次都 `.slice()` **全量拷贝** —— 无界增长 + 每次全量复制。
-     *
-     * ★ 为什么不直接照抄 `auditLogs` 的静默 `shift()`：
-     *   本容器的设计意图恰恰是「**不被冲掉的证据**」（见上方注释）；
-     *   静默丢弃会让「没有记录」等价于「没有发生」，与项目「宁可红也不给假绿」口径冲突。
-     *   ⇒ 采用「有界 + **丢弃计数可见**」：截断照做，但**丢了多少必须能被看见**。
-     *   （同款口径见 open-policy-agent/gatekeeper#4503 的 truncation marker、
-     *     go-ethereum#33885 的「drop-oldest + 记一条日志」。）
-     * @type {number}
-     */
+    // Manifest 诊断的留存上限。
+    //
+    // ★ 为什么必须有界：本数组曾是**唯一无上限**的诊断容器（审计 500 / 错误 100 都有环），
+    //   而 `getDiagnostics()` 每次都 `.slice()` **全量拷贝** —— 无界增长 + 每次全量复制。
+    //
+    // ★ 为什么不直接照抄 `auditLogs` 的静默 `shift()`：
+    //   本容器的设计意图恰恰是「**不被冲掉的证据**」（见上方注释）；
+    //   静默丢弃会让「没有记录」等价于「没有发生」，与项目「宁可红也不给假绿」口径冲突。
+    //   ⇒ 采用「有界 + **丢弃计数可见**」：截断照做，但**丢了多少必须能被看见**。
+    //   （同款口径见 open-policy-agent/gatekeeper#4503 的 truncation marker、
+    //     go-ethereum#33885 的「drop-oldest + 记一条日志」。）
     this.#maxManifestDiagnostics = positiveInt('maxManifestDiagnostics', options.maxManifestDiagnostics, 200);
 
-    /**
-     * 因超限而被丢弃的 Manifest 诊断条数。
-     * ★ 它存在本身就是一个信号：非 0 ⇒ 丢字段问题**规模异常**，
-     *   此时「丢了多少」比「每条是什么」更有信息量。
-     * @type {number}
-     */
+    // 因超限而被丢弃的 Manifest 诊断条数。
+    // ★ 它存在本身就是一个信号：非 0 ⇒ 丢字段问题**规模异常**，
+    //   此时「丢了多少」比「每条是什么」更有信息量。
     this.#manifestDiagnosticsDropped = 0;
 
-    /** @type {boolean} */
     this.#booted = false;
   }
 
@@ -812,7 +837,7 @@ export class CordiumHost {
    * 故参数类型是 `unknown`；本方法经 `validateManifest` 把它判成并归一化为 `PluginManifest`。
    *
    * @param {unknown} rawManifest 调用方自报的 manifest，形状未校验
-   * @param {{ activate?: Function, deactivate?: Function } | null} [entry] 插件执行入口 (可选对象，包含 activate/deactivate)
+   * @param {{ activate?: (ctx: PluginContext, config?: object) => void | Promise<void>, deactivate?: () => void | Promise<void>, config?: object } | null} [entry] 插件执行入口（可选对象，含 activate / deactivate / config）
    * @param {{ lifecycleTimeoutMs?: number }} [options] 宿主侧对【这一个】插件的设置（装配方写，不是插件自己写）
    */
   registerPlugin(rawManifest, entry = null, options) {
@@ -931,7 +956,7 @@ export class CordiumHost {
    *     `async () => …` 把同步抛转成拒绝，才走正常断言路径。
    *
    * @param {unknown} rawManifest 调用方自报的 manifest，形状未校验（与 `registerPlugin` 对齐）
-   * @param {{ activate?: Function, deactivate?: Function } | null} [entry]
+   * @param {{ activate?: (ctx: PluginContext, config?: object) => void | Promise<void>, deactivate?: () => void | Promise<void>, config?: object } | null} [entry]
    * @param {{ lifecycleTimeoutMs?: number }} [options]
    */
   replacePlugin(rawManifest, entry = null, options) {
@@ -1326,6 +1351,7 @@ export class CordiumHost {
    *
    * @param {string} pluginId
    * @param {() => Promise<any>} task
+   * @returns {Promise<void>}
    */
   #serializeLifecycle(pluginId, task) {
     const record = this.#plugins.get(pluginId);
@@ -2426,7 +2452,7 @@ export class CordiumHost {
    * @param {string} pluginId 订阅者（ctx 闭包注入，出错时报归属用）
    * @param {import('./scope.mjs').EffectScope} scope
    * @param {string | symbol} name 事件名（宿主内部通知用模块私有 symbol）
-   * @param {Function} listener
+   * @param {(...args: any[]) => any} listener 监听器；`Function` 是官方禁止项（typescript-eslint `no-unsafe-function-type`）
    * @param {{ prepend?: boolean, global?: boolean }} [options]
    * @param {string | symbol | null} [scopeKey] 调用方作用域，由 ctx 闭包提供
    */
@@ -2756,7 +2782,10 @@ export class CordiumHost {
         methods: s.methods ? [...s.methods] : null,
         // 单提供者语义下，诊断值是当前全局槽的派生快照，
         // 不是可写的「活动主」状态。
-        activeProvider: s.providers.keys().next().value || null,
+        // ★ 断言 `string | null`：`Map.keys().next().value` 在本仓的 TS 版本里被推成 `any`
+        //   （`IteratorResult` 的 `TReturn` 泛型默认 `any`），断言的是**已知事实**（键集是 `string`），
+        //   不是绕过类型 —— 这正是不写它 `activeProvider` 会掉回 `any`、稳定面失去类型的原因。
+        activeProvider: /** @type {string | null} */ (s.providers.keys().next().value || null),
         providerCount: s.providers.size,
         // ★ 上面两项只看【全局槽】—— 只注册了作用域实现的服务此前显示「0 个提供者」，
         //   与「确实没人提供」不可区分。作用域实现单独计数（各作用域桶之和），不混进全局口径。

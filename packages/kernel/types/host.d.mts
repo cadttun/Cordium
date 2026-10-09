@@ -28,7 +28,7 @@ export type PluginContext = {
         scopeKey: string | symbol | null;
         action: string;
         epoch: number | null;
-    }) => void, options?: object) => void;
+    }) => void) => void;
     watchPluginState: (listener: (change: {
         id: string;
         from: string | null;
@@ -36,8 +36,8 @@ export type PluginContext = {
     }) => void) => void;
     scoped: (label: string) => PluginContext;
     privateScope: () => PluginContext;
-    on: (name: string, listener: Function, options?: object) => void;
-    once: (name: string, listener: Function, options?: object) => void;
+    on: (name: string, listener: (...args: any[]) => any, options?: object) => void;
+    once: (name: string, listener: (...args: any[]) => any, options?: object) => void;
     emit: (name: string, ...args: unknown[]) => void;
     parallel: (name: string, ...args: unknown[]) => Promise<unknown>;
     serial: (name: string, ...args: unknown[]) => Promise<unknown>;
@@ -59,7 +59,7 @@ export type HostEvents = {
     /**
      * 订阅（无标签监听器），返回退订函数。★ 宿主没有 EffectScope ⇒ 调用方须自行保管退订。
      */
-    subscribe: (name: string, listener: Function) => () => boolean;
+    subscribe: (name: string, listener: (...args: any[]) => any) => () => boolean;
 };
 export declare class CordiumHost {
     #private;
@@ -219,12 +219,13 @@ export declare class CordiumHost {
      * 故参数类型是 `unknown`；本方法经 `validateManifest` 把它判成并归一化为 `PluginManifest`。
      *
      * @param {unknown} rawManifest 调用方自报的 manifest，形状未校验
-     * @param {{ activate?: Function, deactivate?: Function } | null} [entry] 插件执行入口 (可选对象，包含 activate/deactivate)
+     * @param {{ activate?: (ctx: PluginContext, config?: object) => void | Promise<void>, deactivate?: () => void | Promise<void>, config?: object } | null} [entry] 插件执行入口（可选对象，含 activate / deactivate / config）
      * @param {{ lifecycleTimeoutMs?: number }} [options] 宿主侧对【这一个】插件的设置（装配方写，不是插件自己写）
      */
     registerPlugin(rawManifest: unknown, entry?: {
-        activate?: Function;
-        deactivate?: Function;
+        activate?: (ctx: PluginContext, config?: object) => void | Promise<void>;
+        deactivate?: () => void | Promise<void>;
+        config?: object;
     } | null, options?: {
         lifecycleTimeoutMs?: number;
     }): void;
@@ -248,15 +249,16 @@ export declare class CordiumHost {
      *     `async () => …` 把同步抛转成拒绝，才走正常断言路径。
      *
      * @param {unknown} rawManifest 调用方自报的 manifest，形状未校验（与 `registerPlugin` 对齐）
-     * @param {{ activate?: Function, deactivate?: Function } | null} [entry]
+     * @param {{ activate?: (ctx: PluginContext, config?: object) => void | Promise<void>, deactivate?: () => void | Promise<void>, config?: object } | null} [entry]
      * @param {{ lifecycleTimeoutMs?: number }} [options]
      */
     replacePlugin(rawManifest: unknown, entry?: {
-        activate?: Function;
-        deactivate?: Function;
+        activate?: (ctx: PluginContext, config?: object) => void | Promise<void>;
+        deactivate?: () => void | Promise<void>;
+        config?: object;
     } | null, options?: {
         lifecycleTimeoutMs?: number;
-    }): any;
+    }): Promise<void>;
     /**
      * 启动宿主运行时 (按依赖拓扑依次激活所有已注册插件)
      *
@@ -269,12 +271,12 @@ export declare class CordiumHost {
      * 激活单个插件及其生命周期
      * @param {string} pluginId
      */
-    activatePlugin(pluginId: string): any;
+    activatePlugin(pluginId: string): Promise<void>;
     /**
      * 停用单个插件并彻底清理作用域
      * @param {string} pluginId
      */
-    deactivatePlugin(pluginId: string): any;
+    deactivatePlugin(pluginId: string): Promise<void>;
     /**
      * 移除插件：停用（若 ACTIVE）→ 从宿主删除全部记录；之后同 id 可重新注册。
      *
@@ -293,7 +295,7 @@ export declare class CordiumHost {
      *
      * @param {string} pluginId
      */
-    unregisterPlugin(pluginId: string): any;
+    unregisterPlugin(pluginId: string): Promise<void>;
     /**
      * 插件取服务入口 —— 带访问门禁，调用方身份【必须显式传入】。
      *
@@ -395,22 +397,22 @@ export declare class CordiumHost {
             hotReload: boolean;
             kind: string;
             activation: string;
-            state: any;
+            state: string;
             error: string;
-            activationMs: any;
+            activationMs: number;
             unresolvedDependencies: {
                 id: string;
                 reason: (typeof UnresolvedReason)[keyof typeof UnresolvedReason];
             }[];
         }[];
         services: {
-            name: any;
-            access: any;
-            requiredPermission: any;
-            methods: any[];
-            activeProvider: any;
-            providerCount: any;
-            scopedProviderCount: any;
+            name: string;
+            access: string;
+            requiredPermission: string;
+            methods: string[];
+            activeProvider: string | null;
+            providerCount: number;
+            scopedProviderCount: number;
             scopedProviders: {
                 scopeKey: string;
                 providerId: any;
@@ -419,14 +421,26 @@ export declare class CordiumHost {
         actionsCount: number;
         permissions: any[];
         uiContributionsCount: number;
-        recentLogs: any;
-        recentErrors: any;
-        errorLogCount: any;
-        manifestDiagnostics: any;
+        recentLogs: any[];
+        recentErrors: any[];
+        errorLogCount: number;
+        manifestDiagnostics: {
+            path: string;
+            pluginId: string;
+            severity: string;
+            timestamp: number;
+            fields: string[];
+        }[];
         manifestDiagnosticsDropped: number;
         channel: {
-            listeners: any;
-            scopes: any;
+            listeners: {
+                name: string;
+                count: number;
+            }[];
+            scopes: {
+                key: string;
+                parent: string;
+            }[];
         };
     };
 }
