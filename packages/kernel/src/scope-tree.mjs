@@ -15,7 +15,7 @@ export class ScopeTree {
    * 作用域表：key → { parent, holders }。
    *
    * 用途有两个：
-   *   ① 事件放行 / 服务解析时沿【祖先链】向上查找（见 `MessageChannel#admit`）；
+   *   ① 事件放行 / 服务解析时沿【祖先链】向上查找（见 `ScopeTree#ancestors`）；
    *   ② ★ **登记「绑定只发生一次」这个事实** —— `parent` 为 `null` 表示**顶层键**，
    *      它同样是一条记录，因此**顶层键不再是"无记录"状态**，谁来给它挂父级都会被拒。
    *
@@ -173,7 +173,7 @@ export class ScopeTree {
     //   曾有的不对称：`declareScope` 有防环、`ensureScope` 当时没有，
     //   而两者的前提条件是一样的（都要求 parentKey 是一条已有链）。实测可复现：
     //     ch.ensureScope('a', 'p');  ch.ensureScope('p', 'a');   // → p→a、a→p 成环，无人拦截
-    //   而 `MessageChannel#admit` 的祖先链遍历（`for (cursor = key; cursor != null; cursor = parentOf(cursor))`）
+    //   而 `MessageChannel#snapshot` 经 `ScopeTree#ancestors` 的祖先链遍历（`for (cursor = key; cursor != null; cursor = parentOf(cursor))`）
     //   **没有步数上限** ⇒ 环一旦建立，每次派发都会**死循环**（实测：链 a→p→a→p… 永不终止）。
     //
     //   ⚠️ 可达性边界（实测）：**今天从插件代码走不到** —— `ctx.scoped()` 传的 parentKey
@@ -191,7 +191,7 @@ export class ScopeTree {
    * 防环：确认 `parentKey` 的祖先链不会绕回 `key`。
    *
    * ★ 两个登记入口共用同一份判定 —— 分开写两份迟早漂移（本项目反复踩过「白名单重建」类缺陷）。
-   * ★ 这也是 `MessageChannel#admit` 那条无上限遍历能保证有限的前提：
+   * ★ 这也是 `ScopeTree#ancestors` 那条无上限遍历能保证有限的前提：
    *   只要【所有】建立父子关系的路径都过这里，就不存在环。
    *
    * @param {string | symbol} key

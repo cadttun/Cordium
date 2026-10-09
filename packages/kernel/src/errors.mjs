@@ -7,7 +7,7 @@
  * ★ 码按「调用方要怎么分支」定粒度，不与抛错点一一对应：同一类失败（如所有 `Security Violation`）共用一个码，
  *   细节留在报文里。
  * ★ 零依赖：plugins 经 internal.mjs 取用，不牵 host.mjs（同 semver.mjs 的口径）。
- * ★ 码值是公开 API：增删改 = 破坏性变更（test/public-surface.test.mjs 钉死清单）。
+ * ★ 码值是公开 API：增删改 = 破坏性变更（test/error-model.test.mjs 钉死清单）。
  */
 
 export const ErrorCode = Object.freeze({

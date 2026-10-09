@@ -11,7 +11,7 @@
  *   ⇒ 消费方比对 `err.cause.code` 时：命中本表即隔离端自产；未命中一律当插件自报码，
  *     **不得**假定本表穷尽（别写 `Object.values(IsolationCode).includes(cause.code)` 来判「认全了没有」）。
  *
- * ★ 没有 `isValidIsolationCode`：本仓的 `isValidXxx` 三件套（ServiceAccess / PluginKind / LogLevel /
+ * ★ 没有 `isValidIsolationCode`：本仓的 `isValidXxx` 四件套（ServiceAccess / PluginKind / LogLevel /
  *   ActivationPolicy）是给**入口输入**做成员校验的，因为那里拼错会静默落成最宽松行为。
  *   本表是**输出词表**（同 LifecycleState / DispatchMode，只给冻结对象），没有可校验的入口 ——
  *   而且真给 `cause.code` 加值域校验反而有害：会把插件的合法自报码当非法值吞掉，

@@ -27,7 +27,7 @@ export class EffectScope {
    * 为什么仍必须私有：本 Scope 会作为 ctx.scope 交给插件。回调若是公开字段，
    * 插件就能拿它们提前注销自己（或借 scope 身份反查的任何实现）。
    *
-   * 对外只保留四个清理登记接口（+ untrackTimer）与宿主专用的 dispose：
+   * 对外只保留四个清理登记接口（+ untrackTimer）与宿主专用的 dispose / addHostDisposer：
    * addDisposer / trackTimer / trackService / trackUIContribution。
    * @type {ScopeReleaseCallbacks}
    */

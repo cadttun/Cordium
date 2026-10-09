@@ -7,8 +7,9 @@
  *   但它们的签名随实现走，不承诺稳定，不该出现在主入口 `index.mjs`。
  *   在 package.json `exports` 中映射为 `./internal` 子路径。
  *
- * ★ 也转出 plugins 要用的几个【公开】成员（semver / PluginKind）：本文件只依赖 types / semver，
- *   **不牵 host.mjs**。plugins 若改走 `index.mjs` 就会连带加载整个宿主 —— 那正是此前修掉的反向依赖。
+ * ★ 也转出 plugins 要用的几个【公开】成员（semver / PluginKind）：本文件只依赖
+ *   types / semver-api / errors / host-util 等中立模块，**不牵 host.mjs**。plugins 若改走
+ *   `index.mjs` 就会连带加载整个宿主 —— 那正是此前修掉的反向依赖。
  */
 export { normalizeStringList, normalizeDependencyMap, diffWhitelistFields, diffServiceContractFields, diffManifestFields, MANIFEST_FIELD_TABLE, PLUGIN_ID_PATTERN, isValidPluginKind, isValidServiceAccess, isValidActivationPolicy, isValidLogLevel } from './types.mjs';
 export { PluginKind, PLUGIN_KIND_VALUES, ActivationPolicy, ACTIVATION_POLICY_VALUES } from './types.mjs';

@@ -10,7 +10,7 @@
 import {
   LifecycleState, ServiceAccess, validateManifest, diffManifestFields, PLUGIN_ID_PATTERN, HOST_CALLER,
   UnresolvedReason,
-  // ★ 诊断快照的 manifest 投影由它派生（唯一真相源）—— 见 snapshotManifestForDiagnostics
+  // ★ 诊断快照的 manifest 投影由它派生（唯一真相源）—— 见 manifestSnapshot
   MANIFEST_FIELD_TABLE,
   // ★ 服务契约的「白名单重建丢字段」判定 —— 与 manifest 共用同一条知识
   diffServiceContractFields,
@@ -84,7 +84,7 @@ const EMPTY_CONFIG = Object.freeze({});
  * @property {import('./scope.mjs').EffectScope} scope 本次激活的资源作用域
  * @property {(name: string, impl: object) => void} provideService
  * @property {(name: string) => unknown} getService 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
- * @property {(name: string, listener: Function, options?: object) => void} watchService
+ * @property {(name: string, listener: (change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void, options?: object) => void} watchService
  * @property {(listener: (change: { id: string, from: string | null, to: string | null }) => void) => void} watchPluginState
  * @property {(label: string) => PluginContext} scoped
  * @property {() => PluginContext} privateScope
@@ -461,8 +461,10 @@ export class CordiumHost {
     /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
     this.#auditLogs = [];
 
-    /** ★ 错误的独立留存（不被 info 冲掉，且带栈）。见 log() 的说明。 */
-    /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
+    /**
+     * ★ 错误的独立留存（不被 info 冲掉，且带栈）。见 log() 的说明。
+     * @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>}
+     */
     this.#errorLogs = [];
 
     /**
@@ -1160,21 +1162,6 @@ export class CordiumHost {
   // ════════════════ 生命周期：boot / 激活 / 停用 / 移除 ════════════════
 
   /**
-   * ★★ 按需激活的**依赖收拢**：把 `pluginId` 的必需依赖里仍在等触发的懒插件
-   *  （含它们自己的依赖，递归）先拉起来。
-   *
-   * 为什么必须有：懒插件 B 依赖懒插件 A。触发 B 时 A 还没跑过 `activate()`，
-   * `#assertDependenciesActive` 会以 `dependency_inactive` 拒绝 —— 于是「按需激活」
-   * 在最常见的「提供者也是懒的」场景下**直接不可用**。
-   * （OSGi 的懒激活由类加载**隐式级联**；这里是同一条语义的显式版。）
-   *
-   * ★ 只收拢 `ready` 的：`disabled`（用户停过）与 `failed`（激活失败过）**不擅自拉起**——
-   *   前者是用户意图，后者会重演一次已知失败。让依赖检查照常报错，报的才是真原因。
-   * ★ 用 `#serializeLifecycle` 走正规激活路径 ⇒ 天然幂等（已是 ACTIVE 会短路）。
-   *
-   * @param {string} pluginId
-   */
-  /**
    * ★ 同步预检：`pluginId` 是否有**直接**依赖仍停在 `ready`（= 是否需要走异步收拢）。
    *
    * ★★ 为什么必须存在（这条是被测试逼出来的，两个用例同时变红）：
@@ -1194,6 +1181,21 @@ export class CordiumHost {
       .some(depId => this.#plugins.get(depId)?.state === LifecycleState.READY);
   }
 
+  /**
+   * ★★ 按需激活的**依赖收拢**：把 `pluginId` 的必需依赖里仍在等触发的懒插件
+   *  （含它们自己的依赖，递归）先拉起来。
+   *
+   * 为什么必须有：懒插件 B 依赖懒插件 A。触发 B 时 A 还没跑过 `activate()`，
+   * `#assertDependenciesActive` 会以 `dependency_inactive` 拒绝 —— 于是「按需激活」
+   * 在最常见的「提供者也是懒的」场景下**直接不可用**。
+   * （OSGi 的懒激活由类加载**隐式级联**；这里是同一条语义的显式版。）
+   *
+   * ★ 只收拢 `ready` 的：`disabled`（用户停过）与 `failed`（激活失败过）**不擅自拉起**——
+   *   前者是用户意图，后者会重演一次已知失败。让依赖检查照常报错，报的才是真原因。
+   * ★ 用 `#serializeLifecycle` 走正规激活路径 ⇒ 天然幂等（已是 ACTIVE 会短路）。
+   *
+   * @param {string} pluginId
+   */
   async #activateReadyDependencies(pluginId) {
     const record = this.#plugins.get(pluginId);
     if (!record) return;
@@ -1297,10 +1299,6 @@ export class CordiumHost {
   }
 
   /**
-   * 激活单个插件及其生命周期
-   * @param {string} pluginId
-   */
-  /**
    * 把同一个插件的生命周期迁移【串行化】。
    *
    * 为什么需要：activatePlugin / deactivatePlugin 都是「同步改状态 → await 钩子 → 再改状态」，
@@ -1350,6 +1348,10 @@ export class CordiumHost {
     return run;
   }
 
+  /**
+   * 激活单个插件及其生命周期
+   * @param {string} pluginId
+   */
   activatePlugin(pluginId) {
     assertStringArg('activatePlugin', 'pluginId', pluginId);
     // ★ 捕获【调用时刻】的记录：排队期间该 id 可能被移除、甚至重新注册，
@@ -2470,19 +2472,6 @@ export class CordiumHost {
   }
 
   /**
-   * 插件侧的窄服务变更订阅。
-   *
-   * 服务变更通知走模块私有的 `SERVICE_CHANGE` symbol —— 插件拿不到它，
-   * 既发不出伪造通知，也不能绕过本入口直接订阅。这个入口把服务名过滤、身份/作用域注入和生命周期
-   * 托管合并成一个不可绕过的操作。
-   *
-   * @param {import('./scope.mjs').EffectScope} scope
-   * @param {string} serviceName
-   * @param {(change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void} listener
-   * @param {string | symbol | null} scopeKey
-   * @returns {() => boolean}
-   */
-  /**
    * ★★ 插件状态变更的窄接口 —— 插件用它订阅任意插件的启停。
    *
    * ── 为什么必须有（这是下游实测出来的需求，不是我推测的）──────
@@ -2541,6 +2530,20 @@ export class CordiumHost {
     this.#channel.broadcast(PLUGIN_STATE, Object.freeze({ id, from, to }));
   }
 
+  /**
+   * 插件侧的窄服务变更订阅。
+   *
+   * 服务变更通知走模块私有的 `SERVICE_CHANGE` symbol —— 插件拿不到它，
+   * 既发不出伪造通知，也不能绕过本入口直接订阅。这个入口把服务名过滤、身份/作用域注入和生命周期
+   * 托管合并成一个不可绕过的操作。
+   *
+   * @param {string} pluginId 订阅者（ctx 闭包注入，出错时报归属用）
+   * @param {import('./scope.mjs').EffectScope} scope
+   * @param {string} serviceName
+   * @param {(change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void} listener
+   * @param {string | symbol | null} scopeKey
+   * @returns {() => boolean}
+   */
   #watchServiceForPlugin(pluginId, scope, serviceName, listener, scopeKey) {
     if (!this.#serviceContracts.has(serviceName)) {
       throw new CordiumError(ErrorCode.UNDECLARED_SERVICE, `Service '${serviceName}' is not declared by host`);

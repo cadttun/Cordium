@@ -81,8 +81,10 @@ export class ActionRegistry {
     //   而下面 `requiredPermission || null` 又把它落成 null（= 无门）—— **一个变量传了空串，
     //   权限门就悄悄没了**。与同函数 `timeoutMs` 的口径对齐（它早已是「不写 = 缺省，写了就全校验」）：
     //   只有【不写】才是「无门」；写了就必须是【非空字符串】，再交给词表门。
-    //   ★ 这里【不另写 pattern】—— 权限名的形状由 `declarePermissions` 的 PLUGIN_ID_PATTERN 保证
-    //   （host.mjs:594），凡通过词表门的值必然已匹配；同一条规则两层各写一遍必漂（types.mjs:691）。
+    //   ★ 这里【不另写 pattern】—— 权限名的形状由 host.mjs 的 `declarePermissions` 用
+    //   `PLUGIN_ID_PATTERN` 保证，凡通过词表门的值必然已匹配；同一条规则两层各写一遍必漂
+    //   （pattern 只在 types.mjs 定义一次）。
+    //   ⚠️ 别再写 `文件:行号` 引用 —— 行号会随每次改动漂掉（这两处原引用就是这么过期的）。
     if (requiredPermission !== undefined) {
       if (typeof requiredPermission !== 'string' || requiredPermission.length === 0) {
         throw new CordiumError(ErrorCode.INVALID_ARGUMENT,

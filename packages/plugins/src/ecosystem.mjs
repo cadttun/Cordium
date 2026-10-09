@@ -6,7 +6,7 @@ import { diagnosticSink } from './diagnostic-sink.mjs';
 // ★ 已修：原先这里 `from '../../kernel/src/host.mjs'` —— 插件层【反向依赖内核的具体实现文件】，
 //   为拿一个 35 行纯函数得连带加载整个 host.mjs（1600+ 行）。
 //   现改为依赖【零依赖的中立模块】，依赖方向回到稳定侧（SDP / DIP）。
-//   现经 internal.mjs 取（它只依赖 types / semver，同样不牵 host.mjs）。
+//   现经 internal.mjs 取（它只依赖 types / semver-api / errors / host-util 等中立模块，同样不牵 host.mjs）。
 // ★★ 与两套 manifest schema 共用同一份【依赖归一化】实现（依赖方向 plugins → kernel，全仓已存在）。
 import { satisfiesSemVer, normalizeDependencyMap, CordiumError, ErrorCode, MAX_TIMER_MS, readOptions, runWithTimeout } from '@cordium/kernel/internal';
 

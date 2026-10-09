@@ -214,7 +214,7 @@ export declare const UNRESOLVED_REASON_VALUES: readonly ("cycle" | "missing" | "
  * 为什么必须有这张表：
  *   本项目有【两套】`validateManifest`（内核运行时契约 / 插件描述符契约），
  *   它们服务不同层次、**允许字段集不同**（例如内核版要 `optionalDependencies`
- *   做拓扑、插件版要 `name`/`config`），但**此前各自手写白名单** ——
+ *   做拓扑、插件版要 `name`），但**此前各自手写白名单** ——
  *   漏列一个字段就**静默丢弃**，本项目已因此踩过两次
  *   （`optionalDependencies` / `optionalProvider`），**每次都靠人肉发现**。
  *

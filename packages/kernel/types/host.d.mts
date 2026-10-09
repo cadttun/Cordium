@@ -22,7 +22,13 @@ export type PluginContext = {
      * 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
      */
     getService: (name: string) => unknown;
-    watchService: (name: string, listener: Function, options?: object) => void;
+    watchService: (name: string, listener: (change: {
+        name: string;
+        providerId: string;
+        scopeKey: string | symbol | null;
+        action: string;
+        epoch: number | null;
+    }) => void, options?: object) => void;
     watchPluginState: (listener: (change: {
         id: string;
         from: string | null;
@@ -246,7 +252,11 @@ export declare class CordiumHost {
      *   ⇒ **现有行为逐字不变**。
      */
     boot(): Promise<void>;
-    activatePlugin(pluginId: any): any;
+    /**
+     * 激活单个插件及其生命周期
+     * @param {string} pluginId
+     */
+    activatePlugin(pluginId: string): any;
     /**
      * 停用单个插件并彻底清理作用域
      * @param {string} pluginId

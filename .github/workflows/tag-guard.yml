@@ -1,0 +1,33 @@
+# 标签守卫：推送到远程的版本标签必须是**附注标签**（`git tag -a`），不是轻量标签。
+#   · 为什么：附注标签是仓库里的独立对象（带打标签者 / 日期 / 留言，可签名），轻量标签只是 commit 指针；
+#     官方口径「附注标签为发布而生，轻量标签为私有或临时的对象标签而生」，且 `git describe` 默认忽略轻量标签。
+#   · 对应 CONTRIBUTING.md「发版」条目里那条规矩 —— 本 workflow 是它的**机械防线**（「知道」与「做到」之间要有一道）。
+#   · 本地等价判据（离线可复现）：`git cat-file -t refs/tags/<tag>` 或 `git for-each-ref --format='%(objecttype)' refs/tags/<tag>`
+#     —— 附注返回 `tag`，轻量返回 `commit`。
+name: tag-guard
+on:
+  push:
+    tags: ['v*']
+# 最小权限：只读仓库元数据（读 ref 的类型需要 contents: read）。
+permissions:
+  contents: read
+jobs:
+  annotated:
+    runs-on: ubuntu-latest
+    steps:
+      # ★ 刻意不 checkout：标签类型是**远程 ref 的事实**，直接问 API 最省事，也不受 checkout 浅取标签的影响
+      #   （浅取时 `git cat-file` 对附注标签的行为会随 fetch-depth 变化 —— 用一个会随取法漂移的判据不如用一个直接的）。
+      #   API 的 `object.type`：附注标签 → `tag`，轻量标签 → `commit`（已对本仓实测 v0.4.0=tag / v0.3.0=commit）。
+      - name: 标签必须是附注标签
+        env:
+          # ★ 标签名只经环境变量进 shell，不直接拼进 run 脚本（防注入；与 release.yml 同一规矩）
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # gh 失败（网络 / 404 / 权限）即非零退出 ⇒ 步骤失败 —— fail-closed，不会静默放过
+          type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type')
+          if [ "$type" != "tag" ]; then
+            echo "::error::标签 $TAG 不是附注标签（object.type=$type）。发版一律用附注标签：git tag -a $TAG -m \"…\"，再 git push origin $TAG"
+            exit 1
+          fi
+          echo "标签 $TAG 是附注标签 ✓"

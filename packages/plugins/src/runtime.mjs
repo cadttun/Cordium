@@ -203,7 +203,7 @@ export function validatePluginManifest(input, options) {
   //    本层只负责「先严格校验、再调用共享规范化」。
   //
   //    ⚠️ **判据必须与改动前【逐字一致】**：`normalizeStringList` 与旧实现的内联表达式
-  //       完全相同（`[...new Set(x.map(String).trim().filter(Boolean))]`），
+  //       完全相同（`[...new Set(value.map(item => String(item).trim()).filter(Boolean))]`），
   //       故只比长度即可。**不得额外加 `every(item => item.trim() === item)` 之类的检查** ——
   //       那会把 `[' a ']`（旧：通过并 trim 成 `['a']`）变成抛错，
   //       属于**计划外的行为变更**（曾误加，已回退）。
