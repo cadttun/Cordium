@@ -57,6 +57,7 @@ git config --unset include.path                   # 停用
   ★ 判据是「**已发布**的契约版本」：0.x 期间**未发版**版本内的删除不升 —— 没有任何已发布的契约包含它，消费者无从迁移。
 - 两个包版本同步发布（lockstep）。
 - 发版：两个 `package.json` 的版本改好、`CHANGELOG.md` 把 `[Unreleased]` 改成版本段 → 打标签 `vX.Y.Z` 推送 → 在 GitHub 上发布 Release。`release` workflow 会校验包版本与标签一致、跑测试，再把两个 `.tgz` 与 `SHA256SUMS` 附到 Release 上。
+  ★ **一律用附注标签**（`git tag -a vX.Y.Z -m "…"`），**不用轻量标签**：附注标签是仓库里的独立对象，带打标签者 / 日期 / 留言，可签名；轻量标签只是个 commit 指针。官方口径是「**附注标签为发布而生，轻量标签为私有或临时的对象标签而生**」—— 且 `git describe` 默认**忽略轻量标签**（拿一个轻量标签的 commit 去 describe，会退回更老的附注标签），`git push --follow-tags` 也只推附注标签。
 - 删除过的接口及原因记录在 [design/removed-apis.md](design/removed-apis.md)，加回之前先读。
 
 ## 类型
