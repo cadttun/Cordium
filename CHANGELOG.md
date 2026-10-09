@@ -18,6 +18,12 @@
   ★ 新增 `HostEvents` 类型投影，并纳入 `typedef-drift` 的**运行时同集**门禁（真相源 = `Object.keys(host.events)`）；`public-surface` 的宿主 getter 清单门禁同步 +1。
   ⚠️ **不升 `KERNEL_API_VERSION`**：插件 ctx 未变（19 项逐字不变），本入口只在**宿主侧**，插件兼容性判据不受影响。
 
+- ★ **包入口的类型投影 `PluginContext` / `HostEvents`**（`@cordium/kernel`）：消费方从此能**从包入口**引用这两个类型。
+  **修的是这条死引用**：`PluginContext` 是插件作者唯一必须写对的那个类型（`activate(ctx)` 的参数），`HostEvents` 是 `host.events` 的形状 —— 但它们在 `host.mjs` 里只是 `@typedef`（**不是运行时值**）⇒ 包入口不转出 ⇒ 消费方**取不到**，只能去引用一个**已删除分叉**的类型名（实测消费方有 3 处这样的悬空引用）。
+  ★ 写法（实测 TS 7.0.2）：在 `src/index.mjs` 顶层加一行**别名 `@typedef`**，tsc 会把它**自动导出**成 `export type PluginContext = import('./host.mjs').PluginContext;` —— **不产生运行时绑定** ⇒ 对按 `Object.keys()` 取形状的公开面门禁**零影响**（类型不是值）。
+  ★ 这是「纯 JS + JSDoc + `tsc --emitDeclarationOnly`」下**唯一**可行的入口类型再导出写法（两路联网取证 + 本机实测一致）：`export { PluginContext } from './host.mjs'` 会在 **ESM 静态链接期** `SyntaxError`（typedef 没有运行时导出）；`export type { ... }` 是 TS 专有语法，而 `.mjs` 原样发布由 Node 直接解析 ⇒ 解析期 `SyntaxError`。
+  ★ 判别力两头都验：消费方写 `ctx.pluginId` 通过 / `ctx.noSuchThing` 报 `TS2339`（证明投影出的不是 `any`）。产物进版本库，由 `types-drift` 的逐字节比对钉住（改源码不重生成 ⇒ 门禁红）。
+
 ## [0.3.0] - 2026-10-07
 
 ### Added

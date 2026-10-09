@@ -41,3 +41,17 @@ export { CordiumError, ErrorCode } from './errors.mjs';
 // 可脱离宿主单独使用的两块积木
 export { MessageChannel, DispatchMode, isBailed } from './channel.mjs';
 export { EffectScope } from './scope.mjs';
+
+// ★★ 类型投影（**仅类型，无运行时绑定**）—— 供消费方在 JSDoc / TS 里引用。
+//
+// 为什么需要：`PluginContext` 是插件作者**唯一必须写对**的那个类型（`activate(ctx)` 的参数），
+//   `HostEvents` 是 `host.events` 的形状。但它们在 `host.mjs` 里只是 `@typedef`
+//   （**不是运行时值**）⇒ 包入口不转出 ⇒ 消费方**从包入口取不到**这两个类型名
+//   （实测消费方只能去引用一个**已删除分叉**的类型名，是条死引用）。
+//
+// ★ 机制（实测 TS 7.0.2）：`@typedef {import('./host.mjs').X} X` 会被 tsc **自动导出** ——
+//   产出 `export type X = import('./host.mjs').X;`，且**不产生运行时绑定**
+//   ⇒ 对按 `Object.keys()` 取形状的公开面门禁**零影响**（类型不是值）。
+// ★ 正负对照已实测：`ctx.pluginId` 通过 / `ctx.noSuchThing` 报 `TS2339`（证明不是 `any`）。
+/** @typedef {import('./host.mjs').PluginContext} PluginContext */
+/** @typedef {import('./host.mjs').HostEvents} HostEvents */

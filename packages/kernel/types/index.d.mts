@@ -13,3 +13,7 @@ export { isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs'
 export { CordiumError, ErrorCode } from './errors.mjs';
 export { MessageChannel, DispatchMode, isBailed } from './channel.mjs';
 export { EffectScope } from './scope.mjs';
+export type PluginContext = import('./host.mjs').PluginContext;
+export type HostEvents = import('./host.mjs').HostEvents;
+/** @typedef {import('./host.mjs').PluginContext} PluginContext */
+/** @typedef {import('./host.mjs').HostEvents} HostEvents */
