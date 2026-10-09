@@ -137,8 +137,16 @@ export declare class CordiumHost {
      *
      * ⚠️ 归属说明：`ctx.log` 的级别来自**插件**，但校验点在这里（宿主自己的日志入口）。
      *   宿主内部调用一律写 `ErrorCode.X` 之类的字面量，不受影响。
+     *
+     * ★ `details` 是【可选】的：宿主内部多处 `this.log('info', '…')` 只传两参（如 `:852` 的
+     *   `Plugin registered`）。此前 JSDoc 无 `@param` ⇒ 生成的 `.d.mts` 把 `details` 标成
+     *   **必需**（`details: any`）⇒ 消费方 `host.log('info', msg)` 报 `TS2554`（消费方实测）。
+     *   补 `[details]` 让产物转出 `details?: unknown`（用 `unknown` 而非 `object`：`ctx.log`
+     *   的转发 `data` 是 `unknown`，收 `object` 会让内核自身报 `TS2345`）。
+     *
+     * @param {unknown} [details] 附加诊断细节（可选；存【快照】不存引用）
      */
-    log(level: any, message: any, details: any): void;
+    log(level: any, message: any, details?: unknown): void;
     /**
      * ★★ 记录一条 Manifest 字段诊断（结构化留存 + 即时日志）。
      *
@@ -176,9 +184,12 @@ export declare class CordiumHost {
     /**
      * 登记权限名（宿主装配阶段调用，须早于注册申请这些权限的插件）。
      * 幂等；名字须与插件 id 同一字符集（小写段以 . _ - 连接）。
-     * @param {string[]} names
+     *
+     * ★ 收 `readonly string[]`（**只读**，本函数只遍历不修改）—— 此前写 `string[]` ⇒
+     *   消费方传 `Object.freeze([...])` 的权限表报 `TS4104`（消费方实测）。
+     * @param {readonly string[]} names
      */
-    declarePermissions(names: string[]): void;
+    declarePermissions(names: readonly string[]): void;
     /**
      * ★ 声明本应用用到的 UI 贡献 `type` 值集（UI 贡献 `type` 的成员校验）。
      *
