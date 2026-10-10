@@ -7,6 +7,15 @@
 破坏兼容的改动必须走 minor —— 0.x 的 patch 位会被下游的 `^0.x.0` 自动纳入，承载不了破坏性变更。
 `KERNEL_API_VERSION`（插件接口版本）独立演进，不随包版本走。
 
+小节约定：除 Added / Changed / Deprecated / Removed / Fixed / Security 外，另用两个约定段 ——
+
+- **`### Deprecated`**：已废弃但**仍可用**的接口。每条**必须写明将在哪个版本移除**
+  （依据 OpenTelemetry 成熟度模型对 Deprecated 档的要求：*"They also MUST communicate in which version they will be removed"*）。
+- **`### Migration`**：**破坏性变更**配套的迁移段，写清「改了什么 / 迁移步骤 / 判据」。
+
+两段都只在**确有**废弃 / 破坏时出现，**不预置空段**。
+（依据 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/) 对「deprecations, removals, and any breaking changes」的列举要求。）
+
 ## [Unreleased]
 
 ### Changed

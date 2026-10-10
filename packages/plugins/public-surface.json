@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "exports": {
+    "./runtime": [
+      "PLUGIN_API_VERSION",
+      "validatePluginManifest",
+      "validatePluginManifestDetailed"
+    ],
+    "./ecosystem": [
+      "callWithTimeout",
+      "normalizeDependencies",
+      "resolvePluginDependencies"
+    ],
+    "./catalog": [
+      "createPluginCatalog"
+    ],
+    "./isolation": [
+      "IsolationCode",
+      "callIsolated",
+      "configureIsolation"
+    ],
+    "./loader": [
+      "loadPlugins"
+    ],
+    "./reload": [
+      "reloadPlugin",
+      "watchPlugins"
+    ]
+  }
+}

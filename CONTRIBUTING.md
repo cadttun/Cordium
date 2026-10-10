@@ -60,6 +60,14 @@ git config --unset include.path                   # 停用
   ★ **一律用附注标签**（`git tag -a vX.Y.Z -m "…"`），**不用轻量标签**：附注标签是仓库里的独立对象，带打标签者 / 日期 / 留言，可签名；轻量标签只是个 commit 指针。官方口径是「**附注标签为发布而生，轻量标签为私有或临时的对象标签而生**」—— 且 `git describe` 默认**忽略轻量标签**（拿一个轻量标签的 commit 去 describe，会退回更老的附注标签），`git push --follow-tags` 也只推附注标签。
 - 删除过的接口及原因记录在 [design/removed-apis.md](design/removed-apis.md)，加回之前先读。
 
+### 废弃与迁移（CHANGELOG 约定）
+
+- **废弃**一个仍可用的接口时，`CHANGELOG.md` 用 `### Deprecated` 段，且**每条必须写明将在哪个版本移除**
+  （依据 OpenTelemetry 成熟度模型对 Deprecated 档的要求：*"They also MUST communicate in which version they will be removed"*）。
+- **破坏性变更**除 `### Changed` / `### Removed` 外，另配 `### Migration` 段，写清迁移步骤与判据。
+- 两段都只在**确有**废弃 / 破坏时出现，**不预置空段**
+  （依据 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/) 对「deprecations, removals, and any breaking changes」的列举要求）。
+
 ## 类型
 
 - 类型信息来自**源码里的 JSDoc**（不引入 `.ts` 源文件），`types/*.d.mts` 是 `npm run types:emit` 的**产物**。
