@@ -108,7 +108,8 @@ export class ActionRegistry {
     const existing = this.#entries.get(action);
     if (existing) {
       throw new CordiumError(ErrorCode.DUPLICATE_ACTION,
-        `Action '${action}' is already registered by plugin '${existing.ownerId}'`
+        `Action '${action}' is already registered by plugin '${existing.ownerId}'`,
+        { pluginId: ownerId }   // ★ 归因到【发起本次注册】的插件（冲突由它引起），与同文件其余错误对象口径一致
       );
     }
 
@@ -153,7 +154,7 @@ export class ActionRegistry {
 
     const entry = this.#entries.get(action);
     if (!entry) {
-      throw new CordiumError(ErrorCode.ACTION_NOT_FOUND, `Action '${action}' has no registered handler`);
+      throw new CordiumError(ErrorCode.ACTION_NOT_FOUND, `Action '${action}' has no registered handler`, { pluginId: callerPluginId });
     }
 
     // ★ `!== null` 而非真值判断：把「无门 ⇔ 恰好是 null」这条不变量写死，

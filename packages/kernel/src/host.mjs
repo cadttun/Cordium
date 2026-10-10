@@ -2061,7 +2061,8 @@ export class CordiumHost {
         //   注意 `=== null` 判断要保留：全局槽的语义就是 null，不能显示成 'null'。
         + `'${existingProvider}'${scopeKey === null ? '' : ` in scope '${String(scopeKey)}'`} — plugin `
         + `'${providerId}' cannot provide it too `
-        + `(one owner per service; use a registry service for multi-contribution)`
+        + `(one owner per service; use a registry service for multi-contribution)`,
+        { pluginId: providerId }   // ★ 归因到【发起本次注册】的提供者（冲突由它引起）
       );
     }
 

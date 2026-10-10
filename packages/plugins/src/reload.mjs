@@ -128,8 +128,9 @@ export function watchPlugins(host, entries, options) {
   }));
 
   let closed = false;
-  // 回调自己抛错不得打断监视
-  const safeCall = (fn, ...args) => { try { fn(...args); } catch { /* ignore */ } };
+  // 回调自己抛错不得打断监视 —— 但**也不静默吞**：吞异常会掩盖真问题（2026 口径：至少必须记录）。
+  //   （缺省 onError 本就是 console.error；这里补的是「onReload / onError 自己抛错」那条路径。）
+  const safeCall = (fn, ...args) => { try { fn(...args); } catch (err) { console.error(err); } };
 
   const run = async (t) => {
     if (t.running) { t.again = true; return; }

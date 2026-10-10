@@ -359,6 +359,25 @@ test('★ ctx.* 与 dispatchAction 的非法输入一律带码（此前漏网，
   coded(() => ctx.getService('service.notdeclared'), 'undeclared_service');
 });
 
+test('★ 冲突 / 未找到类错误带 pluginId 归因（与同族错误一致）', async () => {
+  const { CordiumHost } = await import('../src/index.mjs');
+  const host = new CordiumHost();
+  const caught = {};
+  host.registerPlugin({ id: 'p', version: '1.0.0', apiVersion: '1.0.0' }, {
+    activate(ctx) {
+      ctx.registerAction('a.x', { handler: () => 1 });
+      try { ctx.registerAction('a.x', { handler: () => 1 }); } catch (e) { caught.dup = e; }
+    }
+  });
+  await host.boot();
+  assert.equal(caught.dup.code, 'duplicate_action');
+  assert.equal(caught.dup.pluginId, 'p', 'duplicate_action 必须归因到发起注册的插件');
+
+  const err = await host.dispatchAction('p', 'a.nope').then(() => null, e => e);
+  assert.equal(err.code, 'action_not_found');
+  assert.equal(err.pluginId, 'p', 'action_not_found 必须归因到调用方');
+});
+
 test('★ ctx.parallel 失败 ⇒ listener_failed，插件原始错误在 cause.errors', async () => {
   const { CordiumHost } = await import('../src/index.mjs');
   const host = new CordiumHost();
