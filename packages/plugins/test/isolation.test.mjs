@@ -170,6 +170,28 @@ test('transfer 参数校验：非 ArrayBuffer / process 档 ⇒ invalid_argument
   assert.equal(b.byteLength, 1, '被拒的调用不得移交走调用方的内存');
 });
 
+test('★★ transfer 项必须在 args 里可达 ⇒ 否则带码拒绝（不在 args 里的 buffer 会被静默 detach 成数据丢失）', async () => {
+  // 复现的坑（改前）：transfer 传一个不在 args 里的 buffer ⇒ Node 照样 detach 它 ——
+  //   宿主侧 byteLength 静默变 0、worker 从未收到、**零报错**。⇒ 现在必须带码拒绝。
+  const stray = new ArrayBuffer(64);
+  await assert.rejects(callIsolated(TARGET, 'byteLen', [new ArrayBuffer(8)], { transfer: [stray] }),
+    hasCode('invalid_argument', /appear in args/));
+  assert.equal(stray.byteLength, 64, '被拒的调用不得动那块越界 buffer');
+
+  // 正向对照（规矩 42）：可达的三种形态都照常移交（不误伤）
+  const direct = new ArrayBuffer(32);
+  assert.equal(await callIsolated(TARGET, 'byteLen', [direct], { transfer: [direct] }), 32);
+  assert.equal(direct.byteLength, 0, '直接作 args[0] ⇒ 照常移交');
+
+  const viaView = new ArrayBuffer(24);
+  await callIsolated(TARGET, 'kinds', [new Uint8Array(viaView)], { transfer: [viaView] });
+  assert.equal(viaView.byteLength, 0, '作为 TypedArray 的 .buffer 可达 ⇒ 照常移交');
+
+  const nested = new ArrayBuffer(16);
+  await callIsolated(TARGET, 'kinds', [{ inner: nested }], { transfer: [nested] });
+  assert.equal(nested.byteLength, 0, '嵌在对象里可达 ⇒ 照常移交');
+});
+
 test('不可克隆的参数（process 档）⇒ invalid_argument，且不留挂起的子进程', async () => {
   await assert.rejects(callIsolated(TARGET, 'add', [() => 1], { mode: 'process' }), hasCode('invalid_argument', /cloneable/));
 });
@@ -232,13 +254,16 @@ test('configureIsolation：只读 / 局部修改 / 校验；调大并发立刻�
   }
   assert.deepEqual(configureIsolation(), now, '校验失败不改任何值');
   await withLimits({ maxConcurrent: 1 }, async () => {
-    const a = callIsolated(TARGET, 'sleep', [300]);
-    const b = callIsolated(TARGET, 'sleep', [300]);
+    // ★★ 判据【不看墙钟】—— 此前是 `Date.now() - t0 < 550`（违反本仓规矩 79：跨环境的墙钟阈值不是判据）。
+    //   改成**同机相对顺序**：`a` 睡 500、`b` 睡 100 ⇒ 若 b 真被放行并与 a 并发，b 会**先于 a 完成**；
+    //   若 b 只是排队等 a（并发闸没被调大生效），b 会**后于 a 完成**。⇒ 断言「b 结算时 a 尚未结算」。
+    let aDone = false;
+    const a = callIsolated(TARGET, 'sleep', [500]).then(() => { aDone = true; });
+    const b = callIsolated(TARGET, 'sleep', [100]);
     await new Promise(r => setTimeout(r, 50));
-    const t0 = Date.now();
     configureIsolation({ maxConcurrent: 2 });
     await b;
-    assert.ok(Date.now() - t0 < 550, 'b 不必等 a 跑完');
+    assert.equal(aDone, false, 'b 被放行后与 a 并发（b 先完成）—— 不必等 a 跑完');
     await a;
   });
 });
@@ -323,9 +348,12 @@ test('★ worker：异步里未捕获地抛 undefined / null / symbol / 数字 �
 test('★ 选项 / pluginId / 模块 URL 的怪值 ⇒ 入口处带码拒绝（此前或漏裸错误，或在回调里打崩宿主）', async () => {
   await assert.rejects(callIsolated(TARGET, 'add', [], { get mode() { throw new Error('g'); } }), hasCode('invalid_argument', /options/));
   await assert.rejects(callIsolated(TARGET, 'boom', [], { pluginId: { toString() { throw new Error('ts'); } } }), hasCode('invalid_argument', /pluginId/));
-  if (process.platform === 'win32') {
-    await assert.rejects(callIsolated('file:///no-drive/x.mjs', 'default', [], { mode: 'process' }), hasCode('invalid_argument', /local file/));
-  }
+  // ★ 判据：`process` 档下，一个【不是可用本地路径】的 file: URL ⇒ 入口带码拒绝（/local file/）。
+  //   此前整条断言套在 `if (process.platform === 'win32')` 里 ⇒ POSIX CI 上**静默不执行**。
+  //   改为按平台取【各自**真的**非法】的输入 —— 两平台都真的跑这条断言（不是 skip）：
+  //   Windows：无盘符 URL 不是合法本地路径；POSIX：带主机名 URL 的 host 必须为空或 localhost。
+  const notLocal = process.platform === 'win32' ? 'file:///no-drive/x.mjs' : 'file://host/x.mjs';
+  await assert.rejects(callIsolated(notLocal, 'default', [], { mode: 'process' }), hasCode('invalid_argument', /local file/));
 });
 
 // ★ 兜底定位：隔离端的原始栈跨线程 / 进程带回，报文附插件位置

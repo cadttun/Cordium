@@ -22,22 +22,34 @@ export type PluginContext = {
      * 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
      */
     getService: (name: string) => unknown;
+    /**
+     * 返回退订函数
+     */
     watchService: (name: string, listener: (change: {
         name: string;
         providerId: string;
         scopeKey: string | symbol | null;
         action: string;
         epoch: number | null;
-    }) => void) => void;
+    }) => void) => (() => boolean);
+    /**
+     * 返回退订函数
+     */
     watchPluginState: (listener: (change: {
         id: string;
         from: string | null;
         to: string | null;
-    }) => void) => void;
+    }) => void) => (() => boolean);
     scoped: (label: string) => PluginContext;
     privateScope: () => PluginContext;
-    on: (name: string, listener: (...args: any[]) => any, options?: object) => void;
-    once: (name: string, listener: (...args: any[]) => any, options?: object) => void;
+    /**
+     * 返回退订函数
+     */
+    on: (name: string, listener: (...args: any[]) => any, options?: object) => (() => boolean);
+    /**
+     * 返回退订函数
+     */
+    once: (name: string, listener: (...args: any[]) => any, options?: object) => (() => boolean);
     emit: (name: string, ...args: unknown[]) => void;
     parallel: (name: string, ...args: unknown[]) => Promise<unknown>;
     serial: (name: string, ...args: unknown[]) => Promise<unknown>;

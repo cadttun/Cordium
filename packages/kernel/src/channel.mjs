@@ -68,6 +68,24 @@ function listenerFailed(mode, name, err, owner) {
     { cause: err, pluginId: owner });
 }
 
+/**
+ * 事件名门（`subscribe` 与四个分发模式共用）：非空字符串或 symbol。
+ *
+ * ★ 为什么要集中一处：`subscribe` 早有这道门，而 `emit` / `parallel` / `serial` / `waterfall`
+ *   （以及 `ctx.emit` 系列）此前**都没有** —— 非字符串非 symbol 的名字（`42` / `{}` / `null` / `''`）
+ *   被当成 Map 键**静默无匹配**（零监听器命中、零报错），与「拼错值静默失效」同形；
+ *   而订阅侧同一个坏名会当场带码拒绝 ⇒ 两侧口径必须一致。
+ *   判据在**私有分发方法**上落一次 ⇒ 公开方法（`emit` 等）与宿主派发入口（`dispatch`）一并覆盖。
+ * ★ 措辞与 `subscribe` 既有报文逐字一致（下游按报文断言）。
+ * @param {string} method 入口名（仅用于报文）
+ * @param {unknown} name
+ */
+function assertEventName(method, name) {
+  if (!((typeof name === 'string' && name) || typeof name === 'symbol')) {
+    throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `MessageChannel.${method} requires a non-empty string (or symbol) event name`);
+  }
+}
+
 /** 分发模式（导出供诊断与测试使用） */
 export const DispatchMode = Object.freeze({
   EMIT: 'emit',
@@ -146,9 +164,7 @@ export class MessageChannel {
     //   本仓口径是「null 视同不传」（见 readOptions / 各公开入口），这里对齐。
     options = options ?? {};
     // ★ 也接受 symbol —— 宿主的服务变更通知用模块私有 symbol，插件拿不到就发不出、订不到。
-    if (!((typeof name === 'string' && name) || typeof name === 'symbol')) {
-      throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'MessageChannel.subscribe requires a non-empty string (or symbol) event name');
-    }
+    assertEventName('subscribe', name);
     if (typeof listener !== 'function') {
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `MessageChannel.subscribe('${String(name)}') requires a function listener`);
     }
@@ -365,6 +381,7 @@ export class MessageChannel {
    *   错误会被收集并通过 `onListenerError` 上报（宿主接审计日志）。
    */
   #emit(name, scopeKey, args) {
+    assertEventName('emit', name);
     for (const record of this.#snapshot(name, scopeKey)) {
       this.#invokeDetached(name, record, args);
     }
@@ -401,6 +418,7 @@ export class MessageChannel {
   }
 
   async #parallel(name, scopeKey, args) {
+    assertEventName('parallel', name);
     const results = await Promise.allSettled(
       this.#snapshot(name, scopeKey).map(({ listener }) => Promise.resolve().then(() => listener(...args)))
     );
@@ -424,6 +442,7 @@ export class MessageChannel {
   }
 
   async #serial(name, scopeKey, args) {
+    assertEventName('serial', name);
     for (const { listener, owner } of this.#snapshot(name, scopeKey)) {
       let result;
       try {
@@ -480,6 +499,7 @@ export class MessageChannel {
   }
 
   #waterfall(name, scopeKey, args) {
+    assertEventName('waterfall', name);
     // ★ 注意：不能就地改 args（它可能是调用方传来的同一个数组引用），先拷一份。
     const rest = [...args];
     const inner = rest.pop();

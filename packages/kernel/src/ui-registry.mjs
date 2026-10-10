@@ -8,6 +8,7 @@
  */
 
 import { CordiumError, ErrorCode } from './errors.mjs';
+import { assertScopeLive } from './host-util.mjs';
 
 /**
  * @typedef {object} UIRegistryQueries
@@ -37,17 +38,27 @@ export class UIRegistry {
     // ★ 生命周期门禁：与 registerService / registerAction 同一口径。
     //   已释放的 scope 上登记 UI 会静默成功，而 unregister 再也不会被调用
     //   （dispose 早就跑完了）⇒ 贡献列表里永久多一条筛不掉的项。
-    if (scope && !scope.active) {
-      throw new CordiumError(ErrorCode.SCOPE_DISPOSED,
-        `UI contribution cannot be registered by plugin '${ownerId}': `
-        + `its scope is already disposed (a disposed plugin must not register anything)`
-      );
-    }
+    assertScopeLive(scope,
+      `UI contribution cannot be registered by plugin '${ownerId}': `
+      + `its scope is already disposed (a disposed plugin must not register anything)`);
 
-    const item = typeof contribution === 'string'
+    const shorthand = typeof contribution === 'string';
+    const item = shorthand
       ? { id: contribution, type: 'custom', ownerId }
       : { ...contribution, ownerId };
     if (!item.id) throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'UI contribution must have an id');
+
+    // ★ 字符串速记硬编码 `type:'custom'`。若装配方登记了类型值集且**不含** 'custom'，
+    //   下面那道类型门会以 `unknown type "custom"` 报错 —— 而调用方**从没写过 'custom'**，
+    //   报文指不到真因。⇒ 对【速记】这条路径先给一句能指路的错（值集为空时仍不校验，旧行为不变）。
+    //   ⚠️ 抛出与否与改前一致（改前也经类型门抛），只是报文更准 ⇒ 非行为变更。
+    if (shorthand && this.#q.isKnownType && this.#q.knownTypes().length > 0 && !this.#q.isKnownType('custom')) {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+        `UI contribution '${item.id}' by plugin '${ownerId}': the string shorthand implies type 'custom', `
+        + `which the host has not declared (declared: ${this.#q.knownTypes().join(', ')}); `
+        + `pass a full contribution object with a declared type instead`
+      );
+    }
 
     // ★ type 成员校验（写表之前）—— 同 `kind` / `access` / `log.level` 的口径。
     //
@@ -97,12 +108,15 @@ export class UIRegistry {
   /**
    * 列出贡献项的副本（按 type 过滤）
    *
-   * @param {string} [type] 可选。按 `type` **精确相等**过滤；**省略 ⇒ 返回全部**。
+   * @param {string} [type] 可选。按 `type` **精确相等**过滤；**省略 / `null` ⇒ 返回全部**。
    * @returns {any[]} 贡献项的副本（逐条浅拷贝）
    */
   list(type) {
     // ★ 交副本：此前交出内部条目本身，外部改 ownerId 即可让属主的 disposer 删不掉它（幽灵贡献）。
     const all = Array.from(this.#items.values(), c => ({ ...c }));
-    return type ? all.filter(c => c.type === type) : all;
+    // ★ 判据用 `== null`（undefined / null）而非真值 —— 此前 `type ? … : all` 让**空串** `''`
+    //   也落进「返回全部」那一支（'' 是假值）⇒ `getUIContributions('')` 返回全部而非空集，
+    //   与「按 type 精确相等过滤」的承诺相反。
+    return type === undefined || type === null ? all : all.filter(c => c.type === type);
   }
 }

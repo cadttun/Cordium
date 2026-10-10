@@ -39,7 +39,7 @@ export declare class UIRegistry {
     /**
      * 列出贡献项的副本（按 type 过滤）
      *
-     * @param {string} [type] 可选。按 `type` **精确相等**过滤；**省略 ⇒ 返回全部**。
+     * @param {string} [type] 可选。按 `type` **精确相等**过滤；**省略 / `null` ⇒ 返回全部**。
      * @returns {any[]} 贡献项的副本（逐条浅拷贝）
      */
     list(type?: string): any[];

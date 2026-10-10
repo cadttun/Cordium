@@ -70,7 +70,7 @@ function existingItems(existingRegistry) {
   return allMap;
 }
 
-/** 候选与已注册的同 id 插件必须是同一份：版本、apiVersion、权限集合都一致 */
+/** 候选与已注册的同 id 插件必须是同一份：版本、apiVersion、权限集合、提供的能力集合都一致 */
 function assertSameAsExisting(existing, validated) {
   if (existing.manifest.version !== validated.version) {
     throw new CordiumError(ErrorCode.VERSION_CONFLICT,
@@ -78,14 +78,17 @@ function assertSameAsExisting(existing, validated) {
       { pluginId: validated.id }
     );
   }
-  // ★ 权限是集合语义：比较前排序（此前 ['y','x'] 与 ['x','y'] 被判为实现冲突）
+  // ★ 权限与 provides 都是集合语义：比较前排序（此前 ['y','x'] 与 ['x','y'] 被判为实现冲突）
   const perms = m => JSON.stringify([...(m.permissions || [])].sort());
+  const providesOf = m => JSON.stringify([...(m.provides || [])].sort());
   // ★ 此处曾比较 implementationId —— validatePluginManifest 的白名单不保留该字段，
   //   validated.implementationId 恒为 undefined ⇒ 那一支永远不成立（死代码），已删。
   //   需要按实现来源区分时，先把字段加进插件层 schema（MANIFEST_FIELD_TABLE.plugin）再恢复比较。
-  if (existing.manifest.apiVersion !== validated.apiVersion || perms(existing.manifest) !== perms(validated)) {
+  if (existing.manifest.apiVersion !== validated.apiVersion
+      || perms(existing.manifest) !== perms(validated)
+      || providesOf(existing.manifest) !== providesOf(validated)) {
     throw new CordiumError(ErrorCode.IMPLEMENTATION_CONFLICT,
-      `Plugin '${validated.id}' implementation conflict: candidate descriptor differs in apiVersion or permissions`,
+      `Plugin '${validated.id}' implementation conflict: candidate descriptor differs in apiVersion, permissions or provides`,
       { pluginId: validated.id }
     );
   }

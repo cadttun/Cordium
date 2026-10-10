@@ -110,14 +110,15 @@ class ManifestIssues {
  * 版本格式判定。★ 内核 `isValidSemVer` 是**唯一**判定（与内核层 validateManifest 同一实现）——
  * 它比本层原先的正则更严：前导零 / 数字段越界 / 串长 > 256 一并挡住，
  * 这类版本进了 catalog 后 compareSemVer 每次都抛 TypeError，条目无法再升级（实测）。
- * 返回 null 表示非法（由调用方决定是抛还是记入诊断）。
+ * 非法返回 null（由调用方决定是抛还是记入诊断），合法返回 true —— 调用方只判 `!== null`，
+ * 不消费具体值（此前合法时返回拆解出的数字数组，但所有调用点都不读它，是死值）。
  */
-function parseVersionBase(value, field, label, issues) {
+function isValidVersionField(value, field, label, issues) {
   if (!isValidSemVer(value)) {
     issues?.add(field, `${label} must use semver x.y.z`);
     return null;
   }
-  return value.split('-')[0].split('.').map(Number);
+  return true;
 }
 
 // 版本比较：全仓唯一实现是 `kernel/src/semver.mjs` 的 `compareSemVer()`（catalog 已改用它），
@@ -171,7 +172,7 @@ export function validatePluginManifest(input, options) {
 
   // 版本判定：**各自独立**收集 —— 这样 version 与 apiVersion 的问题能同时报出，
   // 而不是「先修一个再跑一遍才知道下一个」。
-  if (typeof m.version === 'string') parseVersionBase(m.version, 'version', 'plugin version', issues);
+  if (typeof m.version === 'string') isValidVersionField(m.version, 'version', 'plugin version', issues);
   // ★★ 语义与内核层【同一份实现】：`apiVersion` = 「**至少需要**哪个 API 版本」。
   //   ⚠️ 此前本层只比 major，与内核同款漏检（`'1.99.0'` 在内核 1.0.0 上静默放行）。
   //   两层必须同一判定，否则「内核拒、描述符层放行」（或反过来）会按读哪一层给出不同结论。
@@ -179,9 +180,9 @@ export function validatePluginManifest(input, options) {
   //     原先两层各写一遍，靠测试比对兜住；共用之后这条不变量是**结构上**成立的。
   //   ★ 向后兼容：现有 manifest 写 `'1.0.0'` 照旧放行，零迁移。
   const requiredApi = (typeof m.apiVersion === 'string' ? m.apiVersion : apiVersion);
-  if (parseVersionBase(requiredApi, 'apiVersion', 'plugin apiVersion', issues) !== null && issues.ok('apiVersion')) {
+  if (isValidVersionField(requiredApi, 'apiVersion', 'plugin apiVersion', issues) !== null && issues.ok('apiVersion')) {
     // 先单独验 host 侧格式（它不该出错，但出错要能看见）
-    if (parseVersionBase(apiVersion, 'host apiVersion', 'host apiVersion', issues) !== null
+    if (isValidVersionField(apiVersion, 'host apiVersion', 'host apiVersion', issues) !== null
         && !isApiVersionCompatible(apiVersion, requiredApi)) {
       issues.add('apiVersion', 'plugin api version is incompatible');
     }

@@ -13,12 +13,29 @@
 
 - ★ **`loadPlugins` 回滚不完整的错误码由 `invalid_argument` 改为 `plugin_load_failed`**（`@cordium/plugins`）：回滚失败是**内部状态**失败（宿主可能留半装状态），不是参数错 —— 原码会被调用方读成「输入错、改改重试」，而真相是**必须中止**。★ 同时把**原始注册失败**挂到该错误的 `cause`（此前 `unregisterAll` 一抛，原始错误被**顶掉**，调用方永远看不到「为什么注册失败」）。★ 这是**改码值**（消费方若按 `invalid_argument` 分支会受影响）⇒ 按本文件口径属**破坏兼容**，走 **minor**。
 - **`ctx.watchService` / `ctx.watchPluginState` 不再写一个永不生效的 `scopeLabel`**（`@cordium/kernel`）：这两个是**观察面**入口，事件经 `channel.broadcast` 发（不看标签）⇒ 订阅**刻意跨作用域**（同 OSGi `EventAdmin` 模型）。此前把调用方作用域写进订阅记录，**读代码的人会误以为它在过滤** ⇒ 改传 `null` 如实表达。**行为零变化**（标签从不参与派发）；作用域仍经 `scope` 形参决定**退订托管**。
+- ★ **执行隔离的 `transfer` 项必须在 `args` 里可达**（`@cordium/plugins`）：不在 `args` 里的 `ArrayBuffer` 会被 Node **静默 detach**（官方逐字：transferring 后「not usable on the sending side … **even if they are not contained in `value`**」）—— 调用方手里那块内存被清空、worker 又从未收到 ⇒ **零报错的数据丢失**（实测：不相关的 buffer 传进 `transfer`，宿主侧 `byteLength` 静默变 0）。现入口校验（可达 = 出现在 args 里，含数组 / 对象 / Map / Set 内，或作为 TypedArray / DataView 的 `.buffer`），越界即带码拒绝。**行为变更**（原本静默 detach 的用法改为报错）。
+- ★ **`host.getService` 的第二参（`callerPluginId`）补类型门**（`@cordium/kernel`）：truthy 非字符串（Symbol / 对象 / 数字）此前直落报文模板字面量 ⇒ **裸 TypeError（无码）**；现带码拒绝。falsy 仍走 `identity_required`（语义不变）。
+- ★ **`host.deactivatePlugin` 未知 id ⇒ 抛 `plugin_not_found`**（`@cordium/kernel`）：此前**静默返回 `undefined`**，与 `activatePlugin` / `unregisterPlugin` 口径不一致 ⇒ 拼错的 id 会「看起来停用成功」。**行为变更**（原本静默的未知 id 改为抛错）。
+- **`declareServiceContract` 的 `optionalProvider` 补校验**（`@cordium/kernel`）：非字符串或非 plugin id 此前**静默落表** ⇒ 取服务时永远「未安装」，看不出 id 写错。现带码拒绝（`invalid_contract`）。
+- **事件名补类型门（`channel.emit` / `parallel` / `serial` / `waterfall` 与 `ctx.emit` 系列）**（`@cordium/kernel`）：非字符串非 symbol 的名字（`42` / `{}` / `null` / `''`）此前**静默无匹配**（零监听器命中、零报错）；订阅侧同一个坏名早已带码拒绝 ⇒ 两侧口径统一。symbol 仍是**合法**事件名（与订阅侧一致）。
+- **UI 字符串速记的报错点名真因**（`@cordium/kernel`）：`ctx.registerUIContribution('id')` 的速记硬编码 `type:'custom'`，若装配方登记的类型集不含 `custom`，此前报 `unknown type "custom"` —— 而调用方从没写过 `custom`。现报错点名「字符串速记」。**抛出与否不变**（仍拒绝），仅报文更准。
+- **`assertSameAsExisting` 补 `provides` 比较**（`@cordium/plugins`）：同一 id 的候选与已装插件此前只比 version / apiVersion / permissions ⇒ 提供不同 `provides` 的候选也能通过「必须同一份」的断言。现纳入实现冲突判定。
+- **`replacePlugin` 换代码后作废旧失败结论**（`@cordium/kernel`）：替换一个 `failed` 插件后，此前 `state` 仍 `failed`、`error` 仍是**上一版**那条 ⇒ 窗口期诊断把旧错归到新版本头上。现清 `error`，且原态为 `failed` 时退回「尚未尝试」（lazy 退回 `ready`）。
+- **`host.getUIContributions('')` ⇒ 空集**（`@cordium/kernel`）：此前 `list('')` 因空串是假值落进「返回全部」分支，与「按 type 精确相等过滤」的承诺相反。省略 / `null` ⇒ 全部（不变）。
+- **`declareUIContributionTypes` 拒绝首尾带空白的类型名**（`@cordium/kernel`）：此前只校验 `trim()` 非空却把**原值**入表 ⇒ 带空白的值能焊死整个类型门。口径同 `normalizeContractMethods`（精确匹配的键，不静默 trim）。
+- **隔离环境的启动失败按真因归码**（`@cordium/plugins`）：`Worker` 构造 / `child.send` 的**任何**同步抛此前一律报「args must be structured-cloneable」（把 transfer 写错等引向错误排查方向）。现只有**确实是克隆失败**（`DataCloneError` 或「could not be cloned」报文）才报该码，其余报 `isolated_call_failed` 并挂真错。
+- **`PluginContext` 的订阅入口返回类型订正为退订函数**（`@cordium/kernel`）：`on` / `once` / `watchService` / `watchPluginState` 的 typedef 此前标 `=> void`，而运行时返回退订函数（`() => boolean`）⇒ 污染生成的 `.d.mts`。现对齐（纯类型面，`.d.mts` 已重生成）。
 
 ### Fixed
 
 - ★ **服务句柄的【访问器属性】此前绕过生命周期门**（`@cordium/kernel`）：句柄 Proxy 的 `get` 陷阱只包**函数值**，而读访问器属性会**直接执行提供者的 getter**（返回常非函数）⇒ 原样返回、**不过门**；`getOwnPropertyDescriptor` 陷阱同样不包 `get` ⇒ `desc.get.call(handle)` 是**裸 getter**。实测：provider 停用后 `handle.acc` 与 `Object.getOwnPropertyDescriptor(handle,'acc').get.call(handle)` 都照跑。★ 读访问器 = 执行提供者的**代码**，与「方法调用」同档 ⇒ 现两条路都过门（`get` 陷阱读前判访问器；描述符的 `get` / `set` 包一层）。**数据属性不受影响**（惰性值，读它不执行任何提供者代码）⇒ 本仓常态（普通对象字面量）行为逐字不变。
 - ★ **`recordManifestDiagnostic` 的 `severity` 非法值降级为 `warn`**（`@cordium/kernel`）：此前不校验，非法值会让下游 `log` 抛 `invalid_argument`，而那时条目**已入快照** ⇒ **既记了又抛**（半成品状态）。口径同 `onListenerOverflow` / `onScopeConflict`：**诊断只上报，绝不抛**。仅在传入非法 `severity` 时改变行为（合法值原样保留）。
 - ★ **`host.getUIContributions(type)` 的 `type` 参数由「必需」改「可选」**（`@cordium/kernel`）：实现一直把 `type` 当**可选**（不传 ⇒ 返回全部），但公开类型把它标成**必需** —— 因为该方法此前**没有 JSDoc**，`tsc --emitDeclarationOnly` 把参数推成 `any`（必需）⇒ 消费方在类型层面**无法省略** `type`，只能靠断言绕过。现补齐 JSDoc（`@param {string} [type]`），使声明与实现对齐；返回类型仍为 `any[]`（不变）。`UIRegistry.list(type)` 同款修正，保持两者一致。**行为零变化**，纯类型声明订正。
+- ★ **`getDiagnostics` 的依赖图由「每插件重建一遍」改为「整快照建一次」**（`@cordium/kernel`）：此前 `#unresolvedDependencies` 对每个插件各建一次整图 + 各算一遍可达 ⇒ 快照整体 O(P²)（P = 插件数）。图是纯查询、与遍历顺序无关 ⇒ 提到循环外复用。零行为变化。
+- **登记口的生命周期门禁抽成单点 `assertScopeLive`**（`@cordium/kernel`）：`scope && !scope.active` 这条判定此前以同一形状复制在 3 处（`registerAction` / UI 贡献 / `registerService`）⇒ 收敛为一处（报文仍由各调用点给）。零行为变化。
+- **`loader.mjs` 的回滚顺序由递归 DFS 改迭代**（`@cordium/plugins`）：深依赖链此前会栈溢出且顶掉原始错误（`ecosystem.mjs` 的同形早已改迭代）。输出顺序逐字不变。
+- **清理两处死代码**：`gatedAccessor` 未用的 `prop` 形参（`@cordium/kernel` 服务句柄）· `parseVersionBase` 无人消费的解析数组（`@cordium/plugins`，改名 `isValidVersionField` 返回布尔）。零行为变化。
+- **测试：`isolation.test.mjs` 的绝对墙钟判据改为同机相对顺序**（`@cordium/plugins`）：`Date.now()-t0 < 550` 违反本仓自立的「跨环境墙钟阈值不是判据」；另把一处 `process.platform === 'win32'` 的**静默平台条件断言**改为两平台各取真非法输入（都真的跑，不 skip）。
 
 ## [0.4.0] - 2026-10-09
 

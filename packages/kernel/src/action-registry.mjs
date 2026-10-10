@@ -10,7 +10,7 @@
  */
 
 import { CordiumError, ErrorCode } from './errors.mjs';
-import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause, describeValue } from './host-util.mjs';
+import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause, describeValue, assertScopeLive } from './host-util.mjs';
 
 /**
  * @typedef {object} ActionRegistryQueries
@@ -76,12 +76,9 @@ export class ActionRegistry {
     //   于是 actionHandlers 里留下一条没有任何 disposer 能删除的永久 handler。
     //   而 dispatchAction 只校验调用方状态、不校验 handler 属主状态 ⇒ 任何 ACTIVE 插件
     //   都能永久触发一个已停用插件留下的 handler。
-    if (scope && !scope.active) {
-      throw new CordiumError(ErrorCode.SCOPE_DISPOSED,
-        `Action '${action}' cannot be registered by plugin '${ownerId}': `
-        + `its scope is already disposed (a disposed plugin must not register anything)`
-      );
-    }
+    assertScopeLive(scope,
+      `Action '${action}' cannot be registered by plugin '${ownerId}': `
+      + `its scope is already disposed (a disposed plugin must not register anything)`);
 
     // ★ 此前是【假值 fail-open】：`if (requiredPermission)` 让 '' / 0 / false 直接跳过声明校验，
     //   而下面 `requiredPermission || null` 又把它落成 null（= 无门）—— **一个变量传了空串，

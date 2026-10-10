@@ -78,15 +78,27 @@ function rollbackOrder(loaded) {
   const byId = new Map(loaded.map((l) => [l.plugin.manifest.id, l]));
   const out = [];
   const seen = new Set();
-  const visit = (id) => {
-    if (seen.has(id)) return;
+  // ★ 迭代 DFS（此前递归，深依赖链会栈溢出）。与 ecosystem.mjs 的 topologicalOrder 同一形状：
+  //   enter 压帧、leave 出帧；后序（先访问依赖、再收自己）⇒ 撤销时从末尾取，依赖方先撤。
+  const enter = (id, stack) => {
     seen.add(id);
-    const item = byId.get(id);
-    if (!item) return;
-    for (const depId of Object.keys(item.plugin.manifest.dependencies || {})) visit(depId);
-    out.push(id);              // 被依赖的先入列 ⇒ 撤销时从末尾取，依赖方先撤
+    stack.push({ id, deps: Object.keys(byId.get(id).plugin.manifest.dependencies || {}), next: 0 });
   };
-  for (const l of loaded) visit(l.plugin.manifest.id);
+  const leave = (frame) => out.push(frame.id);
+  for (const l of loaded) {
+    const rootId = l.plugin.manifest.id;
+    if (seen.has(rootId)) continue;
+    const stack = [];
+    enter(rootId, stack);
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      if (frame.next >= frame.deps.length) { leave(stack.pop()); continue; }
+      const depId = frame.deps[frame.next++];
+      if (seen.has(depId)) continue;
+      if (!byId.has(depId)) { seen.add(depId); continue; }   // 依赖不在本批 ⇒ 与递归版一致：标记后跳过
+      enter(depId, stack);
+    }
+  }
   return out.reverse();
 }
 

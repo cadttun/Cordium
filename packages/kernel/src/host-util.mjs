@@ -44,6 +44,22 @@ export function describeError(err) {
 }
 
 /**
+ * 生命周期门禁的**单点实现**：`scope` 存在且已释放 ⇒ 抛 `scope_disposed`。
+ *
+ * ★ 为什么抽出来：`scope && !scope.active` 这条判定此前以**同一形状复制在 3 处**
+ *   （`action-registry.mjs` / `ui-registry.mjs` / `host.mjs` 的 registerService）——
+ *   「已释放的 scope 上不得再登记任何东西」是**同一条知识**（DRY 管的是知识，不是文本）。
+ *   `EffectScope` 自己另有一处 `#assertActive`（读私有 `#active`），是这条知识的**定义侧**。
+ * ★ 各调用点的**报文不同**（动作 / UI / 服务各自点名）⇒ 只收敛**判定**，报文由调用方传入。
+ *
+ * @param {import('./scope.mjs').EffectScope | null | undefined} scope
+ * @param {string} message 已组装好的报文（各调用点各自的措辞）
+ */
+export function assertScopeLive(scope, message) {
+  if (scope && !scope.active) throw new CordiumError(ErrorCode.SCOPE_DISPOSED, message);
+}
+
+/**
  * 栈里第一条「不是内核 / 不是 Node 内部」的帧 —— 即出错的**插件代码位置**（`file:line:col`）。
  * 找不到（抛的是字符串 / 栈全在内核里）⇒ null。
  * ★ 按【文件路径】排除内核帧，不按函数名：插件里也可以有叫 dispatch 的函数。

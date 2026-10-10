@@ -60,6 +60,40 @@ import { payloadBytes } from './payload.mjs';
 const RUNNER = fileURLToPath(new URL('./isolation-runner.mjs', import.meta.url));
 const MODES = ['worker', 'process'];
 
+/**
+ * `args` 里**可达**的 ArrayBuffer 集合 —— `transfer` 项的合法性判据。
+ *
+ * ★ 为什么需要：Node 的 `transferList` 对**不在 `value` 里**的对象**照样 detach**（官方逐字：
+ *   transferring 后「not usable on the sending side … **even if they are not contained in `value`**」）
+ *   ⇒ 传一个不在 args 里的 buffer 会**静默清空调用方内存**、worker 又从未收到 ⇒ 零报错的数据丢失。
+ *   本仓口径：越界输入必须响亮 ⇒ 判据是「每个 transfer 项都能在 args 里找到」。
+ *
+ * 走结构化克隆同款的容器：数组 / 普通对象（自有可枚举值）/ Map（键与值）/ Set；
+ * 遇 `ArrayBuffer` 记它自己，遇 TypedArray / DataView 取 `.buffer`。防环 + 有界（同 payloadBytes 的考虑）。
+ *
+ * @param {unknown} args
+ * @returns {Set<ArrayBuffer>}
+ */
+function reachableBuffers(args) {
+  const out = new Set();
+  const seen = new Set();
+  const stack = [args];
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (v === null || typeof v !== 'object') continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    if (v instanceof ArrayBuffer) { out.add(v); continue; }
+    if (ArrayBuffer.isView(v)) { out.add(v.buffer); continue; }
+    if (v instanceof Map) { for (const [k, val] of v) stack.push(k, val); continue; }
+    if (v instanceof Set) { for (const val of v) stack.push(val); continue; }
+    if (Array.isArray(v)) { for (const item of v) stack.push(item); continue; }
+    // 普通对象：只看自有可枚举值（与结构化克隆一致）；怪对象（抛错的 getter / Proxy）跳过
+    try { for (const key of Object.keys(v)) stack.push(v[key]); } catch { /* 跳过不可读对象 */ }
+  }
+  return out;
+}
+
 // ════════════════ 并发与内存闸 ════════════════
 /**
  * ★ 为什么要这些闸：
@@ -169,8 +203,8 @@ const PERMISSION_FLAG = '--permission';
  * @param {readonly string[]} [options.allowFsWrite=[]] 仅 `process`：可写路径
  * @param {number} [options.maxMemoryMb=1024] 隔离环境的 JS 堆上限（MB）；超了只终止这个环境 ⇒ isolated_call_failed。
  *   ⚠️ ArrayBuffer / Buffer 的数据不在 JS 堆里，不受此限（Node 的限制，实测）。
- * @param {readonly ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（须出现在 args 里）。
- *   移交后调用方手里的那块内存被清空（byteLength 变 0）—— 这是零拷贝的代价，调用后别再用它。
+ * @param {readonly ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（**必须**出现在 args 里）。
+ *   不在 args 里的 buffer 会被静默 detach 成数据丢失 ⇒ 带码拒绝。移交后调用方手里那块内存被清空（byteLength 变 0）—— 这是零拷贝的代价，调用后别再用它。
  * @returns {Promise<any>}
  * @throws {CordiumError} `isolation_busy`：排队已满或在途字节超限（见 configureIsolation）—— 未起任何环境，可重试
  */
@@ -203,6 +237,20 @@ export async function callIsolated(module, exportName = 'default', args = [], op
   if (transfer.length > 0 && mode !== 'worker') {
     throw new CordiumError(ErrorCode.INVALID_ARGUMENT, "callIsolated: transfer is only supported in 'worker' mode (process IPC always copies)", { pluginId });
   }
+  // ★★ 每个 transfer 项必须【在 args 里可达】—— 否则 Node 会把它当「不在 value 里的可移交对象」
+  //   **静默 detach**（官方逐字：transferList 项「after transferring … not usable on the sending side
+  //   … even if they are not contained in value」），调用方手里的那块内存被清空、worker 又从未收到
+  //   ⇒ **零报错的数据丢失**（实测：不相关的 buffer 传进 transfer，宿主侧 byteLength 静默变 0）。
+  //   本仓口径：越界 / 拼错的输入必须响亮。可达 = 出现在 args 里（含数组 / 对象 / Map / Set 内，
+  //   或作为 TypedArray / DataView 的 .buffer）。只在真的传了 transfer 时才遍历（零 transfer 零开销）。
+  if (transfer.length > 0) {
+    const reachable = reachableBuffers(args);
+    if (transfer.some(b => !reachable.has(b))) {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+        'callIsolated: every transfer entry must appear in args — an ArrayBuffer not reachable from args '
+        + 'would be detached without ever reaching the worker (silent data loss)', { pluginId });
+    }
+  }
   if (!Number.isSafeInteger(maxMemoryMb) || maxMemoryMb < 16) {
     throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `callIsolated: maxMemoryMb must be an integer >= 16, got ${String(maxMemoryMb)}`, { pluginId });
   }
@@ -223,13 +271,21 @@ export async function callIsolated(module, exportName = 'default', args = [], op
   const request = { href, exportName, args, nonce };
   // ★ 不在本进程预先 structuredClone(args) 验可克隆：那等于把大参数多复制一整遍（200MB 实测多花 ~65ms、峰值多一份内存）。
   //   Worker 构造 / child.send 遇到不可克隆的值会【同步】抛（实测）⇒ 在那里转成 invalid_argument，效果一样。
-  const notCloneable = err => new CordiumError(ErrorCode.INVALID_ARGUMENT,
-    `callIsolated: args must be structured-cloneable (${describeError(err)})`, { pluginId, cause: err });
+  // ★ 只在【确实是克隆失败】时才报「args must be structured-cloneable」—— 此前把 Worker 构造 / child.send 的
+  //   **任何**同步抛都归成这一条（如 transfer 写错、resourceLimits 非法），把调用方引向错误的排查方向。
+  //   判据：worker 档抛 `DataCloneError`（name），process 档（advanced 序列化）抛的是一条普通 `Error`
+  //   且报文含「could not be cloned」（实测两档形状不同）⇒ 名字 **或** 报文命中即判克隆失败；
+  //   其余同步失败按通用隔离失败报，真错原样挂 cause。
+  const spawnFailed = err => ((err?.name === 'DataCloneError' || /could not be cloned/i.test(describeError(err)))
+    ? new CordiumError(ErrorCode.INVALID_ARGUMENT,
+        `callIsolated: args must be structured-cloneable (${describeError(err)})`, { pluginId, cause: err })
+    : new CordiumError(ErrorCode.ISOLATED_CALL_FAILED,
+        `callIsolated: failed to start the ${mode} isolation environment (${describeError(err)})`, { pluginId, cause: err }));
 
   const spawn = mode === 'worker'
     ? () => {
         let w;
-        try { w = new Worker(RUNNER, { workerData: request, transferList: transfer, stdout: false, stderr: false, resourceLimits: { maxOldGenerationSizeMb: maxMemoryMb } }); } catch (err) { throw notCloneable(err); }
+        try { w = new Worker(RUNNER, { workerData: request, transferList: transfer, stdout: false, stderr: false, resourceLimits: { maxOldGenerationSizeMb: maxMemoryMb } }); } catch (err) { throw spawnFailed(err); }
         return { channel: w, kill: () => w.terminate() };
       }
     : () => {
@@ -245,7 +301,7 @@ export async function callIsolated(module, exportName = 'default', args = [], op
         // send 遇到不可克隆的值同步抛 ⇒ 必须先收掉子进程，否则它挂着 IPC 永不退出
         try { c.send(request); } catch (err) {
           kill();
-          throw notCloneable(err);
+          throw spawnFailed(err);
         }
         return { channel: c, kill };
       };

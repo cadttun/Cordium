@@ -172,7 +172,7 @@ export function wrapServiceHandle(serviceName, impl, check, providerId) {
   };
 
   /** 把描述符里的 get / set 包一层（过门后再以【原对象】为 this 调用）。`undefined` 原样返回。 */
-  const gatedAccessor = (target, prop, fn) => {
+  const gatedAccessor = (target, fn) => {
     if (typeof fn !== 'function') return fn;
     return function (...args) {
       const reason = check();
@@ -212,7 +212,7 @@ export function wrapServiceHandle(serviceName, impl, check, providerId) {
       }
       // ★ 访问器属性 ⇒ get / set 换成过门的（不变量：仅 configurable 可换，non-configurable 必须原样）
       if (('get' in desc || 'set' in desc) && desc.configurable !== false) {
-        return { ...desc, get: gatedAccessor(target, prop, desc.get), set: gatedAccessor(target, prop, desc.set) };
+        return { ...desc, get: gatedAccessor(target, desc.get), set: gatedAccessor(target, desc.set) };
       }
       return desc;
     },

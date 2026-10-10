@@ -58,6 +58,19 @@ test('resolvePluginDependencies：候选与已装 registry 同 id 冲突 ⇒ ver
     [{ id: 'p', name: 'P', version: '1.0.0', permissions: ['x'] }], { existingRegistry: installed }));
 });
 
+// ★ provides 是集合语义：仅 provides 不同也应判为实现冲突（此前漏比较 provides，那一支永远不成立）
+test('resolvePluginDependencies：候选与已装 registry 仅 provides 不同 ⇒ implementation_conflict', () => {
+  const installed = new Map([['p', { manifest: { id: 'p', name: 'P', version: '1.0.0', apiVersion: '1.0.0', permissions: ['x'], provides: ['svc.a'] } }]]);
+  // 仅 provides 不同（version / apiVersion / permissions 全同）⇒ 实现冲突
+  assert.throws(
+    () => resolvePluginDependencies([{ id: 'p', name: 'P', version: '1.0.0', permissions: ['x'], provides: ['svc.b'] }], { existingRegistry: installed }),
+    err => err.code === 'implementation_conflict' && err.pluginId === 'p'
+  );
+  // 正向对照：provides 相同（元素顺序不同仍视为同一集合）⇒ 放行
+  assert.doesNotThrow(() => resolvePluginDependencies(
+    [{ id: 'p', name: 'P', version: '1.0.0', permissions: ['x'], provides: ['svc.a'] }], { existingRegistry: installed }));
+});
+
 test('normalizeDependencies：只收对象形式（数组写法已取消），非对象输入 fail-loud', () => {
   // 数组项写不下版本范围 ⇒ 一律拒，而不是「归一成 *」把约束悄悄吞掉
   assert.deepEqual(normalizeDependencies({ a: '^1.0.0' }), { a: '^1.0.0' });

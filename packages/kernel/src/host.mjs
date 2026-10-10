@@ -34,7 +34,9 @@ import { ActionRegistry } from './action-registry.mjs';
 import { satisfiesSemVer, isValidSemVer } from './semver.mjs';
 // ★ 不读宿主状态的模块级函数已搬出（原样，零行为变化）
 import {
-  freezeManifestForPlugin, snapshotDetails, copyLogEntry, MAX_TIMER_MS, describeValue, describeError, errorDetails, readOptions, runWithTimeout
+  freezeManifestForPlugin, snapshotDetails, copyLogEntry, MAX_TIMER_MS, describeValue, describeError, errorDetails, readOptions, runWithTimeout,
+  // ★ 生命周期门禁单点实现（3 处登记口共用：registerAction / UI / registerService）
+  assertScopeLive
 } from './host-util.mjs';
 import {
   optionalUnavailable, isTerminated, wrapServiceHandle, normalizeContractMethods, missingMethods,
@@ -84,12 +86,12 @@ const EMPTY_CONFIG = Object.freeze({});
  * @property {import('./scope.mjs').EffectScope} scope 本次激活的资源作用域
  * @property {(name: string, impl: object) => void} provideService
  * @property {(name: string) => unknown} getService 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
- * @property {(name: string, listener: (change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void) => void} watchService
- * @property {(listener: (change: { id: string, from: string | null, to: string | null }) => void) => void} watchPluginState
+ * @property {(name: string, listener: (change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void) => (() => boolean)} watchService 返回退订函数
+ * @property {(listener: (change: { id: string, from: string | null, to: string | null }) => void) => (() => boolean)} watchPluginState 返回退订函数
  * @property {(label: string) => PluginContext} scoped
  * @property {() => PluginContext} privateScope
- * @property {(name: string, listener: (...args: any[]) => any, options?: object) => void} on
- * @property {(name: string, listener: (...args: any[]) => any, options?: object) => void} once
+ * @property {(name: string, listener: (...args: any[]) => any, options?: object) => (() => boolean)} on 返回退订函数
+ * @property {(name: string, listener: (...args: any[]) => any, options?: object) => (() => boolean)} once 返回退订函数
  * @property {(name: string, ...args: unknown[]) => void} emit
  * @property {(name: string, ...args: unknown[]) => Promise<unknown>} parallel
  * @property {(name: string, ...args: unknown[]) => Promise<unknown>} serial
@@ -699,6 +701,16 @@ export class CordiumHost {
         + `'${String(options.access)}' (expected one of: ${SERVICE_ACCESS_VALUES.join(', ')})`
       );
     }
+    // ★ optionalProvider 类型门（写表之前）—— 此前零校验：非字符串或拼错的插件 id 会**静默落表**
+    //   ⇒ 取服务时该 provider 永远「未安装」⇒ 调用方只当是「可选依赖恰好缺席」，看不出 id 写错了。
+    //   与同函数 access 的成员校验同一口径；判据用 plugin id 规则（它就是**一个插件 id**）。
+    if (options.optionalProvider !== undefined && options.optionalProvider !== null
+        && (typeof options.optionalProvider !== 'string' || !PLUGIN_ID_PATTERN.test(options.optionalProvider))) {
+      throw new CordiumError(ErrorCode.INVALID_CONTRACT,
+        `Service Violation: contract '${serviceName}' declares invalid optionalProvider `
+        + `'${describeValue(options.optionalProvider)}' (expected a plugin id)`
+      );
+    }
     // ★ 接口形状（可选）。同样只在显式传值时校验，且在写表之前 ——
     //   写错的方法表若静默落表，注册期校验会拿一张错表去拒绝正当实现（或放过错误实现）。
     const methods = normalizeContractMethods(serviceName, options.methods);
@@ -800,9 +812,13 @@ export class CordiumHost {
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'declareUIContributionTypes requires an array of type names');
     }
     for (const type of types) {
-      if (typeof type !== 'string' || !type.trim()) {
+      // ★ 与 `normalizeContractMethods` 同一口径：类型名是【精确匹配的键】，**不静默 trim** ——
+      //   此前只校验 `type.trim()` 非空却把【原值】入表 ⇒ `'theme '` 通过校验却与 `'theme'` 不相等，
+      //   「校验的是 trim 后的、用的是原值」两套口径（带空白的值能把整个类型门焊死）。
+      //   ⇒ 首尾带空白一律拒：要么写对，要么响亮。
+      if (typeof type !== 'string' || !type.trim() || type !== type.trim()) {
         throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
-          `UI contribution type must be a non-empty string, got ${describeValue(type)}`);
+          `UI contribution type must be a non-empty string without surrounding whitespace, got ${describeValue(type)}`);
       }
     }
     for (const type of types) this.#uiTypes.add(type);
@@ -938,6 +954,14 @@ export class CordiumHost {
     record.manifest = next.manifest;
     record.entry = next.entry;
     record.lifecycleTimeoutMs = next.lifecycleTimeoutMs;
+    // ★ 换代码后【上一版的失败结论作废】—— 否则窗口期诊断把旧版本的 `error` 归到新版本头上
+    //   （实测：替换一个 `failed` 插件，state 仍是 failed、error 仍是上一版那条）。
+    //   ⇒ 清 error；原态是终态 `failed` 时退回「尚未尝试」（lazy 退回 `ready`）——
+    //     新代码还没跑过，不该顶着旧结论。其余状态（用户停用 `disabled` 等）保持不动。
+    if (record.state === LifecycleState.FAILED) {
+      record.error = null;
+      this.#setState(record, record.manifest.activation === ActivationPolicy.LAZY ? LifecycleState.READY : LifecycleState.DISCOVERED);
+    }
     this.#snapshotAuthority(next.manifest);
     return previous;
   }
@@ -1091,10 +1115,9 @@ export class CordiumHost {
    *
    * @returns {{ id: string, reason: (typeof UnresolvedReason)[keyof typeof UnresolvedReason] }[]}
    */
-  #unresolvedDependencies(id, manifest) {
+  #unresolvedDependencies(id, manifest, reach) {
     const out = this.#staticUnresolved(manifest);
     const already = new Set(out.map(u => u.id));
-    const { reach } = this.#dependencyGraph();
     const selfInCycle = reach(id).has(id);
     for (const depId of Object.keys(manifest.dependencies || {})) {
       if (already.has(depId)) continue;                       // 静态问题优先，不重复报
@@ -1624,10 +1647,13 @@ export class CordiumHost {
    */
   deactivatePlugin(pluginId) {
     assertStringArg('deactivatePlugin', 'pluginId', pluginId);
-    // ★ 同 activatePlugin：捕获调用时刻的记录；排队期间被移除 / 重新注册 ⇒ 旧调用作废（空操作）。
+    // ★ 未知 id 响亮拒绝（此前静默返回 undefined）—— 与 activatePlugin / unregisterPlugin 口径一致。
+    //   静默成功会把「id 拼错」伪装成「停用成功」，是本仓反复出现的「拼错值静默失效」同形。
     const record = this.#plugins.get(pluginId);
+    if (!record) throw new CordiumError(ErrorCode.PLUGIN_NOT_FOUND, `Plugin '${pluginId}' not found`);
+    // ★ 捕获调用时刻的记录：排队期间被移除 / 重新注册 ⇒ 旧调用作废（空操作）。
     return this.#serializeLifecycle(pluginId, () => {
-      if (!record || this.#plugins.get(pluginId) !== record) return undefined;
+      if (this.#plugins.get(pluginId) !== record) return undefined;
       // ★ 显式停用 = 用户意图：boot() 不得再顺手拉起它；级联恢复也不碰它。
       record.disabledByUser = true;
       record.stoppedByCascade = false;
@@ -1821,7 +1847,7 @@ export class CordiumHost {
        * 内核把方法改成不可写或私有后它会**静默失效**（表现是「停用的插件面板还留在屏幕上」）。
        *
        * @param {(change: {id: string, from: string, to: string}) => void} listener 收到冻结的轻量元数据
-       * @returns {() => void} 退订函数（作用域会托管它，插件停用后自动摘除）
+       * @returns {() => boolean} 退订函数（作用域会托管它，插件停用后自动摘除）
        */
       watchPluginState: (listener) => this.#watchPluginStateForPlugin(pluginId, scope, listener),
 
@@ -1994,12 +2020,9 @@ export class CordiumHost {
     //     · 正当的提供者想注册同名服务会被"已被 X 提供"拒绝 → 它 activate 抛错
     //       → boot() 整体回滚 → 整个应用起不来。
     //   ⇒ 一条注册噪音能把整机拖死，所以这里是硬门。
-    if (scope && !scope.active) {
-      throw new CordiumError(ErrorCode.SCOPE_DISPOSED,
-        `Service Violation: plugin '${providerId}' cannot provide '${serviceName}' — `
-        + `its scope is already disposed (a disposed plugin must not register anything)`
-      );
-    }
+    assertScopeLive(scope,
+      `Service Violation: plugin '${providerId}' cannot provide '${serviceName}' — `
+      + `its scope is already disposed (a disposed plugin must not register anything)`);
 
     // ★ 注册端校验：提供者必须在自己 manifest 的 provides 里声明过这个服务名。
     //   没有这一条，任何插件都能拿别人的服务名注册实现，把既有提供者挤掉。
@@ -2226,6 +2249,10 @@ export class CordiumHost {
         + `host assembly code must use getInternalService() instead of getService()`
       );
     }
+    // ★ 身份类型门：**truthy 非字符串**（Symbol / 对象 / 数字）此前直落下面各处的
+    //   `'${callerPluginId}'` 模板字面量 ⇒ 引擎级 TypeError（无码）。本仓口径「公开 API 的非法输入
+    //   一律带码」。falsy 仍走上面的 identity_required，语义不变 —— 故门放在这条之后。
+    assertStringArg('getService', 'callerPluginId', callerPluginId);
     // ★ 可选依赖的提供者【不可用】⇒ 统一返回 optional_unavailable。
     //
     //   「不可用」有两种，必须都覆盖：
@@ -2303,8 +2330,13 @@ export class CordiumHost {
       if (still.epoch !== epoch) {
         return `provider '${providerId}' was re-registered (epoch ${epoch} → ${still.epoch})`;
       }
-      // 只拒绝【已停用】状态：ACTIVATING / ACTIVE / STOPPING 都允许 ——
-      // 插件在 activate() 里取用自己的服务是合法用法，停用过程中的清理调用也不该被拦。
+      // 只拒绝【终态】（disabled / failed）：ACTIVATING / ACTIVE / STOPPING 都允许。
+      // ⚠️ 这里判的是「**已发出的句柄还能不能继续用**」—— 插件在 activate() 里取用自己的服务、
+      //   或在停用清理回调里用旧句柄收尾，都是合法用法，不该被拦。
+      //   ★ 别与「**取【新】服务**」的门混为一谈：`#assertServiceAccess` 用的是 `hasRunActivate`
+      //     （= ACTIVE || ACTIVATING），STOPPING 态取新服务会被拒 —— 那是**刻意的**
+      //     （正在停的插件不该再取得新能力）。两者判的是**不同操作**（用旧句柄 vs 取新服务），
+      //     不是「同一状态给了相反答案」。
       const provider = this.#plugins.get(providerId);
       if (!provider || isTerminated(provider.state)) {
         return `provider '${providerId}' is no longer active`;
@@ -2772,6 +2804,9 @@ export class CordiumHost {
    *   ★ 稳定面发生**不兼容**改动时才递增；**增字段不算**（增字段对守约的消费方无感）。
    */
   getDiagnostics() {
+    // ★ 依赖图**只建一次**：此前每个插件的 `#unresolvedDependencies` 各建一遍整图 + 各算一遍可达
+    //   ⇒ 快照整体是 O(P²)（P = 插件数）。图是纯查询、与遍历顺序无关 ⇒ 提到循环外复用。
+    const { reach } = this.#dependencyGraph();
     return {
       // ★★ 契约版本随快照一起交出 —— 「这份快照按哪版契约读」是**消费方**需要的，
       //   不能只写在文档里（文档不会跟着 API 调用走）。取值来自契约表，不另写字面量。
@@ -2800,7 +2835,7 @@ export class CordiumHost {
         error: p.state === LifecycleState.FAILED ? describeError(p.error) : null,
         activationMs: p.activationMs,
         // ★ 依赖没齐 ⇒「它为什么没起来」只能靠这一项回答（见 #unresolvedDependencies 的注释）
-        unresolvedDependencies: this.#unresolvedDependencies(id, p.manifest)
+        unresolvedDependencies: this.#unresolvedDependencies(id, p.manifest, reach)
       })),
       services: Array.from(this.#serviceContracts.entries()).map(([name, s]) => ({
         name,

@@ -27,8 +27,8 @@ export declare function configureIsolation(next?: {
  * @param {readonly string[]} [options.allowFsWrite=[]] 仅 `process`：可写路径
  * @param {number} [options.maxMemoryMb=1024] 隔离环境的 JS 堆上限（MB）；超了只终止这个环境 ⇒ isolated_call_failed。
  *   ⚠️ ArrayBuffer / Buffer 的数据不在 JS 堆里，不受此限（Node 的限制，实测）。
- * @param {readonly ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（须出现在 args 里）。
- *   移交后调用方手里的那块内存被清空（byteLength 变 0）—— 这是零拷贝的代价，调用后别再用它。
+ * @param {readonly ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（**必须**出现在 args 里）。
+ *   不在 args 里的 buffer 会被静默 detach 成数据丢失 ⇒ 带码拒绝。移交后调用方手里那块内存被清空（byteLength 变 0）—— 这是零拷贝的代价，调用后别再用它。
  * @returns {Promise<any>}
  * @throws {CordiumError} `isolation_busy`：排队已满或在途字节超限（见 configureIsolation）—— 未起任何环境，可重试
  */
