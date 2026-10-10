@@ -622,11 +622,16 @@ export class CordiumHost {
    */
   recordManifestDiagnostic(diagnostic) {
     if (!diagnostic || !Array.isArray(diagnostic.fields) || diagnostic.fields.length === 0) return;
+    // ★ severity 入口校验后【降级不抛】：非法值落回 'warn'。
+    //   此前 `String(severity || 'warn')` 不校验 ⇒ 非法值让下面的 `this.log` 抛 invalid_argument，
+    //   而那时条目【已入快照】⇒ 既记了又抛（半成品状态），且诊断路径不该能打断 registerPlugin。
+    //   口径同 onListenerOverflow / onScopeConflict：**诊断只上报，绝不抛**。
+    const severity = isValidLogLevel(diagnostic.severity) ? diagnostic.severity : 'warn';
     const entry = {
       path: String(diagnostic.path || ''),
       pluginId: String(diagnostic.pluginId || ''),
       fields: [...diagnostic.fields],
-      severity: String(diagnostic.severity || 'warn'),
+      severity,
       timestamp: Date.now()
     };
     this.#manifestDiagnostics.push(entry);
@@ -1807,7 +1812,7 @@ export class CordiumHost {
        * ⚠️ 变更经 `channel.broadcast` 派发（与 `watchPluginState` 同族，供装配层看注册表）
        *   ⇒ 收到的通知【不按作用域过滤】。需要保密的数据不要走事件广播。
        */
-      watchService: (name, listener) => this.#watchServiceForPlugin(pluginId, scope, name, listener, scopeKey),
+      watchService: (name, listener) => this.#watchServiceForPlugin(pluginId, scope, name, listener),
       /**
        * 订阅**任意插件**的状态变更（启用 / 停用 / 激活失败 / 进入等触发…）。
        *
@@ -1818,7 +1823,7 @@ export class CordiumHost {
        * @param {(change: {id: string, from: string, to: string}) => void} listener 收到冻结的轻量元数据
        * @returns {() => void} 退订函数（作用域会托管它，插件停用后自动摘除）
        */
-      watchPluginState: (listener) => this.#watchPluginStateForPlugin(pluginId, scope, listener, scopeKey),
+      watchPluginState: (listener) => this.#watchPluginStateForPlugin(pluginId, scope, listener),
 
       // ───────── 作用域 ─────────
       /**
@@ -2545,13 +2550,14 @@ export class CordiumHost {
    * @param {string} pluginId 订阅方（闭包注入，不可伪造）
    * @param {import('./scope.mjs').EffectScope} scope
    * @param {(change: {id: string, from: string, to: string}) => void} listener
-   * @param {string | symbol | null} scopeKey
    */
-  #watchPluginStateForPlugin(pluginId, scope, listener, scopeKey) {
+  #watchPluginStateForPlugin(pluginId, scope, listener) {
     if (typeof listener !== 'function') {
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'watchPluginState requires a function listener');
     }
-    return this.#subscribeForPlugin(pluginId, scope, PLUGIN_STATE, listener, {}, scopeKey);
+    // ★ 同 watchService：观察面事件经 `channel.broadcast` 发 ⇒ 不按作用域过滤，传 null 如实表达
+    //   （传调用方 scopeKey 会写下一个永不生效的装饰性标签）。作用域只经 `scope` 决定退订托管。
+    return this.#subscribeForPlugin(pluginId, scope, PLUGIN_STATE, listener, {}, null);
   }
 
   /**
@@ -2593,10 +2599,9 @@ export class CordiumHost {
    * @param {import('./scope.mjs').EffectScope} scope
    * @param {string} serviceName
    * @param {(change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void} listener
-   * @param {string | symbol | null} scopeKey
    * @returns {() => boolean}
    */
-  #watchServiceForPlugin(pluginId, scope, serviceName, listener, scopeKey) {
+  #watchServiceForPlugin(pluginId, scope, serviceName, listener) {
     // ★ 服务名类型门 —— ctx.watchService 经闭包直调本方法（此前 Symbol 抛裸 TypeError）。
     assertStringArg('watchService', 'serviceName', serviceName);
     if (!this.#serviceContracts.has(serviceName)) {
@@ -2613,7 +2618,11 @@ export class CordiumHost {
         if (change.name === serviceName) listener(change);
       },
       {},
-      scopeKey
+      // ★ 传 null 而非调用方作用域：本入口是【观察面】，事件经 `channel.broadcast` 发（不看 scopeLabel）
+      //   ⇒ 订阅【不按作用域过滤】。传 null 如实表达「无作用域」；传调用方 scopeKey 会写下一个
+      //   **永不生效的标签**（装饰性的），读代码的人会误以为它在过滤。
+      //   ★ 作用域仍经上面的 `scope` 形参决定【退订托管】（插件停用即摘除），只是不参与过滤。
+      null
     );
   }
 

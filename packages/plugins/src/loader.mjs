@@ -101,7 +101,10 @@ async function registerAll(host, loaded) {
       if (disabled) await host.deactivatePlugin(plugin.manifest.id);
     }
   } catch (err) {
-    await unregisterAll(host, registered, loaded);
+    // ★ 回滚【不完整】时以回滚错为准（宿主可能已脏），但把【原始注册失败】挂在 cause 上 ——
+    //   否则 unregisterAll 一抛，下面的 `throw err` 就永远执行不到，
+    //   调用方**永远看不到「为什么注册失败」**（实测：原始错误被顶掉）。
+    await unregisterAll(host, registered, loaded, err);
     throw err;
   }
 }
@@ -114,8 +117,18 @@ async function registerAll(host, loaded) {
  *   调用方也拿不到任何信号，会以为「已回滚干净」。
  * ⇒ 现在：能撤的都撤；若有撤不掉的，**抛出带名单的错误**，
  *   让调用方知道宿主里可能留有半装状态（这比「静默干净」安全得多）。
+ *
+ * ★ 码是 `plugin_load_failed`（**不是** `invalid_argument`）：回滚失败【不是参数错】，是内部状态失败。
+ *   调用方按码分支时，`invalid_argument` 会被读成「输入错、改改重试」，
+ *   而真相是**宿主已脏、必须中止**。
+ * ★ 原始注册失败挂在 `cause` 上 —— 它是「为什么会走到回滚」的真正原因，绝不能丢。
+ *
+ * @param {import('@cordium/kernel').CordiumHost} host
+ * @param {string[]} ids 本次真的注册成功的插件 id
+ * @param {ReadonlyArray<{ plugin: { manifest: { id: string, dependencies?: object } } }>} loaded
+ * @param {unknown} originalError 触发回滚的【原始注册失败】—— 挂到回滚错的 cause
  */
-async function unregisterAll(host, ids, loaded) {
+async function unregisterAll(host, ids, loaded, originalError) {
   const failed = [];
   for (const id of rollbackOrder(loaded)) {
     if (!ids.includes(id)) continue;              // 只撤本次真的注册成功的
@@ -123,8 +136,9 @@ async function unregisterAll(host, ids, loaded) {
     catch (err) { failed.push(`${id}(${err?.code ?? 'unknown'})`); }
   }
   if (failed.length > 0) {
-    throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+    throw new CordiumError(ErrorCode.PLUGIN_LOAD_FAILED,
       `loadPlugins: rollback incomplete — could not unregister ${failed.join(', ')}; `
-      + `the host may be left with partially registered plugins`);
+      + `the host may be left with partially registered plugins`,
+      { cause: originalError });
   }
 }

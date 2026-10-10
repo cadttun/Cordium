@@ -44,6 +44,20 @@ test('★ 全有或全无：任一条目坏 ⇒ 一条都不注册（宿主可�
   }
 });
 
+test('★★ 回滚【不完整】⇒ plugin_load_failed，且原始注册失败挂在 cause（此前会被顶掉）', async () => {
+  const host = makeHost();
+  // 预注册一个依赖 demo.base 的插件（不在本次清单里）⇒ 回滚 demo.base 时被它挡住（plugin_has_dependents）
+  host.registerPlugin({ id: 'demo.dependent', version: '1.0.0', apiVersion: '1.0.0', dependencies: { 'demo.base': '*' } }, {});
+  const err = await loadPlugins(host, [{ module: at('base.mjs') }, { module: at('broken.mjs') }]).then(() => null, e => e);
+
+  // ★ 码是 plugin_load_failed，**不是** invalid_argument：回滚失败是【内部状态】失败，不是参数错 ——
+  //   调用方按码分支时，invalid_argument 会被读成「输入错、改改重试」，而真相是宿主已脏、必须中止。
+  assert.equal(err?.code, 'plugin_load_failed', '回滚不完整必须以 plugin_load_failed 报出');
+  // ★ 原始注册失败（broken.mjs 的 invalid_manifest）必须挂在 cause ——
+  //   否则 unregisterAll 一抛，`throw err` 永远执行不到，调用方看不到「为什么注册失败」。
+  assert.equal(err?.cause?.code, 'invalid_manifest', '原始注册失败必须挂在 cause（此前被回滚错顶掉）');
+});
+
 test('错误码：加载失败 plugin_load_failed / 缺 manifest invalid_manifest / 重复 duplicate_plugin', async () => {
   await assert.rejects(loadPlugins(makeHost(), [{ module: at('throws-on-import.mjs') }]), hasCode('plugin_load_failed', /module init failed/));
   await assert.rejects(loadPlugins(makeHost(), [{ module: at('nomanifest.mjs') }]), hasCode('invalid_manifest'));

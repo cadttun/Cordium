@@ -9,8 +9,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- ★ **`loadPlugins` 回滚不完整的错误码由 `invalid_argument` 改为 `plugin_load_failed`**（`@cordium/plugins`）：回滚失败是**内部状态**失败（宿主可能留半装状态），不是参数错 —— 原码会被调用方读成「输入错、改改重试」，而真相是**必须中止**。★ 同时把**原始注册失败**挂到该错误的 `cause`（此前 `unregisterAll` 一抛，原始错误被**顶掉**，调用方永远看不到「为什么注册失败」）。★ 这是**改码值**（消费方若按 `invalid_argument` 分支会受影响）⇒ 按本文件口径属**破坏兼容**，走 **minor**。
+- **`ctx.watchService` / `ctx.watchPluginState` 不再写一个永不生效的 `scopeLabel`**（`@cordium/kernel`）：这两个是**观察面**入口，事件经 `channel.broadcast` 发（不看标签）⇒ 订阅**刻意跨作用域**（同 OSGi `EventAdmin` 模型）。此前把调用方作用域写进订阅记录，**读代码的人会误以为它在过滤** ⇒ 改传 `null` 如实表达。**行为零变化**（标签从不参与派发）；作用域仍经 `scope` 形参决定**退订托管**。
+
 ### Fixed
 
+- ★ **`recordManifestDiagnostic` 的 `severity` 非法值降级为 `warn`**（`@cordium/kernel`）：此前不校验，非法值会让下游 `log` 抛 `invalid_argument`，而那时条目**已入快照** ⇒ **既记了又抛**（半成品状态）。口径同 `onListenerOverflow` / `onScopeConflict`：**诊断只上报，绝不抛**。仅在传入非法 `severity` 时改变行为（合法值原样保留）。
 - ★ **`host.getUIContributions(type)` 的 `type` 参数由「必需」改「可选」**（`@cordium/kernel`）：实现一直把 `type` 当**可选**（不传 ⇒ 返回全部），但公开类型把它标成**必需** —— 因为该方法此前**没有 JSDoc**，`tsc --emitDeclarationOnly` 把参数推成 `any`（必需）⇒ 消费方在类型层面**无法省略** `type`，只能靠断言绕过。现补齐 JSDoc（`@param {string} [type]`），使声明与实现对齐；返回类型仍为 `any[]`（不变）。`UIRegistry.list(type)` 同款修正，保持两者一致。**行为零变化**，纯类型声明订正。
 
 ## [0.4.0] - 2026-10-09

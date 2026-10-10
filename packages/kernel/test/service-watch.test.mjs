@@ -104,20 +104,26 @@ test('watchService rejects undeclared services before creating a subscription', 
   assert.equal(listenerCount(host, 'internal/service'), 0);
 });
 
-test('watchService follows the host-injected scope without accepting a caller scope label', async () => {
+test('★★ watchService 是【跨作用域】观察面：watcher 的作用域只决定退订托管，不过滤事件', async () => {
+  // ★ 判据是【行为】，把「刻意全局观察」钉成事实（与 OSGi EventAdmin 同模型：观察面默认开放，
+  //   取能力才需门）。若哪天有人给 watch* 加上作用域过滤，这条会红。
+  //   载荷里的 `scopeKey` 是【提供者所在作用域】，不是 watcher 的 —— 两者无关。
   const host = makeHost();
-  const changes = [];
+  const scopedSeen = [];
+  const rootSeen = [];
   host.registerPlugin({
     id: 'plugin.watcher',
     version: '1.0.0',
     apiVersion: '1.0.0'
   }, {
     async activate(ctx) {
-      ctx.scoped('agent:a').watchService('service.demo', change => changes.push(change));
+      ctx.scoped('agent:a').watchService('service.demo', change => scopedSeen.push(change));
+      ctx.watchService('service.demo', change => rootSeen.push(change));
     }
   });
   await host.boot();
 
+  // 在【另一个】作用域注册提供者 —— scoped watcher 照样收到
   host.registerPlugin({
     id: 'plugin.scoped-provider',
     version: '1.0.0',
@@ -125,16 +131,18 @@ test('watchService follows the host-injected scope without accepting a caller sc
     provides: ['service.demo']
   }, {
     async activate(ctx) {
-      ctx.scoped('agent:a').provideService('service.demo', { read: () => 'scoped' });
+      ctx.scoped('agent:b').provideService('service.demo', { read: () => 'scoped' });
     }
   });
   await host.activatePlugin('plugin.scoped-provider');
 
-  assert.deepEqual(changes, [{
+  const expected = [{
     name: 'service.demo',
     providerId: 'plugin.scoped-provider',
-    scopeKey: 'agent:a',
+    scopeKey: 'agent:b',        // ★ 提供者的作用域（载荷事实），与 watcher 的 'agent:a' 无关
     action: 'registered',
     epoch: 1
-  }]);
+  }];
+  assert.deepEqual(scopedSeen, expected, '★ scoped watcher 收到【别的作用域】的变更 —— 观察面不过滤');
+  assert.deepEqual(rootSeen, expected, '根 watcher 收到同一集合');
 });

@@ -11,6 +11,13 @@ const never = () => new Promise(() => {});
 const register = (host, id, hooks, extra = {}, options) =>
   host.registerPlugin({ id, version: '1.0.0', apiVersion: '1.0.0', ...extra }, hooks, options);
 
+// ★ 挂起兜底（**不是性能判据**）：按【配置预算】的固定倍数给，不写死绝对墙钟值 ——
+//   超时是否触发由 `hasCode(...)` 判；这条只保证「没永久挂起」。
+//   绝对墙钟阈值跨环境不可比（慢机器上会假红），故按预算成比例。
+const HANG_GUARD_MS = (budgetMs) => budgetMs * 100;
+// 递归派发的错误报文长度上限（判据：报文不随嵌套层数增长，每层只引用下层的码）。
+const MSG_LEN_CAP = 200;
+
 // ════════════════ 一、生命周期超时 ════════════════
 
 test('★ activate() 永不结束 ⇒ boot 在 lifecycleTimeoutMs 内以 lifecycle_timeout 失败并回滚；之后可重试', async () => {
@@ -20,7 +27,7 @@ test('★ activate() 永不结束 ⇒ boot 在 lifecycleTimeoutMs 内以 lifecyc
   register(host, 'p.slow', { async activate(ctx) { if (hang) { late = ctx; await never(); } } });
   const t0 = Date.now();
   await assert.rejects(host.boot(), hasCode('lifecycle_timeout', /p\.slow.*80ms/));
-  assert.ok(Date.now() - t0 < 2000, 'boot 必须在预算附近返回，不能永久挂起');
+  assert.ok(Date.now() - t0 < HANG_GUARD_MS(80), 'boot 必须在兜底时限内返回，不能永久挂起');
   const [diag] = host.getDiagnostics().plugins;
   assert.equal(diag.state, 'failed');
   assert.ok(diag.activationMs >= 80, '诊断带激活耗时');
@@ -45,7 +52,7 @@ test('★ deactivate() 与清理回调都永不结束 ⇒ 停用在预算内走�
   a.scope.addDisposer(never);
   const t0 = Date.now();
   await host.deactivatePlugin('p.a');
-  assert.ok(Date.now() - t0 < 2000);
+  assert.ok(Date.now() - t0 < HANG_GUARD_MS(80), '停用必须在兜底时限内返回，不能永久挂起');
   assert.equal(host.getDiagnostics().plugins[0].state, 'disabled');
   assert.throws(() => b.getService('svc.x'), CordiumError, '服务已摘除（此前停用卡住时仍可取）');
   await assert.rejects(b.dispatchAction('act.a'), hasCode('action_not_found'), '动作已摘除（此前仍可派发）');
@@ -130,7 +137,7 @@ test('★ 动作异步自递归 ⇒ 在途数触顶即 action_overloaded，内�
   while (inner?.cause) inner = inner.cause;
   assert.equal(inner.code, 'action_overloaded', '最内层是闸门本身');
   assert.equal(err.code, 'action_failed');
-  assert.ok(err.message.length < 200, '报文不随嵌套层数增长（每层只引用下层的码）');
+  assert.ok(err.message.length < MSG_LEN_CAP, `报文不随嵌套层数增长（每层只引用下层的码；实测 ${err.message.length} 字符）`);
   assert.equal(host.getDiagnostics().recentLogs.filter(l => /overloaded/.test(l.message)).length, 1, '告警限频：一次风暴只记一条');
   ctx.registerAction('act.ok', { handler: () => 'fine' });
   assert.equal(await ctx.dispatchAction('act.ok'), 'fine', '在途数全部归还');

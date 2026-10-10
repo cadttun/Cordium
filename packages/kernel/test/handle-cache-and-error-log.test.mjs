@@ -3,7 +3,9 @@
  * @description 回归门禁：服务句柄缓存 / 诊断留存 / ctx.ui 暴露面
  *
  * ── 守的三件事（均由实测驱动）──────────
- *   ① `wrapServiceHandle` 每次取方法都新建闭包 ⇒ 加**按句柄**的缓存
+ *   ① 句柄包装壳：正常时可用、provider 停用后必须失效（含经 `getOwnPropertyDescriptor` 取到的那份）。
+ *      ★ 实现里有「按句柄缓存包装壳」的**优化**，但测试【只判行为、不冻结缓存】——
+ *        缓存去掉行为不变，冻结它就是把测试绑死到实现细节上（坏味）。
  *   ② 审计缓冲是共享环形，话多的 info 能把「出过事」冲掉 ⇒ 错误单独留存 + 带栈
  *   ③ `ctx.ui` 交出活注册表 ⇒ 收回（后来 ctx.ui 整体移除）
  */
@@ -26,7 +28,10 @@ function makeHandleHost() {
   return host;
 }
 
-test('★ 句柄的方法标识必须稳定（不再每次取属性都新建闭包）', async () => {
+test('★ 句柄方法：正常时可用，provider 停用后必须失效（判据是【行为】，不是「同一函数对象」）', async () => {
+  // ★ 旧断言是 `handle.ping === handle.ping`（把「按句柄缓存」这一【实现细节】冻结进测试）。
+  //   那是坏味：缓存只是**优化**，去掉它行为不变、测试却会红 —— 测试被绑死到实现上（「断言内部状态」）。
+  //   ⇒ 改判**行为**：包装壳正常时可用、provider 停用后必须失效（这才是它存在的理由）。
   const host = makeHandleHost();
   let handle = null;
   host.registerPlugin(
@@ -35,8 +40,10 @@ test('★ 句柄的方法标识必须稳定（不再每次取属性都新建闭�
   );
   await host.boot();
 
-  assert.equal(handle.ping, handle.ping, '同一个句柄上重复取同一方法必须拿到同一个函数（缓存生效）');
-  assert.equal(handle.ping(), 'pong', '缓存不得改变行为');
+  assert.equal(handle.ping(), 'pong', '正常时句柄方法照常可用');
+  await host.deactivatePlugin('plugin.p');
+  assert.throws(() => handle.ping(), err => err.code === 'service_unavailable',
+    '★ provider 停用后句柄方法必须失效（证明是受生命周期门控的包装，而非裸实现）');
 });
 
 test('★★ 句柄的 getOwnPropertyDescriptor 不得漏出裸方法（否则绕过生命周期门）', async () => {
@@ -52,9 +59,13 @@ test('★★ 句柄的 getOwnPropertyDescriptor 不得漏出裸方法（否则�
 
   const desc = Object.getOwnPropertyDescriptor(handle, 'ping');
   assert.equal(typeof desc.value, 'function');
-  // ★ 判别性：描述符里的 value 必须是【包装后】的同一个函数（=== get 拿到的），不是裸实现
-  assert.equal(desc.value, handle.ping, 'getOwnPropertyDescriptor 的 value 必须与 get 拿到的是同一个包装函数');
   assert.equal(desc.value(), 'pong', '正向对照：正常时经描述符取到的函数照常可用');
+  // ★★ 真正的安全性质（行为判据，不靠「同一函数对象」这一实现特征）：
+  //   停用 provider 后，【经描述符取到的那个函数】也必须失效 ——
+  //   若描述符漏出裸实现，它会绕过 check、停用后照跑（这就是被修的洞）。
+  await host.deactivatePlugin('plugin.p');
+  assert.throws(() => desc.value(), err => err.code === 'service_unavailable',
+    '★ 描述符取到的函数必须是【受门控的包装】：停用后必须失效，否则就是漏了裸方法');
 });
 
 test('★★ 缓存必须【按句柄】—— 两个消费者各持句柄时，绝不能共用同一个 check', async () => {

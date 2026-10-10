@@ -191,3 +191,18 @@ test('★ 空 fields / null 仍被忽略（既有语义不变）', () => {
   assert.equal(host.getDiagnostics().manifestDiagnosticsDropped, 0,
     '被忽略的无效输入不算"丢弃"（它从未进入证据集）');
 });
+
+test('★ severity 非法 ⇒ 降级为 warn 并照常记录（诊断只上报，绝不抛）', () => {
+  // 此前 `String(severity || 'warn')` 不校验 ⇒ 非法值让下游 `this.log` 抛 invalid_argument，
+  //   而那时条目【已入快照】⇒ 既记了又抛（半成品状态），且诊断路径能打断 registerPlugin。
+  const host = new CordiumHost();
+  host.recordManifestDiagnostic({ path: 'kernel', pluginId: 'p', fields: ['x'], severity: 'LOUD' });   // 非法（非成员）
+  host.recordManifestDiagnostic({ path: 'kernel', pluginId: 'p', fields: ['y'], severity: 123 });       // 非字符串
+  host.recordManifestDiagnostic({ path: 'kernel', pluginId: 'p', fields: ['z'], severity: 'error' });   // 合法：原样保留
+
+  const diags = host.getDiagnostics().manifestDiagnostics;
+  assert.equal(diags.length, 3, '非法 severity 不得让记录丢失，也不得抛');
+  assert.equal(diags[0].severity, 'warn', '非法成员降级为 warn');
+  assert.equal(diags[1].severity, 'warn', '非字符串降级为 warn');
+  assert.equal(diags[2].severity, 'error', '合法成员原样保留');
+});
