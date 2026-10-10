@@ -1798,6 +1798,14 @@ export class CordiumHost {
        * 这是 `internal/service` 的窄接口：插件只声明自己关心的服务名，
        * 宿主负责注入作用域并托管退订。回调收到的是冻结的轻量元数据，
        * 不会拿到提供者实现；需要重新使用服务时，必须重新调用 getService。
+       *
+       * ★★ 观察面与能力面是【两档】—— **刻意设计，不是遗漏**（与 OSGi 同一模型：
+       *   `ServiceListener` 任何 bundle 可挂，而取服务对象才需 `ServicePermission[name, GET]`）：
+       *   · 本入口 = 观察【注册表元数据】（服务名 / providerId / 变更动作）⇒ **不设访问门**，任何插件可 watch；
+       *   · `getService` = 取【能力】（提供者实现）⇒ **有访问门**（`#assertServiceAccess`）。
+       *   载荷不含能力 ⇒ 想拿别人的能力仍必须走 `getService`（那条路才有鉴权）。
+       * ⚠️ 变更经 `channel.broadcast` 派发（与 `watchPluginState` 同族，供装配层看注册表）
+       *   ⇒ 收到的通知【不按作用域过滤】。需要保密的数据不要走事件广播。
        */
       watchService: (name, listener) => this.#watchServiceForPlugin(pluginId, scope, name, listener, scopeKey),
       /**
