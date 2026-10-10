@@ -21,6 +21,9 @@ function clone(value) {
  */
 const ENTRY_FIELDS = Object.freeze(['source', 'packageUrl']);
 
+/** 目录索引的 schema 版本 —— 导出与导入校验共用同一常量（改一处即两边同步，此前同文件写了两遍） */
+const CATALOG_SCHEMA = 'plugin-catalog/v1';
+
 function stripEntryFields(input) {
   if (!input || typeof input !== 'object') return input;
   const manifest = { ...input };
@@ -99,7 +102,7 @@ export function createPluginCatalog(options) {
      */
     exportIndex() {
       return JSON.stringify({
-        schemaVersion: 'plugin-catalog/v1',
+        schemaVersion: CATALOG_SCHEMA,
         apiVersion,
         entries: list()   // ★ 不依赖 this：解构调用（const { exportIndex } = catalog）也必须可用
       });
@@ -117,7 +120,7 @@ export function createPluginCatalog(options) {
       } catch (error) {
         throw new CordiumError(ErrorCode.INVALID_CATALOG, 'invalid catalog index: ' + error.message, { cause: error });
       }
-      assert(payload?.schemaVersion === 'plugin-catalog/v1', 'catalog schema version is incompatible');
+      assert(payload?.schemaVersion === CATALOG_SCHEMA, 'catalog schema version is incompatible');
       assert(payload.apiVersion === apiVersion, 'catalog api version is incompatible');
       assert(Array.isArray(payload.entries), 'catalog entries are invalid');
       // ★ 原子导入：先在副本上全部校验通过，再整体替换。

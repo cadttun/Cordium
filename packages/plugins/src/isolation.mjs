@@ -52,6 +52,7 @@ import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { availableParallelism, totalmem } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { CordiumError, ErrorCode, MAX_TIMER_MS, describeValue, describeError, readOptions, firstFrame } from '@cordium/kernel/internal';
 import { toModuleHref } from './module-href.mjs';
 import { payloadBytes } from './payload.mjs';
@@ -213,7 +214,13 @@ export async function callIsolated(module, exportName = 'default', args = [], op
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT, `callIsolated: module URL is not a local file path (${describeError(err)})`, { pluginId, cause: err });
     }
   }
-  const request = { href, exportName, args };
+  // ★ 回包关联 nonce：隔离内代码与 runner 同处一个 worker / 进程，可自行 postMessage / process.send；
+  //   没有关联标识时，父侧会把「第一条消息」当成结果（实测：隔离内代码发一条 {ok:true,…} 就顶掉真实返回值）。
+  //   父侧只认带对 nonce 的回包（见 awaitReply）。
+  //   ⚠️ 残留：同线程代码能读 workerData / 请求里的 nonce ⇒ nonce 挡的是【意外串扰】，不是蓄意伪造
+  //      （隔离档是故障隔离、非安全沙箱，见文件头）。
+  const nonce = randomUUID();
+  const request = { href, exportName, args, nonce };
   // ★ 不在本进程预先 structuredClone(args) 验可克隆：那等于把大参数多复制一整遍（200MB 实测多花 ~65ms、峰值多一份内存）。
   //   Worker 构造 / child.send 遇到不可克隆的值会【同步】抛（实测）⇒ 在那里转成 invalid_argument，效果一样。
   const notCloneable = err => new CordiumError(ErrorCode.INVALID_ARGUMENT,
@@ -248,7 +255,7 @@ export async function callIsolated(module, exportName = 'default', args = [], op
   try {
     await acquire();
     try {
-      return await awaitReply(spawn(), { mode, timeoutMs, pluginId });
+      return await awaitReply(spawn(), { mode, timeoutMs, pluginId, nonce });
     } finally {
       release();
     }
@@ -258,15 +265,20 @@ export async function callIsolated(module, exportName = 'default', args = [], op
 }
 
 /** 等隔离环境回一条消息（或超时 / 崩溃 / 退出），然后一律收掉它 */
-async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId }) {
+async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId, nonce }) {
   let timer = null;
+  let onMessage = null;
   try {
     return await new Promise((resolve, reject) => {
       timer = setTimeout(() => {
         reject(new CordiumError(ErrorCode.CALL_TIMEOUT,
           `Plugin '${pluginId}' isolated call timed out after ${timeoutMs}ms (${mode} terminated)`, { pluginId }));
       }, timeoutMs);
-      channel.once('message', (msg) => {
+      // ★ 用 on + 手动摘除，不用 once：隔离内代码自己发的（无 / 错 nonce）消息可能先到，
+      //   一旦被 once 消费掉，真回包来了就没人接、只能等超时。nonce 不匹配的一律忽略。
+      onMessage = (msg) => {
+        if (msg?.nonce !== nonce) return;
+        channel.off('message', onMessage);
         if (msg?.ok) return resolve(msg.value);
         // ★ 隔离端回来的栈指向插件文件：报文里带上源头位置，cause.stack 保留全栈（跨进程也能定位到行）
         // ★★ 【本条路径】（隔离端回了一条失败报文）的 `cause` 是【wire DTO】不是活体 Error：
@@ -287,7 +299,8 @@ async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId }) {
         reject(new CordiumError(ErrorCode.ISOLATED_CALL_FAILED,
           `Plugin '${pluginId}' isolated call failed: ${msg?.name ?? 'Error'}${msg?.code ? ` [${msg.code}]` : ''}: ${msg?.message ?? ''}${at ? ` (at ${at})` : ''}`,
           { pluginId, cause: msg }));
-      });
+      };
+      channel.on('message', onMessage);
       channel.once('error', err => reject(new CordiumError(ErrorCode.ISOLATED_CALL_FAILED,
         `Plugin '${pluginId}' isolated ${mode} crashed: ${describeError(err)}`, { pluginId, cause: err })));
       channel.once('exit', code => reject(new CordiumError(ErrorCode.ISOLATED_CALL_FAILED,
@@ -295,6 +308,7 @@ async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId }) {
     });
   } finally {
     clearTimeout(timer);
+    if (onMessage) channel.off('message', onMessage);
     await kill();
   }
 }

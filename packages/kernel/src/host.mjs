@@ -547,8 +547,8 @@ export class CordiumHost {
    * ⚠️ 归属说明：`ctx.log` 的级别来自**插件**，但校验点在这里（宿主自己的日志入口）。
    *   宿主内部调用一律写 `ErrorCode.X` 之类的字面量，不受影响。
    *
-   * ★ `details` 是【可选】的：宿主内部多处 `this.log('info', '…')` 只传两参（如 `:852` 的
-   *   `Plugin registered`）。此前 JSDoc 无 `@param` ⇒ 生成的 `.d.mts` 把 `details` 标成
+   * ★ `details` 是【可选】的：宿主内部多处 `this.log('info', '…')` 只传两参（如
+   *   `Plugin registered` 那条）。此前 JSDoc 无 `@param` ⇒ 生成的 `.d.mts` 把 `details` 标成
    *   **必需**（`details: any`）⇒ 消费方 `host.log('info', msg)` 报 `TS2554`（消费方实测）。
    *   补 `[details]` 让产物转出 `details?: unknown`（用 `unknown` 而非 `object`：`ctx.log`
    *   的转发 `data` 是 `unknown`，收 `object` 会让内核自身报 `TS2345`）。
@@ -1791,7 +1791,7 @@ export class CordiumHost {
       //   作用域实现由 scoped(ctx) 提供，注册进的是【该作用域自己那一格】。
       provideService: (name, impl) => this.#registerService(name, pluginId, impl, scope, scopeKey),
       // ★ 身份由【闭包】注入，插件无法自证为别人（与 dispatch 的既有模式一致）
-      getService: (name) => { assertLive(`get service '${name}'`); return this.#getService(name, pluginId, scopeKey, scope); },
+      getService: (name) => { assertStringArg('ctx.getService', 'serviceName', name); assertLive(`get service '${name}'`); return this.#getService(name, pluginId, scopeKey, scope); },
       /**
        * 订阅一个服务名的生命周期变化。
        *
@@ -1934,7 +1934,7 @@ export class CordiumHost {
       waterfall: (name, ...args) => publish(DispatchMode.WATERFALL, name, args),
       registerAction: (action, options) => this.#registerAction(action, pluginId, options, scope),
       // 插件内部发起 Action 调度时，强制绑定该插件的实际真实身份，严禁外部字符串伪造
-      dispatchAction: async (action, payload) => { assertLive(`dispatch '${action}'`); return this.dispatchAction(pluginId, action, payload); },
+      dispatchAction: async (action, payload) => { assertStringArg('ctx.dispatchAction', 'action', action); assertLive(`dispatch '${action}'`); return this.dispatchAction(pluginId, action, payload); },
       registerUIContribution: (contribution) => this.#registerUIContribution(contribution, pluginId, scope),
       // 已删除 `ctx.ui` / `bindUIHost()`：UI 能力走普通服务契约，理由见 design/removed-apis.md §2
       log: (level, msg, data) => this.log(level, `[${pluginId}] ${describeValue(msg)}`, data)
@@ -1954,6 +1954,8 @@ export class CordiumHost {
    *   来源是 ctx.scoped(label) 的【闭包注入】，不是插件能改的字段。
    */
   #registerService(serviceName, providerId, implementation, scope, scopeKey = null) {
+    // ★ 服务名类型门 —— ctx.provideService 经闭包直调本方法（此前 Symbol 抛裸 TypeError）。
+    assertStringArg('provideService', 'serviceName', serviceName);
     const contract = this.#serviceContracts.get(serviceName);
     // ★ 禁止「先注册先得」自动建契约：未由宿主登记的服务一律拒绝注册。
     //   否则插件能靠抢先注册，替宿主决定该服务的安全级别。
@@ -2047,7 +2049,7 @@ export class CordiumHost {
         //   （语言刻意设计，防「symbol 被悄悄变成字符串属性名」）。
         //   ⇒ 不包 String() 的话，撞名时抛的是**引擎级 TypeError**，
         //     而不是这条精心写的「one owner per service」提示 —— 排障拿到的是噪音。
-        //   （同款正解已在本文件 onScopeConflict 处与 channel.mjs declareScope / #assertNoCycle 使用。）
+        //   （同款正解已在本文件 onScopeConflict 处与 scope-tree.mjs 的 declareScope / #assertNoCycle 使用。）
         //   注意 `=== null` 判断要保留：全局槽的语义就是 null，不能显示成 'null'。
         + `'${existingProvider}'${scopeKey === null ? '' : ` in scope '${String(scopeKey)}'`} — plugin `
         + `'${providerId}' cannot provide it too `
@@ -2187,7 +2189,6 @@ export class CordiumHost {
    *   来源是 ctx.scoped(label) 的【闭包注入】，不是插件能传的参数。
    */
   getService(serviceName, callerPluginId, scopeKey = null) {
-    assertStringArg('getService', 'serviceName', serviceName);
     return this.#getService(serviceName, callerPluginId, scopeKey, null);
   }
 
@@ -2198,6 +2199,8 @@ export class CordiumHost {
    *   宿主直接调公开 getService 时为 null（没有 ctx 可言），退回按 id 判。
    */
   #getService(serviceName, callerPluginId, scopeKey, consumerScope) {
+    // ★ 服务名类型门 —— ctx.getService 经闭包直调本方法，绕过了公开 getService 的入口门（此前 Symbol 抛裸 TypeError）。
+    assertStringArg('getService', 'serviceName', serviceName);
     const contract = this.#serviceContracts.get(serviceName);
     if (!contract) {
       throw new CordiumError(ErrorCode.UNDECLARED_SERVICE, `Service '${serviceName}' is not declared by host`);
@@ -2332,8 +2335,7 @@ export class CordiumHost {
    * 解析服务的活动实现（两个入口共用）
    *
    * ★ 一个服务名只可能有一个提供者（registerService 撞名即拒），
-   *   所以【同一个作用域内】只可能有一个提供者（registerService 撞名即拒）；
-   *   需要多实现请改用【注册表服务】。
+   *   所以【同一个作用域内】至多一个；需要多实现请改用【注册表服务】。
    *
    * ★ 作用域解析规则（注册视图向下继承）：
    *   从调用方的作用域出发沿【祖先链】向上找，**最近的先赢**；
@@ -2402,7 +2404,8 @@ export class CordiumHost {
     }
     // ★ ACTIVATING 期同样允许取依赖：插件在 activate() 里取服务是合法用法，
     //   限制成「仅 ACTIVE」会逼着人把代码从 activate() 里搬走。
-    if (caller.state !== LifecycleState.ACTIVE && caller.state !== LifecycleState.ACTIVATING) {
+    // ★ 用 hasRunActivate（= ACTIVE || ACTIVATING）而非手写比较 —— 与「一处判定，多处共用」口径一致。
+    if (!hasRunActivate(caller.state)) {
       throw new CordiumError(ErrorCode.ACCESS_DENIED,
         `Security Violation: caller plugin '${callerPluginId}' is not active (state=${caller.state})`
       );
@@ -2585,6 +2588,8 @@ export class CordiumHost {
    * @returns {() => boolean}
    */
   #watchServiceForPlugin(pluginId, scope, serviceName, listener, scopeKey) {
+    // ★ 服务名类型门 —— ctx.watchService 经闭包直调本方法（此前 Symbol 抛裸 TypeError）。
+    assertStringArg('watchService', 'serviceName', serviceName);
     if (!this.#serviceContracts.has(serviceName)) {
       throw new CordiumError(ErrorCode.UNDECLARED_SERVICE, `Service '${serviceName}' is not declared by host`);
     }
@@ -2617,6 +2622,10 @@ export class CordiumHost {
    * @param {any} payload
    */
   async dispatchAction(callerPluginId, action, payload) {
+    // ★ 入口字符串门：此前 Symbol / 无原型对象会流进 `Action '${action}'` 等模板字面量 ⇒ 引擎级 TypeError（无码）。
+    //   本仓口径「公开 API 的非法输入一律带码」（见 error-model.test.mjs），这里补齐。
+    assertStringArg('dispatchAction', 'action', action);
+    assertStringArg('dispatchAction', 'callerPluginId', callerPluginId);
     // ★★ 按需激活的触发点：**首次派发一个还没有处理器的动作**时，
     //   先把所有仍在等触发的懒插件拉起来，再重试一次。
     //

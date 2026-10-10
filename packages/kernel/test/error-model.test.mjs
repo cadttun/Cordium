@@ -335,6 +335,30 @@ test('★ 公开 API 的非法输入一律带码（不是引擎 TypeError）', a
   assert.ok(caught instanceof CordiumError && caught.code === 'invalid_argument', `registerAction 无 options：${caught}`);
 });
 
+test('★ ctx.* 与 dispatchAction 的非法输入一律带码（此前漏网，抛裸 TypeError）', async () => {
+  // ★ 与上一条同一原则，补上此前没覆盖的入口：ctx 经闭包直调内部方法，
+  //   绕过了宿主侧公开方法的 assertStringArg（实测：Symbol 进模板字面量 ⇒ 引擎级 TypeError、无 code）。
+  const { CordiumHost, MessageChannel } = await import('../src/index.mjs');
+  const host = new CordiumHost();
+  let ctx = null;
+  host.registerPlugin({ id: 'p', version: '1.0.0', apiVersion: '1.0.0' }, { activate(c) { ctx = c; } });
+  await host.boot();
+  const coded = (fn, code) => assert.throws(fn, err => err instanceof CordiumError && err.code === code);
+  const rejects = (p, code) => assert.rejects(p, err => err instanceof CordiumError && err.code === code);
+  const sym = Symbol('bad');
+  coded(() => ctx.getService(sym), 'invalid_argument');
+  coded(() => ctx.provideService(sym, {}), 'invalid_argument');
+  coded(() => ctx.watchService(sym, () => {}), 'invalid_argument');
+  coded(() => ctx.registerAction(sym, { handler() {} }), 'invalid_argument');
+  await rejects(ctx.dispatchAction(sym), 'invalid_argument');
+  await rejects(host.dispatchAction('p', sym), 'invalid_argument');
+  await rejects(host.dispatchAction(sym, 'a'), 'invalid_argument');
+  // ★ MessageChannel.subscribe 的 null options 视同不传（不是引擎 TypeError）
+  assert.doesNotThrow(() => new MessageChannel().subscribe('e', () => {}, null), 'null options 视同不传');
+  // 正向对照：合法字符串服务名照常走正常解析（抛 undeclared_service，非引擎 TypeError）
+  coded(() => ctx.getService('service.notdeclared'), 'undeclared_service');
+});
+
 test('★ ctx.parallel 失败 ⇒ listener_failed，插件原始错误在 cause.errors', async () => {
   const { CordiumHost } = await import('../src/index.mjs');
   const host = new CordiumHost();

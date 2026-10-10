@@ -10,7 +10,7 @@
  */
 
 import { CordiumError, ErrorCode } from './errors.mjs';
-import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause } from './host-util.mjs';
+import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause, describeValue } from './host-util.mjs';
 
 /**
  * @typedef {object} ActionRegistryQueries
@@ -43,6 +43,12 @@ export class ActionRegistry {
    * 注册受控动作 (Action)
    */
   register(action, ownerId, options, scope) {
+    // ★ action 名类型门：此前 Symbol / 无原型对象会流进 `Action '${action}'` 模板字面量 ⇒ 引擎级 TypeError（无码）。
+    //   本仓口径「公开 API 的非法输入一律带码」（见 error-model.test.mjs），这里是 ctx.registerAction 的入口。
+    if (typeof action !== 'string' || !action) {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT,
+        `registerAction requires a non-empty string action name, got ${describeValue(action)}`);
+    }
     // ★ 此前签名里直接解构 ⇒ 不传 options 抛引擎 TypeError（无码）
     if (options === null || typeof options !== 'object') {
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT,

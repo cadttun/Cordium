@@ -3,7 +3,8 @@
  * @description `callIsolated` 的隔离端入口（worker 与子进程共用）。包内工具，不在 `exports`。
  *
  * ★ 只用 node: 内置（权限模型不限制内置模块加载）；`process` 档默认只放行本目录与目标模块目录的读权限。
- * 协议：收 `{ href, exportName, args }` → 回 `{ ok: true, value }` 或 `{ ok: false, name, code, message, stack }`，只回一次。
+ * 协议：收 `{ href, exportName, args, nonce }` → 回 `{ ok: true, value, nonce }` 或 `{ ok: false, name, code, message, stack, nonce }`，只回一次。
+ *   ★ nonce 是回包关联标识（父侧生成）—— 父侧只认带对 nonce 的回包；隔离内代码自己发的消息没有它（见 isolation.mjs 的 awaitReply）。
  *   stack：原始错误的栈（截 4KB；非字符串 ⇒ null）—— 主进程据此报出错的插件行号，否则隔离里的错只剩一句话。
  *
  * ★ 不预先 structuredClone(value) 验可克隆（那会把大结果多复制一整遍）：postMessage / send 遇到
@@ -20,7 +21,7 @@ const text = (v) => { try { return String(v); } catch { return Object.prototype.
 const errorText = (err) => { try { if (err !== null && typeof err === 'object' && 'message' in err) return text(err.message); } catch { /* 见上 */ } return text(err); };
 const field = (err, key, fallback) => { try { const v = err?.[key]; return typeof v === 'string' ? v : fallback; } catch { return fallback; } };
 const stackText = (err) => { const s = field(err, 'stack', null); return s === null ? null : s.slice(0, 4096); };
-const notCloneable = err => ({ ok: false, name: 'DataCloneError', code: IsolationCode.RESULT_NOT_CLONEABLE, message: errorText(err), stack: null });
+const notCloneable = (err, nonce) => ({ ok: false, name: 'DataCloneError', code: IsolationCode.RESULT_NOT_CLONEABLE, message: errorText(err), stack: null, nonce });
 
 /**
  * 隔离端收到的请求（协议：`{ href, exportName, args }`）。
@@ -32,6 +33,7 @@ const notCloneable = err => ({ ok: false, name: 'DataCloneError', code: Isolatio
  * @property {string} href
  * @property {string} exportName
  * @property {unknown[]} args 插件函数参数（任意值）
+ * @property {string} [nonce] 回包关联标识（父侧生成；runner 原样带回）
  */
 
 /** @param {IsolationRequest} request */
@@ -50,18 +52,20 @@ async function run({ href, exportName, args }) {
 
 const { isMainThread, parentPort, workerData } = await import('node:worker_threads');
 if (!isMainThread) {
-  const reply = await run(workerData);
+  // ★ 回包带上请求里的 nonce —— 父侧据此认「这是本次请求的回包」（隔离内代码自己发的消息没有它）
+  const reply = { ...(await run(workerData)), nonce: workerData?.nonce };
   try {
     parentPort.postMessage(reply, reply.ok ? transferables(reply.value) : []);
   } catch (err) {
     // 移交失败（如 Node 内部标记为不可移交的 Buffer 池）⇒ 退回复制；复制也不行 ⇒ 不可克隆
-    try { parentPort.postMessage(reply); } catch { parentPort.postMessage(notCloneable(err)); }
+    try { parentPort.postMessage(reply); } catch { parentPort.postMessage(notCloneable(err, reply.nonce)); }
   }
 } else {
   process.once('message', async (request) => {
     // 进程消息类型是宽泛联合，这里是协议约定的请求形状（未校验，见 IsolationRequest）
-    const reply = await run(/** @type {IsolationRequest} */ (request));
+    const req = /** @type {IsolationRequest} */ (request);
+    const reply = { ...(await run(req)), nonce: req.nonce };
     const done = () => process.disconnect();
-    try { process.send(reply, done); } catch (err) { process.send(notCloneable(err), done); }
+    try { process.send(reply, done); } catch (err) { process.send(notCloneable(err, reply.nonce), done); }
   });
 }

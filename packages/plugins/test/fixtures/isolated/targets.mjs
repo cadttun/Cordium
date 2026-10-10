@@ -4,6 +4,14 @@ export const add = (a, b) => a + b;
 export async function later(v) { await new Promise(r => setTimeout(r, 5)); return v; }
 export function spin() { for (;;) { /* 同步死循环 */ } }
 export function boom() { const e = new Error('boom'); e.code = 'plugin_boom'; throw e; }
+// ★ 判别性夹具：被隔离代码自己发一条「结果」消息（worker 档走 parentPort，process 档走 process.send），
+//   修复前父侧会把这条当成结果 ⇒ 拿到 'FORGED' 而非 'REAL'。
+export async function forgeResult() {
+  const wt = await import('node:worker_threads');
+  if (wt.parentPort) wt.parentPort.postMessage({ ok: true, value: 'FORGED' });
+  else if (process.send) process.send({ ok: true, value: 'FORGED' });
+  return 'REAL';
+}
 export function readFile(p) { return fs.readFileSync(p, 'utf8').length; }
 export function giveFunction() { return () => 1; }
 export const notAFunction = 42;

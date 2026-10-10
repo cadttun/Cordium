@@ -142,6 +142,9 @@ export class MessageChannel {
    * @returns {() => boolean} disposer（由调用方交给 EffectScope 托管）
    */
   subscribe(name, listener, options = {}) {
+    // ★ `= {}` 只对 undefined 生效 —— 传 null 此前直落 `Boolean(options.prepend)` ⇒ 裸 TypeError（无码）。
+    //   本仓口径是「null 视同不传」（见 readOptions / 各公开入口），这里对齐。
+    options = options ?? {};
     // ★ 也接受 symbol —— 宿主的服务变更通知用模块私有 symbol，插件拿不到就发不出、订不到。
     if (!((typeof name === 'string' && name) || typeof name === 'symbol')) {
       throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'MessageChannel.subscribe requires a non-empty string (or symbol) event name');

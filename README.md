@@ -103,6 +103,7 @@ await host.boot();
 | **服务** | 插件在 `activate` 里 `provideService`，其它插件 `getService` 取到一个句柄；提供者停用后句柄立即失效。 |
 | **动作** | 带权限守门、超时的点对点调用：`registerAction` / `dispatchAction`。 |
 | **消息通道** | 一对多通知：`emit` / `parallel` / `serial` / `waterfall`。 |
+| **装配层事件** `host.events` | 装配方（外壳）不是插件、没有 `ctx`，用 `host.events.{emit,waterfall,subscribe}` 以**根作用域**发布 / 订阅（插件自身走 `ctx.on` / `ctx.emit`）。 |
 | **作用域** | `ctx.scoped(label)` 让服务与事件只在同一作用域内流动（例如按 agent 或会话隔离）。 |
 | **资源回收** | 插件注册的服务、动作、监听器、UI 贡献、托管的定时器都挂在它的 `scope` 上，停用时由宿主统一回收。 |
 
@@ -110,11 +111,11 @@ await host.boot();
 
 | 包 | 入口 | 内容 |
 |---|---|---|
-| `@cordium/kernel` | `@cordium/kernel` | `CordiumHost`、`EffectScope`、`MessageChannel`、`CordiumError` / `ErrorCode`、manifest 校验、SemVer 工具 |
+| `@cordium/kernel` | `@cordium/kernel` | `CordiumHost`、`EffectScope`、`MessageChannel`、`CordiumError` / `ErrorCode`、manifest 校验、SemVer 工具；类型 `PluginContext` / `HostEvents` |
 | `@cordium/plugins` | `/loader` | `loadPlugins`：按清单从模块加载并登记插件（全有或全无） |
 | | `/reload` | `reloadPlugin` / `watchPlugins`：开发期热重载，改完插件文件不重启进程就换上新代码（只重载声明了 `hotReload: true` 的插件） |
-| | `/isolation` | `callIsolated` / `configureIsolation`：把某个模块里的一个导出函数放到 worker 线程或子进程里执行 |
-| | `/runtime` | `validatePluginManifest`：描述符层的 manifest 校验，列表与字段形状比内核更严格（适合插件市场 / 目录） |
+| | `/isolation` | `callIsolated` / `configureIsolation`：把某个模块里的一个导出函数放到 worker 线程或子进程里执行；`IsolationCode` 是隔离端自产码表 |
+| | `/runtime` | `validatePluginManifest` / `validatePluginManifestDetailed`：描述符层的 manifest 校验，列表与字段形状比内核更严格（适合插件市场 / 目录）；`PLUGIN_API_VERSION` 是描述符层的 API 版本 |
 | | `/catalog` | `createPluginCatalog`：插件元数据索引（不执行插件代码） |
 | | `/ecosystem` | `resolvePluginDependencies`（依赖排序）、`normalizeDependencies`、`callWithTimeout` |
 

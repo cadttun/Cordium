@@ -138,8 +138,8 @@ export declare class CordiumHost {
      * ⚠️ 归属说明：`ctx.log` 的级别来自**插件**，但校验点在这里（宿主自己的日志入口）。
      *   宿主内部调用一律写 `ErrorCode.X` 之类的字面量，不受影响。
      *
-     * ★ `details` 是【可选】的：宿主内部多处 `this.log('info', '…')` 只传两参（如 `:852` 的
-     *   `Plugin registered`）。此前 JSDoc 无 `@param` ⇒ 生成的 `.d.mts` 把 `details` 标成
+     * ★ `details` 是【可选】的：宿主内部多处 `this.log('info', '…')` 只传两参（如
+     *   `Plugin registered` 那条）。此前 JSDoc 无 `@param` ⇒ 生成的 `.d.mts` 把 `details` 标成
      *   **必需**（`details: any`）⇒ 消费方 `host.log('info', msg)` 报 `TS2554`（消费方实测）。
      *   补 `[details]` 让产物转出 `details?: unknown`（用 `unknown` 而非 `object`：`ctx.log`
      *   的转发 `data` 是 `unknown`，收 `object` 会让内核自身报 `TS2345`）。

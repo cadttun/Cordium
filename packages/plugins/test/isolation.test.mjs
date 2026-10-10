@@ -58,6 +58,13 @@ for (const mode of ['worker', 'process']) {
     await assert.rejects(callIsolated(TARGET, 'notAFunction', [], { mode }), hasCode('isolated_call_failed', /not a function/));
     await assert.rejects(callIsolated(TARGET, 'giveFunction', [], { mode }), hasCode('isolated_call_failed', /result_not_cloneable|DataClone/));
   });
+
+  test(`${mode} ★ 隔离内代码自己发的消息不得顶掉真实返回值（回包按 nonce 关联）`, async () => {
+    // 被隔离代码与 runner 同处一个 worker / 进程，能自行 postMessage / process.send。
+    // 修复前：父侧把「第一条消息」当结果 ⇒ 这里会拿到 'FORGED'。
+    assert.equal(await callIsolated(TARGET, 'forgeResult', [], { mode }), 'REAL',
+      '被隔离代码 postMessage 一条伪结果 ⇒ 父侧必须仍拿到真实返回值');
+  });
 }
 
 // ─────────── `err.cause.code`：第二码域（隔离端自产码）的契约 ───────────

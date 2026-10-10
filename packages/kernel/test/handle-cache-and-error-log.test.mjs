@@ -39,6 +39,24 @@ test('★ 句柄的方法标识必须稳定（不再每次取属性都新建闭�
   assert.equal(handle.ping(), 'pong', '缓存不得改变行为');
 });
 
+test('★★ 句柄的 getOwnPropertyDescriptor 不得漏出裸方法（否则绕过生命周期门）', async () => {
+  // 修复前：Proxy 未拦 getOwnPropertyDescriptor ⇒ `Object.getOwnPropertyDescriptor(handle,'ping').value`
+  //   是【未包装的裸实现方法】，调用它绕过每次调用前的 check（provider 停用后照跑，实测）。
+  const host = makeHandleHost();
+  let handle = null;
+  host.registerPlugin(
+    { id: 'plugin.d', version: '1.0.0', apiVersion: '1.0.0', dependencies: { 'plugin.p': '^1.0.0' } },
+    { async activate(ctx) { handle = ctx.getService(SERVICE); } }
+  );
+  await host.boot();
+
+  const desc = Object.getOwnPropertyDescriptor(handle, 'ping');
+  assert.equal(typeof desc.value, 'function');
+  // ★ 判别性：描述符里的 value 必须是【包装后】的同一个函数（=== get 拿到的），不是裸实现
+  assert.equal(desc.value, handle.ping, 'getOwnPropertyDescriptor 的 value 必须与 get 拿到的是同一个包装函数');
+  assert.equal(desc.value(), 'pong', '正向对照：正常时经描述符取到的函数照常可用');
+});
+
 test('★★ 缓存必须【按句柄】—— 两个消费者各持句柄时，绝不能共用同一个 check', async () => {
   // 这是本项最危险的陷阱：同一个实现对象会被多个句柄包着，
   // 而每个句柄的 check 闭包捕获的 callerPluginId 各不相同。

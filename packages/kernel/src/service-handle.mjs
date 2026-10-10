@@ -114,48 +114,72 @@ export function wrapServiceHandle(serviceName, impl, check, providerId) {
    */
   const wrappedCache = new Map();
 
+  // 自有属性是否「不可写且不可配置」—— 若是，Proxy 不变量要求原样返回其值（被 Object.freeze 过就是这样）。
+  const isFrozenOwn = (target, prop) => {
+    const d = Object.getOwnPropertyDescriptor(target, prop);
+    return !!d && d.writable === false && d.configurable === false;
+  };
+
+  // 取（或建）某方法的包装函数。★ 迟绑定读 target[prop]，不捕获此刻的值 ——
+  //   否则实现方后续替换方法时，句柄会一直调用【旧】方法，且无任何提示。
+  const wrappedFor = (target, prop) => {
+    let wrapped = wrappedCache.get(prop);
+    if (!wrapped) {
+      wrapped = (...args) => {
+        const reason = check();
+        if (reason) {
+          throw new CordiumError(ErrorCode.SERVICE_UNAVAILABLE, `Service '${serviceName}' is unavailable: ${reason}`);
+        }
+        // ★ 迟绑定读到的已不是函数（getter 变脸 / 实现方自己删了方法）⇒ 带码失败，
+        //   而不是让消费者拿到一条不带 code、不指向提供者的引擎级 TypeError。
+        const current = target[prop];
+        if (typeof current !== 'function') {
+          throw new CordiumError(ErrorCode.INVALID_IMPLEMENTATION,
+            `Service '${serviceName}': method '${String(prop)}' is no longer a function on the provider's implementation`);
+        }
+        const failed = err => new CordiumError(ErrorCode.SERVICE_FAILED,
+          `Service '${serviceName}' method '${String(prop)}' (provider '${providerId}') failed: ${summarizeCause(err)}`,
+          { cause: err, pluginId: providerId });
+        let result;
+        try {
+          result = current.apply(target, args);
+        } catch (err) {
+          throw failed(err);
+        }
+        if (result instanceof Promise) return result.then(undefined, err => { throw failed(err); });
+        return result;
+      };
+      wrappedCache.set(prop, wrapped);
+    }
+    return wrapped;
+  };
+
   return new Proxy(impl, {
     get(target, prop) {
       const value = target[prop];
       if (typeof value !== 'function') return value;
-
       // 不变量：自有 + 不可写 + 不可配置的属性必须原样返回，不能替换成包装函数
-      const ownDesc = Object.getOwnPropertyDescriptor(target, prop);
-      if (ownDesc && ownDesc.writable === false && ownDesc.configurable === false) {
-        return value;
+      if (isFrozenOwn(target, prop)) return value;
+      return wrappedFor(target, prop);
+    },
+    /**
+     * ★ 补 getOwnPropertyDescriptor 陷阱 —— 此前只拦 get / set / delete / define / setPrototypeOf / preventExtensions，
+     *   于是 `Object.getOwnPropertyDescriptor(handle, 'm').value` 拿到**未包装的裸方法**，绕过每次调用前的生命周期门（实测复现：
+     *   provider 已失效仍照跑）。`Object.keys` / `Object.entries` / 展开描述符等也经它读 value。
+     * ★ 不变量（MDN · handler.getOwnPropertyDescriptor）：target 属性 non-configurable 且 non-writable 时必须原样返回；
+     *   否则 `value` 可替换。此处与 get 陷阱同一条件、返回**同一个**包装函数（缓存复用
+     *   ⇒ `handle.m === Object.getOwnPropertyDescriptor(handle,'m').value`）。
+     * ⚠️ 残留：`Object.getPrototypeOf(handle).method` 对**类实例**实现仍是裸方法 ——
+     *   拦它要换掉原型、会破 `instanceof` 与不变量；普通对象字面量实现（本仓常态）不受影响。
+     */
+    getOwnPropertyDescriptor(target, prop) {
+      const desc = Reflect.getOwnPropertyDescriptor(target, prop);
+      if (!desc) return desc;
+      // 数据属性且值是函数 ⇒ value 换成包装后的（访问器属性没有 value，原样返回）
+      if ('value' in desc && typeof desc.value === 'function' && !isFrozenOwn(target, prop)) {
+        return { ...desc, value: wrappedFor(target, prop) };
       }
-
-      let wrapped = wrappedCache.get(prop);
-      if (!wrapped) {
-        // ★ 调用时【重新读】target[prop]（迟绑定），而不是把此刻的 value 捕获进闭包 ——
-        //   否则实现方后续替换方法时，句柄会一直调用【旧】方法，且无任何提示。
-        wrapped = (...args) => {
-          const reason = check();
-          if (reason) {
-            throw new CordiumError(ErrorCode.SERVICE_UNAVAILABLE, `Service '${serviceName}' is unavailable: ${reason}`);
-          }
-          // ★ 迟绑定读到的已不是函数（getter 变脸 / 实现方自己删了方法）⇒ 带码失败，
-          //   而不是让消费者拿到一条不带 code、不指向提供者的引擎级 TypeError。
-          const current = target[prop];
-          if (typeof current !== 'function') {
-            throw new CordiumError(ErrorCode.INVALID_IMPLEMENTATION,
-              `Service '${serviceName}': method '${String(prop)}' is no longer a function on the provider's implementation`);
-          }
-          const failed = err => new CordiumError(ErrorCode.SERVICE_FAILED,
-            `Service '${serviceName}' method '${String(prop)}' (provider '${providerId}') failed: ${summarizeCause(err)}`,
-            { cause: err, pluginId: providerId });
-          let result;
-          try {
-            result = current.apply(target, args);
-          } catch (err) {
-            throw failed(err);
-          }
-          if (result instanceof Promise) return result.then(undefined, err => { throw failed(err); });
-          return result;
-        };
-        wrappedCache.set(prop, wrapped);
-      }
-      return wrapped;
+      return desc;
     },
     // ★ 句柄只读。此前只有 get 陷阱 ⇒ 写 / 删 / 定义直落共享的实现对象，
     //   一个消费者 `handle.ping = …` 就替所有消费者（含 getInternalService）换掉了方法。
