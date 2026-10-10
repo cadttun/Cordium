@@ -686,7 +686,7 @@ const result = await callIsolated('/abs/path/heavy.mjs', 'crunch', [data], {
 
 本节讲怎么把插件跑起来看、怎么给它写自动化测试。
 
-★ 先说结论：**本仓不提供测试替身** —— 两个包的 `exports` 里没有 `./testing`，`files: ["src"]` 又把 `test/` 挡在包外，连内核自己那个「只走公开 API」的观察工具外部也拿不到。但**宿主本身就是测试工具**：`CordiumHost` 可以直接 `new`（零参数），插件可以用内联 `entry` 注册，**不起任何文件**就能测。
+★ 先说结论：**本仓不提供测试替身** —— 两个包的 `exports` 里没有 `./testing`，`files: ["src", "types"]` 又把 `test/` 挡在包外，连内核自己那个「只走公开 API」的观察工具外部也拿不到。但**宿主本身就是测试工具**：`CordiumHost` 可以直接 `new`（零参数），插件可以用内联 `entry` 注册，**不起任何文件**就能测。
 
 ### 最小装配
 

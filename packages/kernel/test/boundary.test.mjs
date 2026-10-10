@@ -299,6 +299,15 @@ test('★ 发布面文档的版本声明随包版本同步（徽章 / 正文 / �
     for (const got of found) if (got !== v) bad.push(`${label}：README 写 ${got}，包版本是 ${v}`);
   }
 
+  // ★ 两个包的 README 同样是发布面（npm 强制把 README.md 打进 tarball，`files` 挡不住），
+  //   其依赖 pin 必须同步 —— 此前只扫根 README ⇒ `packages/plugins/README.md` 的 pin
+  //   停在旧版本、无人发现。此处只查「写了就必须对」：没写 pin 不报（内核包就没有）。
+  for (const pkg of ['packages/kernel', 'packages/plugins']) {
+    for (const m of read(`${pkg}/README.md`).matchAll(/@cordium\/kernel@([0-9][\w.-]*)/g)) {
+      if (m[1] !== v) bad.push(`${pkg}/README.md 的依赖 pin 写 ${m[1]}，包版本是 ${v}`);
+    }
+  }
+
   const security = read('SECURITY.md');
   if (!security.includes(`| ${minorLine} | ✅ |`)) bad.push(`SECURITY 支持版本表未把当前版本线 ${minorLine} 标为受支持`);
 

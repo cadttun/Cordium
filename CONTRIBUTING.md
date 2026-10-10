@@ -3,7 +3,7 @@
 ## 开发环境
 
 - Node.js ≥ 22.13（CI 覆盖 22 / 24 / 26）
-- 运行时零第三方依赖；`npm install` 建立两个 workspace 的链接（`@cordium/plugins` 依赖同仓的 `@cordium/kernel`，不是外部包），并装一个**开发期**依赖 `oxlint`（见下方静态检查；不进发布物）
+- 运行时零第三方依赖；`npm install` 建立两个 workspace 的链接（`@cordium/plugins` 依赖同仓的 `@cordium/kernel`，不是外部包），并装三个**开发期**依赖（`oxlint`、`typescript`、`@types/node`；均不进发布物）
 
 ```bash
 npm test               # 两包全部测试
