@@ -185,5 +185,23 @@ export declare function measureValue(value: any, { maxNodes, stopAtBytes, stopAt
 /**
  * 对外交出一条日志的副本（诊断只读快照，不是审计记录的写入口）。
  * details 写入时已是快照，必然可克隆。
+ *
+ * ★ 参数 / 返回类型必须写明：此前二者皆缺 ⇒ tsc 推成隐式 `any` ⇒
+ *   `getDiagnostics()` 的 `recentLogs` / `recentErrors` 静默退化成 `any[]`。
+ *   二者虽在**不稳定面**，但「一条日志快照的形状」是确定的 —— 形状确定就该标出来。
+ * @param {{ timestamp: number, level: string, message: string, details?: any, stack?: string }} entry
+ * @returns {{ timestamp: number, level: string, message: string, details?: any, stack?: string }}
  */
-export declare function copyLogEntry(entry: any): any;
+export declare function copyLogEntry(entry: {
+    timestamp: number;
+    level: string;
+    message: string;
+    details?: any;
+    stack?: string;
+}): {
+    timestamp: number;
+    level: string;
+    message: string;
+    details?: any;
+    stack?: string;
+};

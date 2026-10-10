@@ -185,7 +185,7 @@ export class CordiumHost {
    * ★ 这也是「孤儿 JSDoc」的**第三种形态**（前两种见 jsdoc-attachment.test.mjs 的堆叠 / 再导出）：
    *   文档没挂错，只是挂在了**一个不产生类型的位置**上，静默无感。
    * @type {Map<string, {
-   *   manifest: any,
+   *   manifest: import('./types.mjs').PluginManifest,
    *   entry: any,
    *   state: string,
    *   scope: EffectScope | null,
@@ -284,6 +284,7 @@ export class CordiumHost {
    * ⚠️ 边界（如实标注）：这是「名字必须由宿主定义」，**不是**授予审批。
    *   插件申请一个已登记的权限，注册时即获得 —— 宿主若需逐个审批，应在装配层决定注册哪些插件。
    *   插件是同进程、无沙箱的代码，权限门守的是【声明一致性】，不是安全边界。
+   * @type {Set<string>}
    */
   #permissions = new Set();
   /**
@@ -2797,7 +2798,10 @@ export class CordiumHost {
         //     （同 channel.scopes 的既定口径，见下方）。
         scopedProviders: Array.from(s.scopedProviders, ([scopeKey, bucket]) => ({
           scopeKey: String(scopeKey),
-          providerId: bucket.keys().next().value ?? null
+          // ★ 同 `activeProvider`：`keys().next().value` 在本仓 TS 版本里被推成 `any`
+          //   （`IteratorResult` 的 `TReturn` 泛型**默认 `any`**，官方 5.6 说明逐字），
+          //   断言的是**已知事实**（桶键是 `string`），不是绕过类型。
+          providerId: /** @type {string | null} */ (bucket.keys().next().value ?? null)
         }))
       })),
       actionsCount: this.#actionHandlers.size,

@@ -415,14 +415,26 @@ export declare class CordiumHost {
             scopedProviderCount: number;
             scopedProviders: {
                 scopeKey: string;
-                providerId: any;
+                providerId: string | null;
             }[];
         }[];
         actionsCount: number;
-        permissions: any[];
+        permissions: string[];
         uiContributionsCount: number;
-        recentLogs: any[];
-        recentErrors: any[];
+        recentLogs: {
+            timestamp: number;
+            level: string;
+            message: string;
+            details?: any;
+            stack?: string;
+        }[];
+        recentErrors: {
+            timestamp: number;
+            level: string;
+            message: string;
+            details?: any;
+            stack?: string;
+        }[];
         errorLogCount: number;
         manifestDiagnostics: {
             path: string;
