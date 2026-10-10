@@ -59,11 +59,14 @@ for (const mode of ['worker', 'process']) {
     await assert.rejects(callIsolated(TARGET, 'giveFunction', [], { mode }), hasCode('isolated_call_failed', /result_not_cloneable|DataClone/));
   });
 
-  test(`${mode} ★ 隔离内代码自己发的消息不得顶掉真实返回值（回包按 nonce 关联）`, async () => {
+  test(`${mode} ★ 隔离内代码发的【无 nonce 伪消息】不得顶掉真实返回值（回包按 nonce 关联）`, async () => {
     // 被隔离代码与 runner 同处一个 worker / 进程，能自行 postMessage / process.send。
     // 修复前：父侧把「第一条消息」当结果 ⇒ 这里会拿到 'FORGED'。
+    // ★ 判据的边界（据实）：本夹具发的是**不带 nonce** 的伪消息。父侧只认带对 nonce 的回包 ⇒ 挡的是「意外串扰」。
+    //   worker 档里被隔离代码**读得到 `workerData.nonce`** ⇒ 蓄意伪造（读 nonce 再回带）挡不住 ——
+    //   隔离档是**故障隔离**、非安全沙箱（见 isolation.mjs 文件头口径）。
     assert.equal(await callIsolated(TARGET, 'forgeResult', [], { mode }), 'REAL',
-      '被隔离代码 postMessage 一条伪结果 ⇒ 父侧必须仍拿到真实返回值');
+      '被隔离代码 postMessage 一条无 nonce 伪结果 ⇒ 父侧必须仍拿到真实返回值');
   });
 }
 

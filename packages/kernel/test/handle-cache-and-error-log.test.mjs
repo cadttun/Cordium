@@ -68,6 +68,33 @@ test('★★ 句柄的 getOwnPropertyDescriptor 不得漏出裸方法（否则�
     '★ 描述符取到的函数必须是【受门控的包装】：停用后必须失效，否则就是漏了裸方法');
 });
 
+test('★★ 句柄的访问器属性也必须过生命周期门（get 与 getOwnPropertyDescriptor 两条路）', async () => {
+  // 读访问器 = 执行提供者的 getter = 提供者的**代码**，与「方法调用」同档。
+  // 修复前：get 陷阱只包函数值 ⇒ 访问器返回值非函数、原样返回、不过门；描述符也不包 get ⇒ `desc.get` 是裸 getter。
+  const host = new CordiumHost();
+  host.declareServiceContracts({ [SERVICE]: { access: 'public' } });
+  let handle = null;
+  host.registerPlugin(
+    { id: 'plugin.acc', version: '1.0.0', apiVersion: '1.0.0', provides: [SERVICE] },
+    { async activate(ctx) { ctx.provideService(SERVICE, { ping: () => 'pong', get acc() { return 'ACC'; } }); } }
+  );
+  host.registerPlugin(
+    { id: 'plugin.acc-consumer', version: '1.0.0', apiVersion: '1.0.0', dependencies: { 'plugin.acc': '^1.0.0' } },
+    { async activate(ctx) { handle = ctx.getService(SERVICE); } }
+  );
+  await host.boot();
+
+  assert.equal(handle.acc, 'ACC', '正常时读访问器照常可用');
+  const desc = Object.getOwnPropertyDescriptor(handle, 'acc');
+  assert.equal(desc.get.call(handle), 'ACC', '正向对照：正常时经描述符的 getter 照常可用');
+
+  await host.deactivatePlugin('plugin.acc');
+  assert.throws(() => handle.acc, err => err.code === 'service_unavailable',
+    '★ 停用后【直接读访问器】必须失效（读它=执行提供者代码）');
+  assert.throws(() => desc.get.call(handle), err => err.code === 'service_unavailable',
+    '★ 停用后【经描述符取到的 getter】也必须失效，否则就是漏了裸 getter');
+});
+
 test('★★ 缓存必须【按句柄】—— 两个消费者各持句柄时，绝不能共用同一个 check', async () => {
   // 这是本项最危险的陷阱：同一个实现对象会被多个句柄包着，
   // 而每个句柄的 check 闭包捕获的 callerPluginId 各不相同。

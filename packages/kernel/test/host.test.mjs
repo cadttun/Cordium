@@ -94,11 +94,12 @@ test('Kernel Service & Dependency: Topological ordering and singleton service sw
     }
   });
 
-  await assert.rejects(
-    () => host.activatePlugin('plugin.infra.logger-advanced'),
-    hasCode('provider_conflict', /is already provided by plugin 'plugin\.infra\.logger'/),
-    '★ 第二个提供者必须被拒绝（一个名字一个提供者），不得静默覆盖或靠选主解决'
-  );
+  const conflict = await host.activatePlugin('plugin.infra.logger-advanced').then(() => null, e => e);
+  assert.equal(conflict?.code, 'provider_conflict',
+    '★ 第二个提供者必须被拒绝（一个名字一个提供者），不得静默覆盖或靠选主解决');
+  assert.match(conflict.message, /is already provided by plugin 'plugin\.infra\.logger'/);
+  assert.equal(conflict.pluginId, 'plugin.infra.logger-advanced',
+    '★ 归因到【发起本次注册】的提供者 —— 去掉它，审计里就查不到是谁在撞名');
 
   // 既有提供者不受影响
   assert.equal(

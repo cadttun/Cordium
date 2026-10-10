@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- ★ **服务句柄的【访问器属性】此前绕过生命周期门**（`@cordium/kernel`）：句柄 Proxy 的 `get` 陷阱只包**函数值**，而读访问器属性会**直接执行提供者的 getter**（返回常非函数）⇒ 原样返回、**不过门**；`getOwnPropertyDescriptor` 陷阱同样不包 `get` ⇒ `desc.get.call(handle)` 是**裸 getter**。实测：provider 停用后 `handle.acc` 与 `Object.getOwnPropertyDescriptor(handle,'acc').get.call(handle)` 都照跑。★ 读访问器 = 执行提供者的**代码**，与「方法调用」同档 ⇒ 现两条路都过门（`get` 陷阱读前判访问器；描述符的 `get` / `set` 包一层）。**数据属性不受影响**（惰性值，读它不执行任何提供者代码）⇒ 本仓常态（普通对象字面量）行为逐字不变。
 - ★ **`recordManifestDiagnostic` 的 `severity` 非法值降级为 `warn`**（`@cordium/kernel`）：此前不校验，非法值会让下游 `log` 抛 `invalid_argument`，而那时条目**已入快照** ⇒ **既记了又抛**（半成品状态）。口径同 `onListenerOverflow` / `onScopeConflict`：**诊断只上报，绝不抛**。仅在传入非法 `severity` 时改变行为（合法值原样保留）。
 - ★ **`host.getUIContributions(type)` 的 `type` 参数由「必需」改「可选」**（`@cordium/kernel`）：实现一直把 `type` 当**可选**（不传 ⇒ 返回全部），但公开类型把它标成**必需** —— 因为该方法此前**没有 JSDoc**，`tsc --emitDeclarationOnly` 把参数推成 `any`（必需）⇒ 消费方在类型层面**无法省略** `type`，只能靠断言绕过。现补齐 JSDoc（`@param {string} [type]`），使声明与实现对齐；返回类型仍为 `any[]`（不变）。`UIRegistry.list(type)` 同款修正，保持两者一致。**行为零变化**，纯类型声明订正。
 

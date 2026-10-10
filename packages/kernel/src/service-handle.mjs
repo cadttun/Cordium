@@ -154,8 +154,38 @@ export function wrapServiceHandle(serviceName, impl, check, providerId) {
     return wrapped;
   };
 
+  /**
+   * 访问器属性 = 提供者的**代码**（读它就执行 getter），与「方法调用」同档 ⇒ 读前必须过门。
+   *
+   * ★ 修的是：`const value = target[prop]` 会**直接执行 getter**，且返回值常非函数
+   *   ⇒ 原样返回、**不过门** ⇒ 句柄失效后读访问器属性照跑
+   *   （实测：`Object.getOwnPropertyDescriptor(handle,'acc').get.call(h)` → `'ACC'`）。
+   *   本仓常态是普通对象字面量（数据属性），访问器属边角 —— 但边角也是提供者代码，不能漏门。
+   *   ⚠️ 数据属性是**惰性值**（读它不执行任何提供者代码）⇒ 仍原样返回，本改动不影响。
+   */
+  const gateAccessor = (target, prop) => {
+    if (!isAccessor(target, prop)) return;
+    const reason = check();
+    if (reason) {
+      throw new CordiumError(ErrorCode.SERVICE_UNAVAILABLE, `Service '${serviceName}' is unavailable: ${reason}`);
+    }
+  };
+
+  /** 把描述符里的 get / set 包一层（过门后再以【原对象】为 this 调用）。`undefined` 原样返回。 */
+  const gatedAccessor = (target, prop, fn) => {
+    if (typeof fn !== 'function') return fn;
+    return function (...args) {
+      const reason = check();
+      if (reason) {
+        throw new CordiumError(ErrorCode.SERVICE_UNAVAILABLE, `Service '${serviceName}' is unavailable: ${reason}`);
+      }
+      return fn.apply(target, args);
+    };
+  };
+
   return new Proxy(impl, {
     get(target, prop) {
+      gateAccessor(target, prop);          // ★ 访问器：读前过门（见上）
       const value = target[prop];
       if (typeof value !== 'function') return value;
       // 不变量：自有 + 不可写 + 不可配置的属性必须原样返回，不能替换成包装函数
@@ -166,18 +196,23 @@ export function wrapServiceHandle(serviceName, impl, check, providerId) {
      * ★ 补 getOwnPropertyDescriptor 陷阱 —— 此前只拦 get / set / delete / define / setPrototypeOf / preventExtensions，
      *   于是 `Object.getOwnPropertyDescriptor(handle, 'm').value` 拿到**未包装的裸方法**，绕过每次调用前的生命周期门（实测复现：
      *   provider 已失效仍照跑）。`Object.keys` / `Object.entries` / 展开描述符等也经它读 value。
-     * ★ 不变量（MDN · handler.getOwnPropertyDescriptor）：target 属性 non-configurable 且 non-writable 时必须原样返回；
-     *   否则 `value` 可替换。此处与 get 陷阱同一条件、返回**同一个**包装函数（缓存复用
-     *   ⇒ `handle.m === Object.getOwnPropertyDescriptor(handle,'m').value`）。
+     * ★ 不变量（MDN · handler.getOwnPropertyDescriptor）：target 属性 non-configurable 时必须原样返回
+     *   （数据属性还要 non-writable）；否则 `value` / `get` / `set` 可替换。此处与 get 陷阱同一条件、返回**同一个**包装函数
+     *   （缓存复用 ⇒ `handle.m === Object.getOwnPropertyDescriptor(handle,'m').value`）。
+     * ★ 访问器属性：`desc.get` / `desc.set` 也要包（否则 `desc.get.call(handle)` 直接跑裸 getter，绕过门）。
      * ⚠️ 残留：`Object.getPrototypeOf(handle).method` 对**类实例**实现仍是裸方法 ——
      *   拦它要换掉原型、会破 `instanceof` 与不变量；普通对象字面量实现（本仓常态）不受影响。
      */
     getOwnPropertyDescriptor(target, prop) {
       const desc = Reflect.getOwnPropertyDescriptor(target, prop);
       if (!desc) return desc;
-      // 数据属性且值是函数 ⇒ value 换成包装后的（访问器属性没有 value，原样返回）
+      // 数据属性且值是函数 ⇒ value 换成包装后的
       if ('value' in desc && typeof desc.value === 'function' && !isFrozenOwn(target, prop)) {
         return { ...desc, value: wrappedFor(target, prop) };
+      }
+      // ★ 访问器属性 ⇒ get / set 换成过门的（不变量：仅 configurable 可换，non-configurable 必须原样）
+      if (('get' in desc || 'set' in desc) && desc.configurable !== false) {
+        return { ...desc, get: gatedAccessor(target, prop, desc.get), set: gatedAccessor(target, prop, desc.set) };
       }
       return desc;
     },

@@ -163,3 +163,28 @@ test('★ watchPlugins：保存即重载；出错交给 onError 且监视继续�
   await new Promise(r => setTimeout(r, 200));
   assert.equal(who(host), 'v4:x', 'close 之后改文件不再重载');
 });
+
+test('★ watchPlugins：onReload 自己抛错 ⇒ 不打断监视，且经 console.error 上报（不静默吞）', async (t) => {
+  // 回调是【用户代码】，它抛错不该把监视打断；但也【不该静默吞】—— 吞异常会掩盖真问题。
+  // ★ 判别性：把 safeCall 改回 `catch {}`，下面那条 console.error 断言会红（监视本身照样继续）。
+  const { file, host, entry } = await setup(t);
+  const seen = [];
+  const spy = t.mock.method(console, 'error', () => {});   // 吞掉真实输出、只记账（t.mock 自动还原）
+  const watcher = watchPlugins(host, [entry], {
+    debounceMs: 20,
+    onReload: r => { seen.push(r.version); throw new Error('onReload boom'); }
+  });
+  try {
+    fs.writeFileSync(file, source({ tag: 'v2', version: '1.0.1' }));
+    await waitFor(() => seen.length > 0);
+    assert.equal(host.getDiagnostics().plugins.find(p => p.id === 'demo.hot').version, '1.0.1',
+      '前置：重载本身已经完成');
+    assert.ok(spy.mock.calls.some(c => String(c.arguments[0]?.message).includes('onReload boom')),
+      '★ onReload 自己抛的错必须经 console.error 上报 —— 静默吞掉会让它凭空消失');
+
+    fs.writeFileSync(file, source({ tag: 'v3', version: '1.0.2' }));
+    await waitFor(() => seen.includes('1.0.2'));
+  } finally {
+    watcher.close();
+  }
+});
