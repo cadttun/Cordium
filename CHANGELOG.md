@@ -16,7 +16,7 @@
 两段都只在**确有**废弃 / 破坏时出现，**不预置空段**。
 （依据 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/) 对「deprecations, removals, and any breaking changes」的列举要求。）
 
-## [Unreleased]
+## [0.5.0] - 2026-10-14
 
 ### Changed
 
