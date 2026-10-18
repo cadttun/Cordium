@@ -404,7 +404,19 @@ export declare class CordiumHost {
                 reason: string;
             }[];
         }>;
-        services: object[];
+        services: {
+            name: string;
+            access: string;
+            requiredPermission: string | null | undefined;
+            methods: string[] | null;
+            activeProvider: string | null;
+            providerCount: number;
+            scopedProviderCount: number;
+            scopedProviders: Array<{
+                scopeKey: string;
+                providerId: string | null;
+            }>;
+        }[];
         actionsCount: number;
         permissions: string[];
         uiContributionsCount: number;

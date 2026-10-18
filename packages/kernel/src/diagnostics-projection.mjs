@@ -60,7 +60,22 @@ export function pluginSnapshot(id, record, unresolvedOf) {
  * @param {string} name
  * @param {{ access: string, requiredPermission?: string | null, methods?: readonly string[] | null,
  *           providers: Map<string, any>, scopedProviders: Map<string | symbol, Map<string, any>> }} contract
- * @returns {object}
+ * @returns {{
+ *   name: string,
+ *   access: string,
+ *   requiredPermission: string | null | undefined,
+ *   methods: string[] | null,
+ *   activeProvider: string | null,
+ *   providerCount: number,
+ *   scopedProviderCount: number,
+ *   scopedProviders: Array<{ scopeKey: string, providerId: string | null }>
+ * }}
+ *   ★ **前六个字段是 `DIAGNOSTICS_CONTRACT.stable['services[]']` 点名的承诺面**
+ *     （`name` / `access` / `requiredPermission` / `methods` / `activeProvider` / `providerCount`）
+ *     —— 此前这里写 `@returns {object}`，于是 `getDiagnostics()` 的 `services` 退化成
+ *     `object[]`：**承诺了却给 `any`**，消费方读 `d.services[0].name` 拿到的是 `any`，
+ *     契约在类型层形同不存在。
+ *   ★ 后两个（`scopedProviderCount` / `scopedProviders`）属**不稳定面**，列出来只为如实描述实现。
  */
 export function serviceSnapshot(name, contract) {
   return {
