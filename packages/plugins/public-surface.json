@@ -17,7 +17,8 @@
     "./isolation": [
       "IsolationCode",
       "callIsolated",
-      "configureIsolation"
+      "configureIsolation",
+      "startIsolated"
     ],
     "./loader": [
       "loadPlugins"

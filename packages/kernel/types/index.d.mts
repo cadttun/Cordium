@@ -11,6 +11,7 @@ export { CordiumHost } from './host.mjs';
 export { LifecycleState, ServiceAccess, SERVICE_ACCESS_VALUES, PluginKind, PLUGIN_KIND_VALUES, ActivationPolicy, ACTIVATION_POLICY_VALUES, LogLevel, LOG_LEVEL_VALUES, KERNEL_API_VERSION, HOST_CALLER, UnresolvedReason, UNRESOLVED_REASON_VALUES, validateManifest, DIAGNOSTICS_CONTRACT } from './types.mjs';
 export { isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';
 export { CordiumError, ErrorCode } from './errors.mjs';
+export { RetryClass, RETRY_CLASS_VALUES, RETRY_CLASS_BY_CODE, retryClassOf, isRetryable } from './retry-class.mjs';
 export { MessageChannel, DispatchMode, isBailed } from './channel.mjs';
 export { EffectScope } from './scope.mjs';
 export type PluginContext = import('./host.mjs').PluginContext;

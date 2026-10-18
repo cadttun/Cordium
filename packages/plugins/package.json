@@ -49,6 +49,10 @@
       "types": "./types/reload.d.mts",
       "default": "./src/reload.mjs"
     },
+    "./testing": {
+      "types": "./types/testing.d.mts",
+      "default": "./src/testing.mjs"
+    },
     "./package.json": "./package.json"
   }
 }

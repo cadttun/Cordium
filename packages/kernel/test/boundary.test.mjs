@@ -122,9 +122,13 @@ test('★ @cordium/kernel/internal 只许 plugins/src 引用（kernel 自己的�
 const readPkg = rel => JSON.parse(fs.readFileSync(path.join(ROOT, rel, 'package.json'), 'utf8'));
 
 test('★ exports 清单定稿（增删子路径 = 有意的 API 变更，必须同时改这里）', () => {
-  assert.deepEqual(Object.keys(readPkg('packages/kernel').exports).sort(), ['.', './internal', './package.json']);
+  // ★ `./testing` 是**预览档**：公开可达，但**不进公开面快照、不在 semver 承诺内**
+  //   （见 kernel/src/testing.mjs 文件头）。它出现在这里是因为「可达性」本身是公开事实，
+  //   而它**不**出现在 public-surface.json 里，因为「承诺面」是另一回事。
+  assert.deepEqual(Object.keys(readPkg('packages/kernel').exports).sort(),
+    ['.', './internal', './package.json', './testing']);
   assert.deepEqual(Object.keys(readPkg('packages/plugins').exports).sort(),
-    ['./catalog', './ecosystem', './isolation', './loader', './package.json', './reload', './runtime']);
+    ['./catalog', './ecosystem', './isolation', './loader', './package.json', './reload', './runtime', './testing']);
 });
 
 /**

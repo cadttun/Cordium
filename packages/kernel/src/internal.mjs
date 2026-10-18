@@ -31,6 +31,8 @@ export { LogLevel, LOG_LEVEL_VALUES } from './types.mjs';
 export { KERNEL_API_VERSION, isApiVersionCompatible } from './types.mjs';
 export { parseRange, isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';
 export { CordiumError, ErrorCode } from './errors.mjs';
+// ★ 重试分类也经 internal 转出：plugins 包判「这个码要不要退避」时不该连带加载整个宿主
+export { RetryClass, RETRY_CLASS_VALUES, RETRY_CLASS_BY_CODE, retryClassOf, isRetryable } from './retry-class.mjs';
 // Node setTimeout 上限：内核动作超时与 plugins 的 callWithTimeout / callIsolated 同一口径
 export { MAX_TIMER_MS, describeValue, describeError, errorDetails, firstFrame, summarizeCause, readOptions, runWithTimeout, measureValue } from './host-util.mjs';
 // ★ 深冻结：内核交付 manifest 与 plugins 冻结清单 config 是同一件事，共用一份实现

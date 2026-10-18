@@ -40,7 +40,15 @@ async function pluginContextMembers() {
   return Object.keys(ctx).sort();
 }
 
-/** 内核包公开面 */
+/**
+ * 内核包公开面
+ *
+ * ★★ 刻意**不含 `./testing`**：那一档是「公开可达、不承诺 semver」的预览面。
+ *   把它算进快照 ⇒ 夹具每改一次形状，`classifyBump` 都会判成 breaking ⇒
+ *   等于**给测试夹具加上了它明确不承担的承诺**。
+ *   ⇒ 预览面由 `testing-surface.test.mjs` 单独钉（只钉「不泄漏到主入口」与「显式具名导出」），
+ *     不参与跨版本 diff。
+ */
 export async function kernelSurface() {
   const pub = await load('packages/kernel/src/index.mjs');
   const int = await load('packages/kernel/src/internal.mjs');

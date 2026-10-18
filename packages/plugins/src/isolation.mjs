@@ -29,7 +29,7 @@
  *   · 每次调用新起一个隔离环境（worker ~20ms、process ~60ms 启动），不复用 ——
  *     适合「偶尔跑一段不可信 / 可能卡死的计算」，不适合高频小调用。
  *   · 三道闸（见「并发与内存闸」）：同时存活数 ≤ 上限（默认 CPU 核数，超出排队）；排队数有上限；
- *     在途负载总字节数有上限 —— 后两者超了立即抛 `isolation_busy`（背压：调用方稍后重试），不无限堆积。
+ *     在途负载总字节数有上限 —— 后两者超了立即抛 `isolation_busy`（背压：**未起任何环境**）。
  *     ⚠️ 两道闸的**口径要先知道**（都不是缺陷，是此前没写出来）：
  *       ① **`timeoutMs` 只算执行段，不含排队等待。** 计时器从 `spawn()` 起算（见 `awaitReply`），
  *          而排队发生在 `acquire()` 里、在它之前。排队位排满（`maxQueued` 默认 256）时，一个调用
@@ -162,7 +162,7 @@ export function configureIsolation(next) {
   return Object.freeze({ ...limits });
 }
 
-/** 登记在途字节；排队满 / 字节超 ⇒ 同步抛 isolation_busy（调用方据此退避重试） */
+/** 登记在途字节；排队满 / 字节超 ⇒ 同步抛 isolation_busy（**未起环境**，重试口径见 retry-class.mjs） */
 function reserve(bytes, pluginId) {
   if (live >= limits.maxConcurrent && waiting.length >= limits.maxQueued) {
     throw new CordiumError(ErrorCode.ISOLATION_BUSY,
@@ -174,12 +174,48 @@ function reserve(bytes, pluginId) {
   }
   pendingBytes += bytes;
 }
+/**
+ * 申请一个并发槽。
+ *
+ * ★ 返回的对象**同时**是「等待项」与「句柄」—— 取消要能在**排队阶段**下手：
+ *   此前 `waiting` 里只存 resolve 函数，一个还在排队的调用**没有任何可摘除的标识**，
+ *   想取消它只能等它自己跑完。取消排队项的价值最大：它**一格 CPU 都没花过**。
+ *
+ * @returns {{ promise: Promise<void>, cancel: (reason: any) => boolean, settled: boolean }}
+ */
 function acquire() {
-  if (live < limits.maxConcurrent) { live += 1; return Promise.resolve(); }
-  return new Promise(resolve => waiting.push(resolve));
+  if (live < limits.maxConcurrent) {
+    live += 1;
+    return { promise: Promise.resolve(), cancel: () => false, settled: true };
+  }
+  /** @type {any} */
+  const slot = { settled: false };
+  slot.promise = new Promise((resolve, reject) => {
+    slot.resolve = resolve;
+    slot.reject = reject;
+  });
+  // ★ cancel 是**闭包句柄**：拿不到它就没有取消能力（不接受 pluginId 这类可伪造的身份参数）。
+  //   返回 true = 真的从队列里摘掉了；false = 它已经不在队列里（已被放行或已取消过）。
+  slot.cancel = (reason) => {
+    if (slot.settled) return false;
+    const i = waiting.indexOf(slot);
+    if (i < 0) return false;
+    waiting.splice(i, 1);
+    slot.settled = true;
+    slot.reject(reason);
+    return true;
+  };
+  waiting.push(slot);
+  return slot;
 }
 function drain() {
-  while (waiting.length > 0 && live < limits.maxConcurrent) { live += 1; waiting.shift()(); }
+  while (waiting.length > 0 && live < limits.maxConcurrent) {
+    const slot = waiting.shift();
+    if (slot.settled) continue;              // 已被取消（防御：取消时已从队列摘除，正常不会走到）
+    slot.settled = true;
+    live += 1;
+    slot.resolve();
+  }
 }
 function release() {
   live -= 1;
@@ -190,7 +226,24 @@ function release() {
 const PERMISSION_FLAG = '--permission';
 
 /**
- * 在隔离环境里调用 `module` 的导出 `exportName`。
+ * 在隔离环境里调用 `module` 的导出 `exportName`，返回**可取消的句柄**。
+ *
+ * ★ 为什么是 `{ promise, cancel }` 而不是 `options.signal`（形态上的硬约束）：
+ *   1. `AbortSignal` **不可结构化克隆** ⇒ 过不了 worker / process 边界，
+ *      而 `callIsolated` **本身就是那条边界**。把 signal 塞进 options，
+ *      它最多只能被**父侧**读到 —— 那它取消的其实是「父侧等待」，不是隔离环境里的工作。
+ *   2. 本仓**没有「发起调用的消费方」这个概念**：`callIsolated` 由装配方直接调，
+ *      不在 `ctx` 上 ⇒ 没有地方安放「谁有权取消」。
+ *      ⇒ 取消权限只能落在**持有句柄**这件事上（capability，CWE-441 的正确形态）。
+ *   3. 业界对「跨线程取消」分三态处理：排队中（直接摘除，零成本）/
+ *      运行中有协作点（发消息）/ 运行中无协作点（**只能终止环境**）。
+ *      本仓的隔离档是**故障隔离**、被隔离代码不可信 ⇒ 只做第三态（终止式）。
+ *
+ * ★ 两阶段都可取消，且**语义不同**：
+ *   · **排队中** ⇒ 从队列摘掉，**一格 CPU 都没花**（取消价值最大的情形）；
+ *   · **运行中** ⇒ `worker.terminate()` / `child.kill()`，与 `timeoutMs` 同一套收尾。
+ *   两者都报 `call_cancelled`（**与 `call_timeout` 分开** —— 「我自己喊的停」
+ *   与「预算用完了」该触发完全不同的上游反应）。
  *
  * @param {string|URL} module 绝对路径或 file: URL（相对路径不收：相对谁会随调用方漂移）
  * @param {string} [exportName='default']
@@ -205,10 +258,11 @@ const PERMISSION_FLAG = '--permission';
  *   ⚠️ ArrayBuffer / Buffer 的数据不在 JS 堆里，不受此限（Node 的限制，实测）。
  * @param {readonly ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（**必须**出现在 args 里）。
  *   不在 args 里的 buffer 会被静默 detach 成数据丢失 ⇒ 带码拒绝。移交后调用方手里那块内存被清空（byteLength 变 0）—— 这是零拷贝的代价，调用后别再用它。
- * @returns {Promise<any>}
- * @throws {CordiumError} `isolation_busy`：排队已满或在途字节超限（见 configureIsolation）—— 未起任何环境，可重试
+ * @returns {{ promise: Promise<any>, cancel: (reason?: string) => boolean }}
+ *   `cancel` 返回 true = 这次调用确实被取消了；false = 它已经结束（成功 / 失败 / 超时 / 取消过）
+ * @throws {CordiumError} `isolation_busy`：排队已满或在途字节超限（见 configureIsolation）—— **未起任何环境**（零副作用）；重试口径见 `@cordium/kernel` 的 `retry-class.mjs`
  */
-export async function callIsolated(module, exportName = 'default', args = [], options) {
+export function startIsolated(module, exportName = 'default', args = [], options) {
   const { mode = 'worker', timeoutMs = 3000, pluginId = 'unknown', allowFsRead = [], allowFsWrite = [], transfer = [], maxMemoryMb = 1024 } = readOptions(options, 'callIsolated', ['mode', 'timeoutMs', 'pluginId', 'allowFsRead', 'allowFsWrite', 'transfer', 'maxMemoryMb']);
   // ★ pluginId 先验：它会被拼进每条报错；非字符串（如 toString 抛错的对象）此前在子环境回消息的
   //   事件回调里拼报文时抛出 ⇒ 未捕获异常直接打崩宿主进程（实测）。
@@ -308,20 +362,90 @@ export async function callIsolated(module, exportName = 'default', args = [], op
 
   const bytes = payloadBytes(args);
   reserve(bytes, pluginId);
-  try {
-    await acquire();
-    try {
-      return await awaitReply(spawn(), { mode, timeoutMs, pluginId, nonce });
-    } finally {
-      release();
+  /** @type {{channel: any, kill: any} | null} 已起的环境（取消时要真的收掉它） */
+  let running = null;
+  /** @type {null | (() => void)} 唤醒「运行中被取消」的等待者 */
+  let abortRunning = null;
+  const op = {
+    /** @type {Promise<any>} */
+    promise: /** @type {any} */ (null),
+    /**
+     * ★ 取消：**终止式**（不是协作式）。拿得到这个闭包才取消得了 —— 它是 capability，
+     *   **不接受 pluginId 这类可伪造的身份参数**。语义与 `timeoutMs` 一致：收掉隔离环境。
+     *
+     * 两个阶段都能取消：
+     *   · **排队中** ⇒ 直接从队列摘掉，**一格 CPU 都没花**（这是取消价值最大的情形）；
+     *   · **运行中** ⇒ 收掉 worker / 子进程。
+     *
+     * @param {string} [reason] 只进报文，不参与判定
+     * @returns {boolean} true = 这次调用确实被取消了；false = 它已经结束了（成功 / 失败 / 超时 / 取消过）
+     */
+    cancel: (reason = 'cancelled by caller') => {
+      if (slot.cancel(new CordiumError(ErrorCode.CALL_CANCELLED,
+        `Plugin '${pluginId}' isolated call cancelled while queued (${reason})`, { pluginId }))) return true;
+      if (abortRunning) { abortRunning(); return true; }
+      return false;
     }
-  } finally {
-    pendingBytes -= bytes;
-  }
+  };
+  const slot = acquire();
+  op.promise = (async () => {
+    try {
+      await slot.promise;
+      try {
+        // ★ 运行阶段的取消：`awaitReply` 里挂一个「被取消」的出口，
+        //   它与超时走**同一套收尾**（终止环境 + 释放槽），只是错误码不同。
+        running = spawn();
+        return await awaitReply(running, { mode, timeoutMs, pluginId, nonce }, (fire) => {
+          // ★ 一次性：触发后立刻摘掉，否则**重复取消**会一直返回 true
+          //   （对被取消过的调用谎称「我又取消了一次」）。实测会红。
+          abortRunning = () => { abortRunning = null; fire(); };
+        });
+      } finally {
+        // ★★ 必须清空 —— 否则调用结束后 `cancel()` 仍会命中上一轮的 abort 出口，
+        //   对一个**已经结束**的调用返回 true（谎报「我把它取消了」）。实测会红。
+        abortRunning = null;
+        release();
+      }
+    } finally {
+      pendingBytes -= bytes;
+    }
+  })();
+  return Object.freeze({ promise: op.promise, cancel: op.cancel });
 }
 
-/** 等隔离环境回一条消息（或超时 / 崩溃 / 退出），然后一律收掉它 */
-async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId, nonce }) {
+/**
+ * `startIsolated` 的**等待版** —— 就是本包此前的 `callIsolated`，语义逐字不变。
+ *
+ * ★ 为什么要有两个入口：`async function` 的返回值必然被包成一个新 Promise，
+ *   挂在它上面的 `cancel` 属性**取不到**（实测：`await` 前访问 `.cancel` 是 `undefined`）。
+ *   硬把句柄塞进 async 函数的返回值会得到一个「有时能取消、有时不能」的 API ——
+ *   比没有取消更糟。⇒ 取消是**独立入口**，旧入口保持纯 Promise。
+ *
+ * @param {string|URL} module
+ * @param {string} [exportName='default']
+ * @param {readonly any[]} [args=[]]
+ * @param {object} [options] 同 `startIsolated`
+ * @returns {Promise<any>}
+ */
+export function callIsolated(module, exportName = 'default', args = [], options) {
+  // ★ 入口校验是**同步抛**的（`invalid_argument` / `isolation_busy` 都在起环境之前）。
+  //   本入口此前是 `async` ⇒ 同步抛会被自动包成**拒绝的 Promise**；
+  //   改成普通函数后必须显式还原这一语义，否则调用方从 `await` 拿到的是**同步异常**
+  //   （`try { await callIsolated(...) }` 仍接得住，但 `.catch()` 接不住了 —— 是行为变更）。
+  let started;
+  try { started = startIsolated(module, exportName, args, options); } catch (err) { return Promise.reject(err); }
+  return started.promise;
+}
+
+/**
+ * 等隔离环境回一条消息（或超时 / 崩溃 / 退出 / 被取消），然后一律收掉它。
+ *
+ * ★ `onAbort` 由调用方注入（把「取消」接到本函数内部的某个出口上）。
+ *   它与超时**共用同一套收尾**：清 timer、摘监听、kill 环境。
+ *   区别只在错误码 —— `call_timeout` 是「预算用完了」，`call_cancelled` 是「调用方喊停」。
+ *   把两者混成一个码，消费方就分不清「我这个调用是不是自己取消的」。
+ */
+async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId, nonce }, onAbort) {
   let timer = null;
   let onMessage = null;
   try {
@@ -330,6 +454,13 @@ async function awaitReply({ channel, kill }, { mode, timeoutMs, pluginId, nonce 
         reject(new CordiumError(ErrorCode.CALL_TIMEOUT,
           `Plugin '${pluginId}' isolated call timed out after ${timeoutMs}ms (${mode} terminated)`, { pluginId }));
       }, timeoutMs);
+      // ★ 取消出口：与超时**共用** finally 的清理（清 timer / 摘监听 / kill）。
+      //   `settled` 防重复拒绝 —— 取消与真回包可能同时到达（竞态），
+      //   先到的那方赢，后到的必须被丢弃而不是当成协议错误。
+      if (onAbort) onAbort(() => {
+        reject(new CordiumError(ErrorCode.CALL_CANCELLED,
+          `Plugin '${pluginId}' isolated call cancelled (${mode} terminated)`, { pluginId }));
+      });
       // ★ 用 on + 手动摘除，不用 once：隔离内代码自己发的（无 / 错 nonce）消息可能先到，
       //   一旦被 once 消费掉，真回包来了就没人接、只能等超时。nonce 不匹配的一律忽略。
       onMessage = (msg) => {

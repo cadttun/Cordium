@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { hasCode } from './fixtures/errors.mjs';
-import { callIsolated as rawCallIsolated, IsolationCode } from '../src/isolation.mjs';
+import { callIsolated as rawCallIsolated, startIsolated, IsolationCode } from '../src/isolation.mjs';
 
 const TARGET = fileURLToPath(new URL('./fixtures/isolated/targets.mjs', import.meta.url));
 
@@ -376,3 +376,82 @@ for (const mode of ['worker', 'process']) {
     assert.doesNotMatch(notFn.message, /\(at /);
   });
 }
+
+// ── ★ 取消：capability 句柄，两阶段各一条判别性用例 ──
+//
+// ★ 为什么形态是 `{ promise, cancel }` 而不是 `options.signal`：
+//   `AbortSignal` **不可结构化克隆** ⇒ 过不了 worker / process 边界。
+//   而 `callIsolated` 本身就是那条边界。业界口径（跨线程取消）一致：
+//   队列阶段直接摘除，运行阶段由宿主收掉环境 —— 两者都是**宿主侧**的动作，
+//   所以判据必须是一个**宿主侧的能力**（闭包），不是一个跨不过去的信号对象。
+
+test('★ 取消·排队阶段：从队列摘除，一格 CPU 都没花；名额照常归还', async () => {
+  await withLimits({ maxConcurrent: 1, maxQueued: 8 }, async () => {
+    // a 占住唯一的并发槽（睡 300ms）；b 排队；c 排队后立刻取消。
+    const a = callIsolated(TARGET, 'sleep', [300]);
+    const b = callIsolated(TARGET, 'sleep', [10]);
+    const c = startIsolated(TARGET, 'add', [1, 2], { pluginId: 'queued-victim' });
+    // ★ 取消必须发生在 b 也还在排队时（否则 c 可能已经拿到槽）
+    assert.equal(c.cancel('caller changed its mind'), true, '排队中的句柄必须可取消');
+    await assert.rejects(c.promise, hasCode('call_cancelled', /queued-victim.*cancelled/));
+    // ★ 判别性：c 是 add，若它真跑过会返回 3；这里必须**没有**返回值
+    assert.deepEqual(await Promise.all([a, b]), [300, 10], '取消一个排队项不得影响其他项');
+    // ★ 名额没泄漏：并发 1 的情况下还能正常跑
+    assert.equal(await callIsolated(TARGET, 'add', [1, 2]), 3);
+  });
+});
+
+test('★ 取消·运行阶段：真的终止隔离环境（不是只不等待）', async () => {
+  // ★ 用 spin（同步死循环）—— 它**没有协作点**，任何「通知式取消」都拦不住它。
+  //   只有宿主侧终止环境才可能让它不再占 CPU。这条正是判别「终止式 vs 协作式」的用例。
+  const op = startIsolated(TARGET, 'spin', [], { timeoutMs: 30000, pluginId: 'runner' });
+  // 给它一点时间真的跑起来（spawn 之后才可能终止）
+  await new Promise(r => setTimeout(r, 150));
+  assert.equal(op.cancel('stop it'), true, '运行中的句柄必须可取消');
+  await assert.rejects(op.promise, hasCode('call_cancelled', /runner.*cancelled/));
+  // ★ 判别性：宿主事件循环没被占住（spin 若还在跑，这一行会卡住）
+  assert.equal(await callIsolated(TARGET, 'add', [1, 2]), 3, '取消后环境必须真的收掉，名额已归还');
+});
+
+test('★ 取消的边界：已结束的调用返回 false；重复取消幂等', async () => {
+  const done = startIsolated(TARGET, 'add', [1, 2]);
+  assert.equal(await done.promise, 3);
+  assert.equal(done.cancel(), false, '已完成 ⇒ false（不是"假装取消了"）');
+
+  const op = startIsolated(TARGET, 'sleep', [200]);
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(op.cancel(), true);
+  assert.equal(op.cancel(), false, '重复取消 ⇒ false（幂等，不抛）');
+  await assert.rejects(op.promise, hasCode('call_cancelled'));
+});
+
+test('★ 取消与超时是【两个码】（混成一个码，消费方分不清谁喊的停）', async () => {
+  const timedOut = await callIsolated(TARGET, 'spin', [], { timeoutMs: 100 }).then(() => null, e => e);
+  assert.equal(timedOut.code, 'call_timeout');
+
+  const op = startIsolated(TARGET, 'spin', [], { timeoutMs: 30000 });
+  await new Promise(r => setTimeout(r, 120));
+  op.cancel();
+  const cancelled = await op.promise.then(() => null, e => e);
+  assert.equal(cancelled.code, 'call_cancelled');
+  assert.notEqual(cancelled.code, timedOut.code);
+});
+
+test('★ 两个入口并存：callIsolated 保持纯 Promise，startIsolated 给句柄（零破坏）', async () => {
+  // ★ 为什么不是一个入口：`async function` 的返回值必然被包成新 Promise，
+  //   挂在上面的 `cancel` 取不到（实测）。硬塞会得到一个「有时能取消」的 API，比没有更糟。
+  assert.equal(await callIsolated(TARGET, 'add', [20, 22]), 42, '旧入口语义逐字不变');
+
+  // ★ 同步抛的入口校验仍必须是【拒绝的 Promise】，不是同步异常 ——
+  //   否则 `.catch()` 接不住（`await` 接得住，但那是两种不同的调用方写法）。
+  const rejected = callIsolated(TARGET, 'add', [], { mode: 'nope' });
+  assert.ok(rejected instanceof Promise, '必须返回 Promise');
+  assert.equal(typeof rejected.catch, 'function');
+  await assert.rejects(rejected, hasCode('invalid_argument'));
+
+  const op = startIsolated(TARGET, 'add', [1, 1]);
+  assert.equal(typeof op.cancel, 'function');
+  assert.equal(typeof op.promise.then, 'function');
+  assert.equal(await op.promise, 2);
+  assert.deepEqual(Object.keys(op).sort(), ['cancel', 'promise']);
+});

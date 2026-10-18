@@ -399,8 +399,11 @@ export class CordiumHost {
      * ★ 此前不限 ⇒ 一个永不结束的 activate 让 boot() 永久挂起、该插件的后续
      *   启停 / 卸载全部排队卡死；一个永不结束的清理回调让插件停在 stopping，且服务仍可取、动作仍可派发。
      * ★ 超时 ≠ 中断：钩子仍在跑（同进程拦不住），只是宿主不再等它 ——
-     *   激活超时 ⇒ 判 FAILED 并释放作用域（此后它的一切登记被生命周期门拒绝），可再次 activatePlugin 重试；
+     *   激活超时 ⇒ 判 FAILED 并释放作用域（此后它的一切登记被生命周期门拒绝）；
      *   停用超时 ⇒ 照常收尾到 disabled。
+     * ⚠️ 超时后**再调一次 activatePlugin 通常仍会超时** —— 预算没变、钩子也没变。
+     *   真想重来，得先改变其一：宿主侧放宽 `lifecycleTimeoutMs`，或让钩子更快。
+     *   重试口径见 `retry-class.mjs`（`lifecycle_timeout` 属不可直接重试）。
      * 慢插件的放宽由【宿主侧】做：registerPlugin(manifest, entry, { lifecycleTimeoutMs })（loader 清单条目同名字段）。
      * ★ 不进 manifest：manifest 是插件自己写的，让被限制方给自己定上限等于没有上限。
      */

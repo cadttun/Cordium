@@ -35,7 +35,8 @@ const EXPECTED = {
   './runtime': ['PLUGIN_API_VERSION', 'validatePluginManifest', 'validatePluginManifestDetailed'],
   './ecosystem': ['callWithTimeout', 'normalizeDependencies', 'resolvePluginDependencies'],
   './catalog': ['createPluginCatalog'],
-  './isolation': ['callIsolated', 'configureIsolation', 'IsolationCode'],
+  // ★ startIsolated 是 callIsolated 的**句柄版**（取消能力所在）；旧入口语义逐字不变。
+  './isolation': ['callIsolated', 'configureIsolation', 'IsolationCode', 'startIsolated'],
   './loader': ['loadPlugins'],
   './reload': ['reloadPlugin', 'watchPlugins']
 };
@@ -52,11 +53,23 @@ test('★ 六个入口的导出清单定稿（增删改名 = 有意的破坏性�
   }
 });
 
-test('★ 门禁覆盖完整：`package.json` exports 里的每个子路径都被本文件钉到了', () => {
-  // ★ 判据取自 package.json（唯一真相源），不手列 —— 将来新增入口若忘了加进 EXPECTED，这里变红。
+/**
+ * ★ `./testing` 是**预览面**：公开可达、**不进公开面快照、不承诺 semver**。
+ *   它由 `testing-surface.test.mjs` 单独钉（判据是「不得泄漏成稳定面」），
+ *   所以不列进本文件的 EXPECTED（那会把「不承诺」变成「承诺」）。
+ *
+ * ⚠️ 但**「有门禁」这件事必须仍然成立** —— 见下一条。
+ */
+const PREVIEW_ENTRIES = new Set(['./testing']);
+
+test('★ 门禁覆盖完整：`package.json` exports 里的每个子路径都有门禁（稳定面在本文件，预览面在它自己的文件）', () => {
+  // ★ 判据取自 package.json（唯一真相源），不手列 —— 将来新增入口若**哪都没有**门禁，这里变红。
   const declared = Object.keys(pkg.exports).filter(k => k !== './package.json');
-  assert.deepEqual(declared.sort(), Object.keys(EXPECTED).sort(),
-    'exports 声明了本文件没覆盖的入口（或反之）—— 新入口必须同时进 EXPECTED，否则它没有门禁');
+  const covered = new Set([...Object.keys(EXPECTED), ...PREVIEW_ENTRIES]);
+  assert.deepEqual(declared.sort(), [...covered].sort(),
+    'exports 声明了没有任何门禁认领的入口（或反之）—— 新入口必须进 EXPECTED 或 PREVIEW_ENTRIES');
+  // ★ 自检：预览面真的存在且真的被单独钉住（否则上面那个 Set 只是让判据变松）
+  assert.ok(declared.includes('./testing'), '本次删掉了 ./testing 就该同步删这个豁免');
 });
 
 test('★ 门禁自检：清单本身有内容、且与模块真对得上（否则是恒真的假绿）', () => {

@@ -16,6 +16,24 @@
 两段都只在**确有**废弃 / 破坏时出现，**不预置空段**。
 （依据 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/) 对「deprecations, removals, and any breaking changes」的列举要求。）
 
+## [Unreleased]
+
+### Added
+
+- ★★ **错误码重试分类表**（`@cordium/kernel`）：`RetryClass` / `RETRY_CLASS_BY_CODE` / `retryClassOf` / `isRetryable`。把 48 个码逐一归到三档 —— `retryable_after_backoff`（过载类，退避后再试）/ `retryable_when_state_changes`（调用方自己改得了状态，改完再试）/ `not_retryable`。★ **未知码 fail-safe 到 `not_retryable`**（重试会重复一个可能已发生副作用的操作）。★ 表与 `ErrorCode` **双向核对**（漏一个码即静默落进默认档）。★ 刻意**不含「立刻可重试」档** —— 本仓 48 个码里没有一个符合「同参数零等待即可成功」，留空档只会让人猜。★ **未给 `CordiumError` 加 `retryable` 字段**：实例是「发生了什么」，重试是「该怎么办」，策略会变而历史错误对象不该跟着变。
+
+- ★★ **`startIsolated`：隔离调用的可取消句柄**（`@cordium/plugins/isolation`）：返回 `{ promise, cancel }`。`callIsolated` **语义逐字不变**（它是句柄版的等待包装）。★ 形态**不是 `options.signal`** —— `AbortSignal` 不可结构化克隆，过不了 worker / process 边界，而 `callIsolated` 本身就是那条边界；且本仓没有「发起调用的消费方」概念（它不在 `ctx` 上）⇒ 取消权限只能落在「持有句柄」上（capability，不是身份参数）。★ 两阶段都可取消：**排队中**从队列摘除（一格 CPU 都没花）、**运行中**终止隔离环境。
+
+- ★ **新增错误码 `call_cancelled`**（`@cordium/kernel`）：与 `call_timeout` **分开** —— 「我自己喊的停」与「预算用完了」该触发完全不同的上游反应。
+
+- ★★ **预览面 `@cordium/kernel/testing` / `@cordium/plugins/testing`**：公开可达、**不承诺 semver**、**不进公开面快照**的第三档。内核侧 `createTestHost` / `makeManifest` / `bootTestHost` / `assertErrorCode`；插件侧 `makePluginManifest` / `writePluginModule` / `makePlugin`。★ 刻意不预装插件、不预置服务契约、不自动 boot。★ **显式具名导出**（不用 `export *` —— 那会让将来新加的符号自动变公开，与本层「不承诺」的目的直接冲突）。
+
+### Changed
+
+- **`host.mjs` 的生命周期超时注释订正**（`@cordium/kernel`）：原文写「激活超时后**可再次 `activatePlugin` 重试**」—— 而预算没变、钩子也没变，**同参数重试必然再超时**。现改为如实说明「真想重来，得先改变其一：放宽 `lifecycleTimeoutMs`，或让钩子更快」。
+
+- **「可重试」措辞收口**（`@cordium/plugins/isolation` 三处）：原文各写一种（「稍后重试」/「据此退避重试」/「可重试」）且没有一处是判据 —— 现统一指向 `retry-class.mjs`，并保留「**未起任何环境**」这一真正对调用方有用的信息。★ 重试语义的唯一权威落点写在 `errors.mjs` 文件头。
+
 ## [0.5.0] - 2026-10-14
 
 ### Changed

@@ -21,11 +21,14 @@ test('★ index.mjs 导出清单定稿（显式具名，不得随模块新增 ex
     //   「这条是宿主自己干的」，而不是某个插件（此前宿主只能借插件身份，日志记的是被借者）。
     'HOST_CALLER',
     'KERNEL_API_VERSION', 'LOG_LEVEL_VALUES', 'LifecycleState', 'LogLevel', 'MessageChannel',
-    'PLUGIN_KIND_VALUES', 'PluginKind', 'SERVICE_ACCESS_VALUES', 'ServiceAccess',
+    'PLUGIN_KIND_VALUES', 'PluginKind',
+    // ★ 重试分类：48 个码 → 三档。导出的是**判据**，不是重试实现。
+    'RETRY_CLASS_BY_CODE', 'RETRY_CLASS_VALUES', 'RetryClass',
+    'SERVICE_ACCESS_VALUES', 'ServiceAccess',
     // ★ UnresolvedReason / UNRESOLVED_REASON_VALUES：诊断快照 reason 字段的取值集合。
     //   导出后 `host.mjs` 的 5 个产出点 + 1 个比较点已回改成本常量 ⇒ 不是第二真相源。
     'UNRESOLVED_REASON_VALUES', 'UnresolvedReason',
-    'compareSemVer', 'isBailed', 'isValidSemVer', 'satisfiesSemVer', 'validateManifest'
+    'compareSemVer', 'isBailed', 'isRetryable', 'isValidSemVer', 'retryClassOf', 'satisfiesSemVer', 'validateManifest'
   ]);
 });
 

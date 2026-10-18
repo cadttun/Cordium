@@ -17,5 +17,6 @@ export { LogLevel, LOG_LEVEL_VALUES } from './types.mjs';
 export { KERNEL_API_VERSION, isApiVersionCompatible } from './types.mjs';
 export { parseRange, isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';
 export { CordiumError, ErrorCode } from './errors.mjs';
+export { RetryClass, RETRY_CLASS_VALUES, RETRY_CLASS_BY_CODE, retryClassOf, isRetryable } from './retry-class.mjs';
 export { MAX_TIMER_MS, describeValue, describeError, errorDetails, firstFrame, summarizeCause, readOptions, runWithTimeout, measureValue } from './host-util.mjs';
 export { deepFreeze } from './host-util.mjs';

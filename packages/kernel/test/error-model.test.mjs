@@ -276,7 +276,9 @@ test('★ 门禁自检：别名守卫能判别', () => {
 test('★ 码表清单定稿（增删改 = 破坏性变更）', () => {
   assert.ok(Object.isFrozen(ErrorCode));
   assert.deepEqual(Object.values(ErrorCode).sort(), [
-    'access_denied', 'action_failed', 'action_not_found', 'action_overloaded', 'action_owner_gone', 'action_timeout', 'call_timeout',
+    'access_denied', 'action_failed', 'action_not_found', 'action_overloaded', 'action_owner_gone', 'action_timeout',
+    // ★ 与 call_timeout 分开：「我自己喊的停」与「预算用完了」要分得清
+    'call_cancelled', 'call_timeout',
     'cyclic_dependency', 'dependency_inactive', 'dependency_version_mismatch', 'duplicate_action',
     'duplicate_plugin', 'duplicate_ui_contribution', 'identity_required', 'implementation_conflict',
     'incompatible_api_version', 'invalid_argument', 'invalid_catalog', 'invalid_contract',

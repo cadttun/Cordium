@@ -8,6 +8,21 @@
  *   细节留在报文里。
  * ★ 零依赖：plugins 经 internal.mjs 取用，不牵 host.mjs（同 semver.mjs 的口径）。
  * ★ 码值是公开 API：增删改 = 破坏性变更（test/error-model.test.mjs 钉死清单）。
+ *
+ * ── ★★ 重试语义的**唯一权威落点** ────────────────────────────────────
+ *   本文件**只**定义「有哪些码」，**不**定义「哪个码该不该重试」。
+ *   重试分类在 `retry-class.mjs`（`RetryClass` / `RETRY_CLASS_BY_CODE` / `retryClassOf`）。
+ *
+ *   ⇒ **其余文件里不得再写「可重试」「退避重试」「retry later」这类判断性措辞**，
+ *     需要说明时**指向 `retry-class.mjs`**，不要各写一份。
+ *     理由是这同一个语义此前散在 5 处（本文件、`isolation.mjs` 三处、`host.mjs` 一处），
+ *     措辞各不相同（「可退避重试」/「据此退避重试」/「可重试」/「稍后重试」/「重试一下」）
+ *     而**没有一处是判据** —— 读者只能从上下文猜「到底哪些码属于这一类」。
+ *
+ *   ★ 另外两条口径（将来实现重试时必须遵守）：
+ *     ① **不要给 `CordiumError` 加 `retryable` 字段** —— 实例是「发生了什么」的记录，
+ *        重试是「该怎么办」的策略；策略会变，历史错误对象不该跟着变。
+ *     ② **不要按码名启发式推断**（`code.includes('timeout')`）—— 见 `retry-class.mjs` 文件头。
  */
 export declare const ErrorCode: Readonly<{
     INVALID_ARGUMENT: "invalid_argument";
@@ -54,6 +69,7 @@ export declare const ErrorCode: Readonly<{
     IMPLEMENTATION_CONFLICT: "implementation_conflict";
     INVALID_TIMEOUT: "invalid_timeout";
     CALL_TIMEOUT: "call_timeout";
+    CALL_CANCELLED: "call_cancelled";
     ISOLATED_CALL_FAILED: "isolated_call_failed";
     ISOLATION_BUSY: "isolation_busy";
     PLUGIN_LOAD_FAILED: "plugin_load_failed";

@@ -37,6 +37,10 @@ export {
 export { isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';
 // 唯一错误类 + 码表（调用方按 err.code 分支，不按报文）
 export { CordiumError, ErrorCode } from './errors.mjs';
+// ★ 重试分类：把 48 个码逐一归到三档之一，回答「拿到这个码该不该重试、怎么重试」。
+//   导出的是**判据**而非运行期重试实现 —— 本仓至今零重试逻辑，此表的用途是
+//   「将来第一处重试只有一个判据源」，而不是各调用方各写一份 `if (code === …)`。
+export { RetryClass, RETRY_CLASS_VALUES, RETRY_CLASS_BY_CODE, retryClassOf, isRetryable } from './retry-class.mjs';
 
 // 可脱离宿主单独使用的两块积木
 export { MessageChannel, DispatchMode, isBailed } from './channel.mjs';
