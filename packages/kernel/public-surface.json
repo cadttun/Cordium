@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "generatorVersion": 2,
   "exports": {
     ".": {
       "ACTIVATION_POLICY_VALUES": "array",

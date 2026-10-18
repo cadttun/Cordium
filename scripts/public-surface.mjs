@@ -22,6 +22,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { types } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,25 +39,62 @@ const keys = obj => Object.keys(obj).sort();
  *   在 `Object.keys()` 里一模一样，快照报「零变化」，而调用方的语义可能已经变了。
  *
  * ── 判据（逐条实测验证过）────────────────────────────────────────
- *   `Object.prototype.toString.call(v)` 能区分 async / generator，但**区分不了 class 与普通函数**
- *   （两者都是 `[object Function]`）⇒ class 靠 `String(v)` 以 `class ` 开头补判。
- *   ★ **arrow function 与普通 function 在运行时不可区分**（都是 `[object Function]`，
- *     `String(v)` 也都可能是任意形态）⇒ 刻意**不细分**，一律记 `function`。
- *     分不出的东西硬分只会产生**假变化**。
+ *   函数这一支交给 `fnKind`（async / generator 用 `node:util` 的 types 谓词，
+ *   class 用 `Function.prototype.toString` + `/^class\b/`；理由见 `fnKind` 的注释）。
+ *   非函数走 `typeof` / `Array.isArray` / `=== null`。
+ *
+ *   ★ **顺序很关键**：`typeof` 必须**在**任何 `Object.prototype.toString` 之前 ——
+ *     tag 可由 `Symbol.toStringTag` 伪造，先看 tag 会让普通对象冒充 async 函数。
+ *
+ *   ★ **arrow function 与普通 function 在运行时不可区分** ⇒ 刻意**不细分**，
+ *     一律记 `function`。分不出的东西硬分只会产生**假变化**。
  *
  * @param {any} v 导出值
  * @returns {string} 种类标签
  */
-function kindOf(v) {
-  const tag = Object.prototype.toString.call(v);
-  if (tag === '[object AsyncFunction]') return 'async-function';
-  if (tag === '[object AsyncGeneratorFunction]') return 'async-generator-function';
-  if (tag === '[object GeneratorFunction]') return 'generator-function';
-  if (typeof v === 'function') return String(v).startsWith('class ') ? 'class' : 'function';
+export function kindOf(v) {
+  if (typeof v === 'function') return fnKind(v);
   if (Array.isArray(v)) return 'array';
   if (v === null) return 'null';
   if (typeof v === 'object') return 'object';
   return typeof v;   // string / number / boolean / symbol / bigint / undefined
+}
+
+/**
+ * 函数值的细分。
+ *
+ * ── 为什么不用 `Object.prototype.toString` 判 async / generator ──────
+ *   它的 tag **可被 `Symbol.toStringTag` 伪造**：实测给普通函数（甚至普通对象）
+ *   挂一个 `Symbol.toStringTag = 'AsyncFunction'`，tag 就变成 `[object AsyncFunction]`。
+ *   快照是**机器判据**，不能建在可被数据本身改写的信号上。
+ *   ⇒ 改用 `node:util` 的 `types.isAsyncFunction` / `isGeneratorFunction`，
+ *     它们读引擎内部的 FunctionKind，**伪造 tag 无效**（实测返回 false）。
+ *
+ *   ★ 两者组合能唯一定位 async generator：V8 的 `IsAsyncFunction` 对
+ *     `async function` 与 `async function*` 都为真，`IsGeneratorFunction` 对
+ *     `function*` 与 `async function*` 都为真 ⇒ **同为真**只可能是 async generator。
+ *
+ * ── 为什么 class 用 `Function.prototype.toString.call` ──────────────
+ *   · `String(v)` **会调用用户定义的 `toString`** —— 实测给 class 加一句
+ *     `static toString(){ return 'D' }`，`String(v)` 就返回 `"D"`，class 被误记成 function。
+ *   · 前缀不能用 `startsWith('class ')`：压缩形态 `class{}` 没有空格（实测漏判）
+ *     ⇒ 用 `/^class\b/`，`\b` 在 `class{` 处同样成立。
+ *
+ * ── 明知的两处盲区（**刻意接受**，不硬分）──────────────────────────
+ *   · **arrow 与普通 function**：运行时完全不可区分 ⇒ 一律记 `function`。
+ *   · **`bind()` 后的 async / `Proxy` 包住的 async**：util 谓词返回 false，源码也
+ *     只剩 `[native code]` ⇒ 记 `function`。分不出的东西硬分只会造**假变化**。
+ *
+ * @param {Function} v 函数值
+ * @returns {'async-function'|'async-generator-function'|'generator-function'|'class'|'function'}
+ */
+function fnKind(v) {
+  const isAsync = types.isAsyncFunction(v);
+  const isGen = types.isGeneratorFunction(v);
+  if (isAsync && isGen) return 'async-generator-function';
+  if (isAsync) return 'async-function';
+  if (isGen) return 'generator-function';
+  return /^class\b/.test(Function.prototype.toString.call(v)) ? 'class' : 'function';
 }
 
 /** 把一个模块的导出取成 `{ 名字: 种类 }`（按名字排序） */
@@ -128,11 +166,29 @@ export async function pluginsSurface() {
  */
 export const SNAPSHOT_SCHEMA_VERSION = 2;
 
+/**
+ * **生成器自身**的版本（与 `schemaVersion` 是两条线）。
+ *
+ * ── 为什么要单独记这个 ──────────────────────────────────────────────
+ *   `schemaVersion` 记的是**工件格式**；这里记的是**取判据的方法**。
+ *   改一次 `kindOf` 的判定逻辑，快照就可能**全量漂移**，而公开面一个字节没动。
+ *   把生产者版本写进快照 ⇒ diff 里能一眼分开两类事：
+ *     · `generatorVersion` 变了 + 大面积 `exports` 变化 ⇒ **多半是判据改了**，逐条核对后重写；
+ *     · `generatorVersion` 没变 + 个别条目变化 ⇒ **是真的公开面变了**。
+ *   ★ 它不参与 `classifyBump`（同 `schemaVersion`，在 `collectDiff` 里跳过）——
+ *     工具版本不是对消费者的承诺。
+ *
+ * ★ **什么时候 +1**：判据或取数方式变了（新增/修改 `kindOf`、换扫描入口、改归一化）。
+ *   ★ 只改注释 / 只加重排**不 +1**。
+ */
+export const GENERATOR_VERSION = 2;
+
 /** 生成两份快照（每包一份） */
 export async function buildSnapshots() {
+  const meta = { schemaVersion: SNAPSHOT_SCHEMA_VERSION, generatorVersion: GENERATOR_VERSION };
   return {
-    kernel: { schemaVersion: SNAPSHOT_SCHEMA_VERSION, ...(await kernelSurface()) },
-    plugins: { schemaVersion: SNAPSHOT_SCHEMA_VERSION, ...(await pluginsSurface()) }
+    kernel: { ...meta, ...(await kernelSurface()) },
+    plugins: { ...meta, ...(await pluginsSurface()) }
   };
 }
 
@@ -172,7 +228,9 @@ function collectDiff(oldObj, newObj, pathArr, acc) {
   const oldK = oldObj && typeof oldObj === 'object' ? Object.keys(oldObj) : [];
   const newK = newObj && typeof newObj === 'object' ? Object.keys(newObj) : [];
   for (const key of new Set([...oldK, ...newK])) {
-    if (key === 'schemaVersion') continue; // 本仓自己的工件版本，不属于公开面
+    // ★ 工件自身的字段，不属于公开面：`schemaVersion`（格式）/ `generatorVersion`（判据）。
+    //   跳过它们，否则「工具升级」会被算成「公开面变了」。
+    if (key === 'schemaVersion' || key === 'generatorVersion') continue;
     const o = oldObj?.[key];
     const n = newObj?.[key];
     const at = [...pathArr, key].join(' > ');

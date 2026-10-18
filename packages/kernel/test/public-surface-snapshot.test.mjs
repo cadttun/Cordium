@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildSnapshots, classifyBump } from '../../../scripts/public-surface.mjs';
+import { buildSnapshots, classifyBump, kindOf } from '../../../scripts/public-surface.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FILES = { kernel: 'packages/kernel/public-surface.json', plugins: 'packages/plugins/public-surface.json' };
@@ -177,6 +177,54 @@ test('★ 普通数组（enums / errorCodes）必须按集合比，不能被当�
   assert.equal(cls.nature, 'additive', '枚举成员新增是 additive，不是 breaking');
   assert.deepEqual(cls.changed, [], '不得产生 changed');
   assert.deepEqual(cls.added, [{ at: 'kernel > enums > E', name: 'Q' }]);
+});
+
+// ── 种类判据本身的判别力（**不是**验证它输出的形状）──────────────
+test('★★ 判据必须挡住 Symbol.toStringTag 伪造（否则数据能改写自己的分类）', () => {
+  // 实测：一个普通对象挂上 `Symbol.toStringTag = 'AsyncFunction'`，
+  // `Object.prototype.toString.call` 就返回 `[object AsyncFunction]`。
+  // 若先看 tag 再看 typeof，它会被记成 async-function —— 快照会被数据本身骗。
+  const fakeObj = { [Symbol.toStringTag]: 'AsyncFunction' };
+  assert.equal(kindOf(fakeObj), 'object', '伪造 tag 的普通对象必须记 object，不能记 async-function');
+
+  const fakeFn = Object.assign(function () {}, { [Symbol.toStringTag]: 'AsyncFunction' });
+  assert.equal(kindOf(fakeFn), 'function', '伪造 tag 的普通函数必须记 function');
+});
+
+test('★★ 判据必须挡住 class 的 static toString 劫持与压缩形态（否则 class 被记成 function）', () => {
+  // 实测：`String(v)` 会调用用户定义的 toString。
+  const hijacked = class D { static toString() { return 'D'; } };
+  assert.equal(kindOf(hijacked), 'class', 'static toString 不得让 class 降级成 function');
+
+  // 实测：`class{}`（压缩后无空格）会让 `startsWith('class ')` 漏判。
+  const compressed = new Function('return (class {})')();
+  assert.equal(kindOf(compressed), 'class', '无空格的 class{} 必须仍判 class');
+
+  assert.equal(kindOf(class {}), 'class');
+  assert.equal(kindOf(class Named {}), 'class');
+});
+
+test('★ 判据对四种函数形态与值对象都要判对（含 async generator 的复合判据）', () => {
+  assert.equal(kindOf(function () {}), 'function');
+  assert.equal(kindOf(() => {}), 'function', 'arrow 与普通函数运行时不可区分 ⇒ 一律 function');
+  assert.equal(kindOf(async function () {}), 'async-function');
+  assert.equal(kindOf(async () => {}), 'async-function');
+  assert.equal(kindOf(function* () {}), 'generator-function');
+  assert.equal(kindOf(async function* () {}), 'async-generator-function',
+    'async generator = isAsync && isGen 同时为真（单个谓词分不出来）');
+  assert.equal(kindOf({}), 'object');
+  assert.equal(kindOf([]), 'array');
+  assert.equal(kindOf(null), 'null');
+  assert.equal(kindOf('x'), 'string');
+});
+
+test('★ generatorVersion 必须能被 diff 忽略（工具升级 ≠ 公开面变化）', () => {
+  const oldSnap = base();
+  const newSnap = base();
+  for (const pkg of ['kernel', 'plugins']) newSnap[pkg].generatorVersion = 99;
+  const cls = classifyBump(oldSnap, newSnap, '1.2.0');
+  assert.equal(cls.nature, 'none', 'generatorVersion 变化不得被判成公开面变化');
+  assert.deepEqual([cls.removed, cls.added, cls.changed], [[], [], []]);
 });
 
 test('★ 种类判据自检：能区分 async / generator / class / 普通函数，且不误伤值对象', async () => {

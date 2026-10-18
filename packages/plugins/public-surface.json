@@ -1,5 +1,6 @@
 {
   "schemaVersion": 2,
+  "generatorVersion": 2,
   "exports": {
     "./runtime": {
       "PLUGIN_API_VERSION": "string",

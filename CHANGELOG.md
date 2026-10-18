@@ -29,7 +29,7 @@
 > - **唯一的差异在类型面，而且来自 `[0.5.0]` 而非本版**：`[0.5.0]` 收紧了 `log` 的 `details`（转可选）、`declarePermissions`（收 `readonly`）与 `getUIContributions` 的 `type`（转可选）⇒「**按新类型写的代码、装 0.4.0 包**」会报 5 个编译错误，而**运行时在 0.4.0 上实测全部正常**（旧实现的校验本来就更宽）。**升级方向不受影响**，无需回补。
 > - **本版自身相对 `0.5.0` 的类型面变化**：新增 `retry-class` / `testing` 两份声明与若干类型别名，**只有新增**。
 >
-> ★ 这次演练同时暴露了公开面快照的**两个盲区**，已登记为待办而非本版修复：① 快照**只记名字、不记种类**（`async function` 改成普通函数**完全隐形**）；② 快照**不覆盖生成的类型声明**（那三处收紧在名字面上是「零变化」）。两者都指向同一件事：**「名字面零变更」≠「类型面零变更」**。
+> ★ 这次演练同时暴露了公开面快照的**两个盲区**，均已在本版修复：① 快照**只记名字、不记种类**（`async function` 改成普通函数**完全隐形**）⇒ `schemaVersion` 1 → 2，见 Added；② 快照**不覆盖生成的类型声明**（那三处收紧在名字面上是「零变化」）⇒ 新增 `type-surface.json`，见 Added。两者都指向同一件事：**「名字面零变更」≠「类型面零变更」**。
 
 ### Added
 
@@ -39,7 +39,9 @@
 
 - ★ **新增错误码 `call_cancelled`**（`@cordium/kernel`）：与 `call_timeout` **分开** —— 「我自己喊的停」与「预算用完了」该触发完全不同的上游反应。
 
-- ★★ **公开面快照记录导出「种类」**（`schemaVersion` 1 → 2，仓内工件）：`exports` 从**字符串数组**改为**名字 → 种类**的对象。★ 修的是「`async function f()` 改成 `function f()` 完全隐形」——`Object.keys()` 只能拿到名字。★ 判据：`Object.prototype.toString` 能分 `async` / `generator`，但 **class 与普通函数都是 `[object Function]`** ⇒ class 靠 `String(v)` 前缀补判；★ **arrow 与普通函数在运行时不可区分 ⇒ 刻意不细分**（分不出的硬分只会造出假变化）。★★ **格式演进是安全的**：`classifyBump` 同时吃旧数组与新对象，跨格式**只比名字**（旧版种类未知 ⇒ 不判种类变化）⇒ **历史快照不需要重写，也不会因换格式造出假的 breaking**。★ 种类变化按 `breaking` 报（`changed`），因为它可能改变调用方语义。
+- ★★ **公开面快照记录导出「种类」**（`schemaVersion` 1 → 2，仓内工件）：`exports` 从**字符串数组**改为**名字 → 种类**的对象。★ 修的是「`async function f()` 改成 `function f()` 完全隐形」——`Object.keys()` 只能拿到名字。★★ **判据不建在可伪造的信号上**：`Object.prototype.toString` 的 tag **能被 `Symbol.toStringTag` 改写**（实测：普通对象挂上该属性即返回 `[object AsyncFunction]`）⇒ async / generator 改判 `node:util` 的 `types.isAsyncFunction` / `isGeneratorFunction`（读引擎内部 FunctionKind，伪造 tag 无效）。★ class 判据用 `Function.prototype.toString.call(v)` 配 `/^class\b/` —— 不能用 `String(v)`（**会调用用户定义的 `toString`**，实测加一句 `static toString(){return 'D'}` 就把 class 记成 function），也不能用 `startsWith('class ')`（漏掉压缩形态 `class{}`）。★ **arrow 与普通函数、`bind` 后的 async、`Proxy` 包住的 async 在运行时不可区分 ⇒ 刻意不细分**（分不出的硬分只会造出假变化）。★★ **格式演进是安全的**：`classifyBump` 同时吃旧数组与新对象，跨格式**只比名字**（旧版种类未知 ⇒ 不判种类变化）⇒ **历史快照不需要重写，也不会因换格式造出假的 breaking**。★ 种类变化按 `breaking` 报（`changed`），因为它可能改变调用方语义。
+
+- ★ **快照新增 `generatorVersion`：区分「工具升级」与「公开面变化」**（仓内工件）：`schemaVersion` 记的是**工件格式**，这个记的是**取判据的方法**。★ 为什么要分开：改一次 `kindOf` 就可能让快照**全量漂移**，而公开面一个字节没动 —— 没有这个字段，diff 里两类事长得一样。现规则：**`generatorVersion` 变了 + 大面积变化 ⇒ 先按「判据改了」核对**；**没变 + 个别变化 ⇒ 才是真的公开面变了**。★ 它和 `schemaVersion` 一样**不参与 `classifyBump`**（工具版本不是对消费者的承诺）。
 
 - ★★ **新增类型面快照 `type-surface.json`**（两包各一份，仓内工件）：把 `types/*.d.mts` **剥注释、去空白**后入仓，跨版本可 `git diff`。★ 修的是**名字面看不见的那一半**：一次迁移演练里的 5 个编译错误**全部**落在类型面，而名字面报「零变化」。★ 为什么用文本归一化而不是 AST：**TypeScript 7 不提供 Compiler API**（官方公告：*"While TypeScript 7.0 is here, it does not ship with an API"*，2026-07-08），实测 `require('typescript')` 只剩 `version`、`unstable/ast` 也没导出 `parseSourceFile` ⇒ 判据不建在实验性 API 上。★★ **刻意不参与 `classifyBump`**：类型收紧对「按旧类型写的消费方」是破坏、对「按新类型写的」不是 —— 方向性判断没法只从 diff 得出，所以只**如实呈现**，把判断留给发版的人。
 
