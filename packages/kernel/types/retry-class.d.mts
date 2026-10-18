@@ -43,7 +43,7 @@ export declare function retryClassOf(code: string): string;
 /**
  * 一个码在当前情境下「值不值得再试一次」。
  *
- * ★ 它是 `retryClassOf` 的**极薄**派生，不是第二张表 —— 只是把四档压成调用方最常问的那一问。
+ * ★ 它是 `retryClassOf` 的**极薄**派生，不是第二张表 —— 只是把三档压成调用方最常问的那一问。
  * ★ `retryable_when_state_changes` 算作 `true`：**调用方自己就能改变状态**的情形下，
  *   它确实应该再试（改变之后）。若调用方改不了，那是它自己该判断的（本函数不替它猜）。
  *
