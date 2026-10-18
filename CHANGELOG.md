@@ -39,6 +39,8 @@
 
 - ★ **新增错误码 `call_cancelled`**（`@cordium/kernel`）：与 `call_timeout` **分开** —— 「我自己喊的停」与「预算用完了」该触发完全不同的上游反应。
 
+- ★ **`IsolationOptions`：隔离调用的选项形状**（`@cordium/plugins/isolation`）：`startIsolated` 与 `callIsolated` **共用**同一个 typedef。★ 修的是一个**类型面退化**：`callIsolated` 的 JSDoc 原写「`@param {object} [options] 同 startIsolated`」——**JSDoc 的「同某某」是散文，`tsc` 解不出结构**，生成的声明退化成裸 `options?: object` ⇒ 消费方**失去全部字段提示与拼写检查**（实测：`{ timeoutMS: 500 }` 与 `{ timeoutMs: '500' }` 都能过类型检查）。现两处都引用同一 typedef，字段只写一遍。**运行时零变化**。
+
 - ★★ **预览面 `@cordium/kernel/testing` / `@cordium/plugins/testing`**：公开可达、**不承诺 semver**、**不进公开面快照**的第三档。内核侧 `createTestHost` / `makeManifest` / `bootTestHost` / `assertErrorCode`；插件侧 `makePluginManifest` / `writePluginModule` / `makePlugin`。★ 刻意不预装插件、不预置服务契约、不自动 boot。★ **显式具名导出**（不用 `export *` —— 那会让将来新加的符号自动变公开，与本层「不承诺」的目的直接冲突）。
 
 ### Changed

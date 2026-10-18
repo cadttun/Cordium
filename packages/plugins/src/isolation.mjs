@@ -226,6 +226,26 @@ function release() {
 const PERMISSION_FLAG = '--permission';
 
 /**
+ * `startIsolated` 与 `callIsolated` **共用**的选项形状。
+ *
+ * ★ 必须是一个**真类型**，不能只在其中一个入口把字段列全、另一个入口写「同某某」——
+ *   JSDoc 的「同 X」是**散文**，`tsc` 解不出结构，会把参数退化成裸 `object`
+ *   ⇒ 消费方失去全部字段提示与拼写检查（实测：`callIsolated` 曾因此退化成 `options?: object`）。
+ *   ⇒ 两个入口**都引用这一个 typedef**，字段只在这里写一遍（不造第二真相源）。
+ *
+ * @typedef {object} IsolationOptions
+ * @property {'worker'|'process'} [mode='worker']
+ * @property {number} [timeoutMs=3000] 超时即**终止**隔离环境（不是停止等待）
+ * @property {string} [pluginId='unknown'] 报错归属
+ * @property {readonly string[]} [allowFsRead=[]] 仅 `process`：额外可读路径（模块自身所在目录自动放行）
+ * @property {readonly string[]} [allowFsWrite=[]] 仅 `process`：可写路径
+ * @property {number} [maxMemoryMb=1024] 隔离环境的 JS 堆上限（MB）；超了只终止这个环境 ⇒ `isolated_call_failed`。
+ *   ⚠️ ArrayBuffer / Buffer 的数据不在 JS 堆里，不受此限（Node 的限制，实测）。
+ * @property {readonly ArrayBuffer[]} [transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（**必须**出现在 `args` 里）。
+ *   不在 `args` 里的 buffer 会被静默 detach 成数据丢失 ⇒ 带码拒绝。移交后调用方手里那块内存被清空（`byteLength` 变 0）—— 这是零拷贝的代价，调用后别再用它。
+ */
+
+/**
  * 在隔离环境里调用 `module` 的导出 `exportName`，返回**可取消的句柄**。
  *
  * ★ 为什么是 `{ promise, cancel }` 而不是 `options.signal`（形态上的硬约束）：
@@ -248,16 +268,7 @@ const PERMISSION_FLAG = '--permission';
  * @param {string|URL} module 绝对路径或 file: URL（相对路径不收：相对谁会随调用方漂移）
  * @param {string} [exportName='default']
  * @param {readonly any[]} [args=[]] 须可结构化克隆
- * @param {object} [options]
- * @param {'worker'|'process'} [options.mode='worker']
- * @param {number} [options.timeoutMs=3000] 超时即**终止**隔离环境（不是停止等待）
- * @param {string} [options.pluginId='unknown'] 报错归属
- * @param {readonly string[]} [options.allowFsRead=[]] 仅 `process`：额外可读路径（模块自身所在目录自动放行）
- * @param {readonly string[]} [options.allowFsWrite=[]] 仅 `process`：可写路径
- * @param {number} [options.maxMemoryMb=1024] 隔离环境的 JS 堆上限（MB）；超了只终止这个环境 ⇒ isolated_call_failed。
- *   ⚠️ ArrayBuffer / Buffer 的数据不在 JS 堆里，不受此限（Node 的限制，实测）。
- * @param {readonly ArrayBuffer[]} [options.transfer=[]] 仅 `worker`：**移交**而非复制的 ArrayBuffer（**必须**出现在 args 里）。
- *   不在 args 里的 buffer 会被静默 detach 成数据丢失 ⇒ 带码拒绝。移交后调用方手里那块内存被清空（byteLength 变 0）—— 这是零拷贝的代价，调用后别再用它。
+ * @param {IsolationOptions} [options]
  * @returns {{ promise: Promise<any>, cancel: (reason?: string) => boolean }}
  *   `cancel` 返回 true = 这次调用确实被取消了；false = 它已经结束（成功 / 失败 / 超时 / 取消过）
  * @throws {CordiumError} `isolation_busy`：排队已满或在途字节超限（见 configureIsolation）—— **未起任何环境**（零副作用）；重试口径见 `@cordium/kernel` 的 `retry-class.mjs`
@@ -424,7 +435,7 @@ export function startIsolated(module, exportName = 'default', args = [], options
  * @param {string|URL} module
  * @param {string} [exportName='default']
  * @param {readonly any[]} [args=[]]
- * @param {object} [options] 同 `startIsolated`
+ * @param {IsolationOptions} [options] 与 `startIsolated` **同一个 typedef**（不在这里重列字段）
  * @returns {Promise<any>}
  */
 export function callIsolated(module, exportName = 'default', args = [], options) {
