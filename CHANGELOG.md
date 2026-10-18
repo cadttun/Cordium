@@ -30,6 +30,12 @@
 
 ### Changed
 
+- ★ **`ctx.manifest` 的类型由可写改为深只读**（`@cordium/kernel`）：运行时交出去的一直是 `freezeManifestForPlugin` 的**深冻结副本**，而类型声明是可写的 `PluginManifest` ⇒ 插件写 `ctx.manifest.provides.push('x')` **过类型检查、运行期抛 TypeError**（实测 `Cannot add property 0, object is not extensible`）。现为 `FrozenPluginManifest`（由 `PluginManifest` 递归派生的深只读类型）。★ **为什么不在 `PluginManifest` 上加 `readonly`**：它同时是 `validateManifest` 的返回值，那里宿主还要往上写 —— 两个用途、两种可写性，必须两个类型。**运行时行为零变化**（只改类型声明）。★ 类型成本已实测：`tsc --noEmit --diagnostics` 的 `Instantiations` 由 11930 变为 11733（业界经验警戒线为百万量级）。
+
+- ★ **`resolvePluginDependencies` 的返回类型由 `Array<object>` 收紧为 `PluginDescriptor[]`**（`@cordium/plugins`）：此前消费方拿到的是 `any[]`，只能靠手写 cast 换回真实类型（实测确有一处 `/** @type {…PluginDescriptor[]} *​/`）。**运行时行为零变化**。
+
+- ★ **`PluginDescriptor` / `PluginManifest` 的 `kind` / `activation` 由 `string` 收窄为字面量联合**（两包）：此前注释里写着 `'core' | 'business'` 而类型是 `string` ⇒ 写 `kind: 'coree'` **过类型检查、运行期才抛 `invalid_manifest`**。★ 取值域从内核 `PluginKind` / `ActivationPolicy` **派生**（不重列字面量，避免第二真相源）。★ **两个字段保持可选**：`validatePluginManifest` 接受省略它们的输入并补默认值，标成必需会让消费方跨包报 `TS2739`（实测踩到并已回归）。
+
 - **`host.mjs` 的生命周期超时注释订正**（`@cordium/kernel`）：原文写「激活超时后**可再次 `activatePlugin` 重试**」—— 而预算没变、钩子也没变，**同参数重试必然再超时**。现改为如实说明「真想重来，得先改变其一：放宽 `lifecycleTimeoutMs`，或让钩子更快」。
 
 - **「可重试」措辞收口**（`@cordium/plugins/isolation` 三处）：原文各写一种（「稍后重试」/「据此退避重试」/「可重试」）且没有一处是判据 —— 现统一指向 `retry-class.mjs`，并保留「**未起任何环境**」这一真正对调用方有用的信息。★ 重试语义的唯一权威落点写在 `errors.mjs` 文件头。

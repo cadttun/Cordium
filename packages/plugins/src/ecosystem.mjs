@@ -36,11 +36,15 @@ export function normalizeDependencies(dependencies) {
  * Resolves plugin loading order based on declared dependencies (Topological Sort).
  * Detects missing dependencies, SemVer version mismatch, and cyclic dependency deadlocks.
  *
- * @param {readonly object[]} [manifests] 候选插件 Manifest 列表（只读遍历，不改写）
+ * @param {readonly import('./runtime.mjs').PluginDescriptor[]} [manifests] 候选插件描述符列表（只读遍历，不改写）
  * @param {object} [options]
  * @param {Map<string, { manifest: any, entry?: any }>} [options.existingRegistry] 已注册的插件表
  * @param {(diagnostic: object) => void} [options.onDiagnostic] 丢字段回调 ★ 候选 manifest 时回调（形状同内核 diffManifestFields）
- * @returns {Array<object>} 拓扑排序后的 Manifest 列表
+ * @returns {Array<import('./runtime.mjs').PluginDescriptor>} 拓扑排序后的描述符列表
+ *   ★ **排序不改变元素形状** —— 返回的就是入参那几个对象，只是换了顺序。
+ *     此前这里写 `Array<object>` ⇒ 消费方拿到 `any[]`，只能靠手写 cast 换回真实类型
+ *     （实测消费方确有这么一处：`infrastructure-loader.mjs` 里手写的
+ *     `@type {…PluginDescriptor[]}` 断言）。
  */
 export function resolvePluginDependencies(manifests = [], options) {
   const { existingRegistry = null, onDiagnostic } = readOptions(options, 'resolvePluginDependencies', ['existingRegistry', 'onDiagnostic']);

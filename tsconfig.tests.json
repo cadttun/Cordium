@@ -1,0 +1,29 @@
+{
+  // 测试代码的类型检查（根 `tsconfig.json` 只覆盖 `packages/*/src`，不含 `test/`）。
+  //
+  // ★ 为什么需要单独一份：有些**类型层的**判据只有在测试代码里才表达得出来 ——
+  //   最典型的是 `@ts-expect-error`（它断言「下一行必须报错」）。
+  //   这类夹具放在 `src/` 里会被打进产物；放在 `test/` 里默认又不被检查
+  //   ⇒ 需要一个把 `test/` 纳入的配置。
+  //
+  // ★ 范围刻意**只收 fixtures**，不收全部测试：
+  //   测试文件里有大量故意构造的非法输入（给被测函数喂坏值），
+  //   全量纳入会一次报出几百条与被测行为无关的噪音。
+  //   而类型判据只关心**声明**，放夹具里就够。
+  //
+  // ★ 不要把它并进 `npm test` 之外的流程 —— 它由
+  //   `manifest-frozen-type.test.mjs` 显式调用，失败即红。
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": false,
+    "strictNullChecks": false
+  },
+  "include": ["packages/kernel/test/fixtures/*.mjs"]
+}

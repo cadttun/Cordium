@@ -51,8 +51,29 @@ export const PLUGIN_API_VERSION = KERNEL_API_VERSION;
  * @property {string[]} provides
  * @property {string[]} permissions
  * @property {Record<string,string>} dependencies
- * @property {string} kind `'core'` | `'business'`
- * @property {string} activation `'eager'` | `'lazy'`
+ * @property {PluginKindValue} [kind] 输入可缺省（缺省归一为 `'business'`）
+ * @property {ActivationPolicyValue} [activation] 同上（缺省归一为 `'eager'`）
+ *
+ * ★★ `kind` / `activation` **必须可选**：`validatePluginManifest` 接受不带它们的输入
+ *   并补默认值 ⇒ 标成必需会让消费方传 `{ id, name, version, … }` 时**跨包报 TS2739**（实测）。
+ *   「归一化后一定有值」是**返回值**的性质，不是**入参**的性质 —— 同一个 typedef
+ *   同时被用作两者时，只能取更宽的那一侧（否则等于替调用方强加它没有的义务）。
+ *   ⚠️ 字段表由 `typedef-drift` 门禁比对：`@property` 必须**独占一行且连续**，
+ *      中间插续行说明会把表截断。
+ */
+
+/**
+ * `kind` / `activation` 的**取值域**（从内核 `PluginKind` / `ActivationPolicy` **派生**，
+ * 不是手抄的第二份）。
+ *
+ * ★ 此前这里是 `@property {string} kind` + 注释写「`'core'` | `'business'`」——
+ *   **注释里写着取值域，类型却是 `string`** ⇒ 消费方写 `kind: 'coree'` 过类型检查、
+ *   运行期才抛 `invalid_manifest`。注释不是判据，类型才是。
+ * ★ 用 `valueof` 而不是重列字面量：内核那边加一个 kind 时，这里**自动**跟着变 ——
+ *   重列一份就是第二真相源（本仓栽过）。
+ *
+ * @typedef {typeof import('@cordium/kernel').PluginKind[keyof typeof import('@cordium/kernel').PluginKind]} PluginKindValue
+ * @typedef {typeof import('@cordium/kernel').ActivationPolicy[keyof typeof import('@cordium/kernel').ActivationPolicy]} ActivationPolicyValue
  */
 
 // 本文件的 assert 只守 manifest ⇒ 一律 invalid_manifest（与内核 validateManifest 同码）

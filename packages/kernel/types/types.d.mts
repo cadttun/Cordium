@@ -109,6 +109,16 @@ export declare const PluginKind: Readonly<{
 }>;
 /** ★ 合法 kind 值集（成员校验用；同 `SERVICE_ACCESS_VALUES` 的口径） */
 export declare const PLUGIN_KIND_VALUES: readonly ("business" | "core")[];
+export type PluginKindValue = typeof PluginKind[keyof typeof PluginKind];
+/**
+ * `kind` 的**类型**（由运行时值集派生，不手抄字面量）。
+ *
+ * ★ 为什么需要：`@property {string} kind` 会让 `kind: 'coree'` 过类型检查、
+ *   运行期才抛 `invalid_manifest`。注释里写的取值域**不是判据**，类型才是。
+ * ★ 用 `typeof … [keyof typeof …]` 而不是重列 `'core' | 'business'`：
+ *   将来加一个 kind 时，所有引用处**自动**跟着变（重列就是第二真相源）。
+ * @typedef {typeof PluginKind[keyof typeof PluginKind]} PluginKindValue
+ */
 /**
  * 判断一个值是否为合法的插件类别。
  * @param {unknown} value
@@ -175,6 +185,11 @@ export declare const ActivationPolicy: Readonly<{
 }>;
 /** ★ 合法 activation 值集（成员校验用） */
 export declare const ACTIVATION_POLICY_VALUES: readonly ("eager" | "lazy")[];
+export type ActivationPolicyValue = typeof ActivationPolicy[keyof typeof ActivationPolicy];
+/**
+ * `activation` 的**类型**（由运行时值集派生，与 `PluginKindValue` 同口径）。
+ * @typedef {typeof ActivationPolicy[keyof typeof ActivationPolicy]} ActivationPolicyValue
+ */
 /**
  * 判断一个值是否为合法的激活时机。
  * @param {unknown} value
@@ -532,15 +547,13 @@ export type PluginManifest = {
     optionalDependencies: Record<string, string>;
     permissions: string[];
     hotReload: boolean;
-    /**
-     * `'core'` | `'business'`
-     */
-    kind: string;
-    /**
-     * `'eager'` | `'lazy'`
-     */
-    activation: string;
+    kind: PluginKindValue;
+    activation: ActivationPolicyValue;
 };
+export type DeepReadonlyType<T> = T extends (infer R)[] ? ReadonlyArray<DeepReadonlyType<R>> : T extends Function | Date | RegExp ? T : T extends object ? {
+    readonly [P in keyof T]: DeepReadonlyType<T[P]>;
+} : T;
+export type FrozenPluginManifest = DeepReadonlyType<PluginManifest>;
 /**
  * 内核运行时契约的**归一化 manifest 形状**（`validateManifest` 的产物）。
  *
@@ -559,8 +572,40 @@ export type PluginManifest = {
  * @property {Record<string,string>} optionalDependencies
  * @property {string[]} permissions
  * @property {boolean} hotReload
- * @property {string} kind `'core'` | `'business'`
- * @property {string} activation `'eager'` | `'lazy'`
+ * @property {PluginKindValue} kind
+ * @property {ActivationPolicyValue} activation
+ */
+/**
+ * 交付给插件的 manifest：与 `PluginManifest` **同一形状，但深只读**。
+ *
+ * ★★ 为什么单独一个类型，而不是把 `PluginManifest` 改成 readonly：
+ *   `PluginManifest` 同时是 `validateManifest` 的**返回值**（那里拿到的是未冻结的新对象，
+ *   宿主自己要往上传）⇒ 把它改成只读会让宿主侧无法正常工作。
+ *   而 `ctx.manifest` 交出去的是**深冻结副本**（`freezeManifestForPlugin`）——
+ *   两个用途、两种可写性，必须两个类型。
+ *
+ * ★ 此前 `ctx.manifest` 声明成可写的 `PluginManifest` ⇒ 插件写
+ *   `ctx.manifest.provides.push('x')` **过类型检查、运行期抛 TypeError**
+ *   （实测：`Cannot add property 0, object is not extensible`）。
+ *   「文档说冻结、类型说可写」= 类型在骗人，而运行时错误会出现在**离误用很远的地方**。
+ *
+ * ★ 为什么用递归条件类型而不是手抄一份 readonly 表单：
+ *   手抄的表会与 `PluginManifest` 漂移（本仓栽过）。递归类型由 `PluginManifest` **派生**，
+ *   那边加字段时这里自动跟上。
+ * ★ 成本已实测：本仓 `tsc --noEmit --diagnostics` 的 `Instantiations` 为 **11930**
+ *   （业界经验值「低于 100 万算健康」）⇒ 这个递归不会把检查变慢。
+ *   ⚠️ 若将来 `Instantiations` 涨到百万量级，先查这里（见 `learn-typescript.org` 2026-09 的
+ *   「深度递归条件类型让实例化爆炸」条目）。
+ *
+ * @template T
+ * @typedef {T extends (infer R)[] ? ReadonlyArray<DeepReadonlyType<R>>
+ *   : T extends Function | Date | RegExp ? T
+ *   : T extends object ? { readonly [P in keyof T]: DeepReadonlyType<T[P]> }
+ *   : T} DeepReadonlyType
+ */
+/**
+ * `ctx.manifest` 的**交付面类型**（深只读的 `PluginManifest`）。
+ * @typedef {DeepReadonlyType<PluginManifest>} FrozenPluginManifest
  */
 /**
  * 校验 Manifest 合法性

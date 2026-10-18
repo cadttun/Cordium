@@ -9,9 +9,9 @@
 export type PluginContext = {
     pluginId: string;
     /**
-     * 冻结的 manifest 副本
+     * **深只读**的 manifest 副本
      */
-    manifest: import('./types.mjs').PluginManifest;
+    manifest: import('./types.mjs').FrozenPluginManifest;
     /**
      * 本次激活的资源作用域
      */

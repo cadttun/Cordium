@@ -65,7 +65,13 @@ function typedefFields(source, name) {
       else if (rest[j] === '}' && --depth === 0) { j++; break; }
     }
     // 花括号之后是字段名；再往后是可选描述，用空白 / 反引号切断
-    const field = rest.slice(j).trim().split(/[\s`]/)[0];
+    //
+    // ★ JSDoc 的**可选标记**有两种写法：`kind?`（后缀问号）与 `[kind]`（方括号）。
+    //   此前只处理前者 —— `@property {T} [kind]` 的字段名会被读成 `[kind]`，
+    //   于是既不算「有这个字段」也不报错，只看得到一句「少列了 kind」。
+    //   门禁的判据要覆盖**它宣称覆盖的写法**（否则它守的比说的窄）。
+    const raw = rest.slice(j).trim().split(/[\s`]/)[0];
+    const field = raw.replace(/^\[/, '').replace(/\??\]?$/, '').replace(/=$/, '');
     if (/^[A-Za-z_$][\w$]*$/.test(field)) out.push(field);
   }
   return out;

@@ -84,9 +84,16 @@ const EMPTY_CONFIG = Object.freeze({});
  *   ⚠️ 运行时的唯一真相源仍是 `#buildPluginCtx` 的返回对象；本 typedef 是它的类型投影，
  *     改一处必须同步另一处。
  *
+ * ★★ `manifest` 用 `FrozenPluginManifest`（深只读），不是可写的 `PluginManifest`：
+ *   交出去的是 `freezeManifestForPlugin` 的深冻结副本。若声明成可写，插件写
+ *   `ctx.manifest.provides.push('x')` 会**过类型检查、运行期抛 TypeError**
+ *   （实测 `Cannot add property 0, object is not extensible`）—— 类型在骗人。
+ *   ⚠️ 字段表由 `typedef-drift` 门禁比对：每个 `@property` 必须**独占一行且紧跟上一个**，
+ *      中间插说明会把表截断（本条即为此挪到 typedef 之外）。
+ *
  * @typedef {object} PluginContext
  * @property {string} pluginId
- * @property {import('./types.mjs').PluginManifest} manifest 冻结的 manifest 副本
+ * @property {import('./types.mjs').FrozenPluginManifest} manifest **深只读**的 manifest 副本
  * @property {import('./scope.mjs').EffectScope} scope 本次激活的资源作用域
  * @property {(name: string, impl: object) => void} provideService
  * @property {(name: string) => unknown} getService 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
