@@ -16,9 +16,25 @@
 两段都只在**确有**废弃 / 破坏时出现，**不预置空段**。
 （依据 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/) 对「deprecations, removals, and any breaking changes」的列举要求。）
 
-## [Unreleased]
+## [0.6.0] - 2026-10-19
 
-> **迁移演练（发布包 → 本版）已完成：零破坏性变更，消费方无需任何迁移动作。**
+> **相对 `0.5.0` 的公开面：纯新增 12 项，删除 0、形状变化 0 ⇒ 按 SemVer 只需 `minor`。**
+>
+> 用 `v0.5.0` 标签上的旧格式快照（`schemaVersion: 1`，字符串数组）与当前代码比对得出 —— 这同时验证了
+> **跨格式双读**是对的：旧快照不必重写，也不会因换格式造假 breaking。
+>
+> | 类别 | 明细 |
+> |---|---|
+> | 内核新增导出 | `RetryClass` / `RETRY_CLASS_BY_CODE` / `RETRY_CLASS_VALUES` / `retryClassOf` / `isRetryable`（主入口与 `./internal` 各 5 个） |
+> | 新增错误码 | `CALL_CANCELLED` |
+> | 插件新增导出 | `startIsolated`（`./isolation`） |
+> | 另有（不进公开面快照） | `@cordium/kernel/testing` / `@cordium/plugins/testing` 两个**预览面**子入口 |
+>
+> ★ **仓内工件**（`public-surface.json` / `type-surface.json`）也变了，但那是**工具产物**，不是包的公开面：
+> `schemaVersion 1→2`（记导出种类）+ 新增 `generatorVersion`（区分工具升级与公开面变化）+ 新增类型面快照。
+> 两者都**不在** `classifyBump` 的判定里。
+
+> **迁移演练（发布包 → 本版 HEAD）已完成：零破坏性变更，消费方无需任何迁移动作。**
 >
 > 方向是「上一个已发布版本 → 本版 HEAD」，在**隔离的临时安装**里跑，两个版本各一份、互不污染。
 >
@@ -48,6 +64,8 @@
 - ★ **`IsolationOptions`：隔离调用的选项形状**（`@cordium/plugins/isolation`）：`startIsolated` 与 `callIsolated` **共用**同一个 typedef。★ 修的是一个**类型面退化**：`callIsolated` 的 JSDoc 原写「`@param {object} [options] 同 startIsolated`」——**JSDoc 的「同某某」是散文，`tsc` 解不出结构**，生成的声明退化成裸 `options?: object` ⇒ 消费方**失去全部字段提示与拼写检查**（实测：`{ timeoutMS: 500 }` 与 `{ timeoutMs: '500' }` 都能过类型检查）。现两处都引用同一 typedef，字段只写一遍。**运行时零变化**。
 
 - ★★ **预览面 `@cordium/kernel/testing` / `@cordium/plugins/testing`**：公开可达、**不承诺 semver**、**不进公开面快照**的第三档。内核侧 `createTestHost` / `makeManifest` / `bootTestHost` / `assertErrorCode`；插件侧 `makePluginManifest` / `writePluginModule` / `makePlugin`。★ 刻意不预装插件、不预置服务契约、不自动 boot。★ **显式具名导出**（不用 `export *` —— 那会让将来新加的符号自动变公开，与本层「不承诺」的目的直接冲突）。
+
+- ★★★ **新增《诊断快照消费指南》**（`docs/内核设计/诊断快照消费指南_2026-10-19.md`）：面向上层消费方，讲清 `getDiagnostics()` 的**七个稳定键**、`plugins[]` / `services[]` 的逐字段含义、`watchPluginState` / `watchService` 的 payload 与语义、以及**哪些字段不稳定别依赖**。★ **13 条断言全部实测跑过**。★★ 写指南时实测发现三条此前没成文的事实：① `LifecycleState` **没有** `registered` / `stopped`（实际是 `discovered`/`ready`/`activating`/`active`/`stopping`/`disabled`/`failed`）；② **`boot()` 之后 `registerPlugin` 不会激活插件** —— 停在 `discovered` 且 `provideService` 不执行，要显式 `activatePlugin`；③ **静态装配期缺依赖 ⇒ `boot()` 直接抛** `missing_dependency`，不是变成 `unresolvedDependencies`。★ 并留下一条方法论：**测异步派发时「立即读」得到的空数组不是证据**（第一版探针据此得出过错误结论，已订正）。**纯文档，运行时零变化。**
 
 ### Changed
 
