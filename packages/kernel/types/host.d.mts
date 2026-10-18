@@ -6,7 +6,6 @@
  * 插件表 → 生命周期 → 插件 ctx → 服务提供 → 服务取用 → 通知 → 动作 / UI → 诊断。
  * 已抽出的独立职责：action-registry / ui-registry / scope-tree / service-handle / host-util（见各文件头）。
  */
-import { UnresolvedReason } from './types.mjs';
 export type PluginContext = {
     pluginId: string;
     /**
@@ -396,40 +395,16 @@ export declare class CordiumHost {
         hostVersion: string;
         booted: boolean;
         totalPlugins: number;
-        plugins: {
-            id: string;
-            version: string;
-            apiVersion: string;
-            displayName: string;
-            description: string;
-            provides: string[];
-            dependencies: Record<string, string>;
-            optionalDependencies: Record<string, string>;
-            permissions: string[];
-            hotReload: boolean;
-            kind: string;
-            activation: string;
+        plugins: Array<import('./types.mjs').PluginManifest & {
             state: string;
-            error: string;
+            error: string | null;
             activationMs: number;
             unresolvedDependencies: {
                 id: string;
-                reason: (typeof UnresolvedReason)[keyof typeof UnresolvedReason];
+                reason: string;
             }[];
-        }[];
-        services: {
-            name: string;
-            access: string;
-            requiredPermission: string;
-            methods: string[];
-            activeProvider: string | null;
-            providerCount: number;
-            scopedProviderCount: number;
-            scopedProviders: {
-                scopeKey: string;
-                providerId: string | null;
-            }[];
-        }[];
+        }>;
+        services: object[];
         actionsCount: number;
         permissions: string[];
         uiContributionsCount: number;

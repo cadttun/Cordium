@@ -9,9 +9,6 @@
 
 import {
   LifecycleState, ServiceAccess, validateManifest, diffManifestFields, PLUGIN_ID_PATTERN, HOST_CALLER,
-  UnresolvedReason,
-  // ★ 诊断快照的 manifest 投影由它派生（唯一真相源）—— 见 manifestSnapshot
-  MANIFEST_FIELD_TABLE,
   // ★ 服务契约的「白名单重建丢字段」判定 —— 与 manifest 共用同一条知识
   diffServiceContractFields,
   // ★ access 成员校验（拼错值 ⇒ 静默 fail-open，必须挡在写表之前）
@@ -32,9 +29,16 @@ import { ActionRegistry } from './action-registry.mjs';
 //   原先是本地定义，导致插件层反向 import 本文件（1600+ 行）只为拿这一个纯函数。
 //   现在内核与插件【都依赖 semver.mjs】，依赖方向回到稳定侧（SDP）。
 import { satisfiesSemVer, isValidSemVer } from './semver.mjs';
+import {
+  dependencyGraph, unresolvedDependencies, resolveTopologicalOrder,
+  assertDependenciesActive, dependentsOf, hasReadyDependency
+} from './dependency-graph.mjs';
+import { resolveProvider, assertServiceAccess } from './service-resolution.mjs';
+import { formatFailure } from './failure-report.mjs';
+import { pluginSnapshot, serviceSnapshot } from './diagnostics-projection.mjs';
 // ★ 不读宿主状态的模块级函数已搬出（原样，零行为变化）
 import {
-  freezeManifestForPlugin, snapshotDetails, copyLogEntry, MAX_TIMER_MS, describeValue, describeError, errorDetails, readOptions, runWithTimeout,
+  freezeManifestForPlugin, snapshotDetails, copyLogEntry, MAX_TIMER_MS, describeValue, describeError, readOptions, runWithTimeout,
   // ★ 生命周期门禁单点实现（3 处登记口共用：registerAction / UI / registerService）
   assertScopeLive
 } from './host-util.mjs';
@@ -145,36 +149,6 @@ function assertStringArg(method, name, value) {
   }
 }
 
-/**
- * 把 manifest 投影成诊断快照里的那一段 —— **字段集由契约表派生，不手列**。
- *
- * ── 为什么这样写 ────────────────────────────────────────────────────
- * 手列清单会漏，且**漏了不会有人发现**：本项目同形已踩 4 次
- * （`optionalDependencies` / `optionalProvider` / 契约未知键 / `kind`+`displayName`+`description`）。
- * 每次的形状都一样：字段加进了 manifest 与 `MANIFEST_FIELD_TABLE`，投影忘了跟。
- *
- * ⚠️ 更隐蔽的是：**门禁也救不了手工清单**。若门禁自己手列一份期望清单，
- *    新字段同时被实现与门禁忽略 ⇒ 照常全绿。
- *    ⇒ 唯一能自我维护的写法是**从真相源派生**（本函数 + 同名的门禁测试）。
- *
- * ── 拷贝策略（照 `freezeManifestForPlugin` 的既有口径）──────────────
- * 诊断是**只读快照**，不是宿主持有物的引用出口：数组 / 对象逐层拷贝，
- * 否则调用方 `diagnostics.plugins[0].provides.push(...)` 就能改到内核的登记表。
- * 标量（字符串 / 布尔 / null）按值传，无需特殊处理。
- *
- * @param {import('./types.mjs').PluginManifest} manifest 已由 validateManifest 归一化的 manifest
- * @returns {import('./types.mjs').PluginManifest} 只读快照片段（字段集 == MANIFEST_FIELD_TABLE.kernel）
- */
-function manifestSnapshot(manifest) {
-  const out = /** @type {import('./types.mjs').PluginManifest} */ ({});
-  for (const field of MANIFEST_FIELD_TABLE.kernel) {
-    const value = manifest[field];
-    out[field] = Array.isArray(value) ? [...value]
-      : (value !== null && typeof value === 'object') ? { ...value }
-      : value;
-  }
-  return out;
-}
 
 export class CordiumHost {
   // ════════════════ 内部状态与只读属性 ════════════════
@@ -605,13 +579,9 @@ export class CordiumHost {
    * @param {string | null} [pluginId] 归属插件（宿主已知的真实身份）
    */
   #logFailure(level, what, err, pluginId = null) {
-    const details = errorDetails(err);
-    if (pluginId && details.pluginId === undefined) details.pluginId = pluginId;
-    const tag = details.code ? ` [${details.code}]` : '';
-    const at = details.at ? ` at ${details.at}` : '';
-    this.log(level, `${what}: ${describeError(err)}${tag}${at}`, details);
+    const { level: lv, message, details } = formatFailure(level, what, err, pluginId);
+    this.log(lv, message, details);
   }
-
   /**
    * ★★ 记录一条 Manifest 字段诊断（结构化留存 + 即时日志）。
    *
@@ -1047,41 +1017,8 @@ export class CordiumHost {
    * @returns {string[]} 拓扑排序后的插件 ID 列表
    */
   #resolveTopologicalOrder() {
-    const allIds = Array.from(this.#plugins.keys());
-    const inDegree = new Map(allIds.map(id => [id, 0]));
-    const adj = new Map(allIds.map(id => [id, []]));
-    for (const [id, record] of this.#plugins.entries()) {
-      // ★★ 被**显式停用**的插件不参与装配：它的依赖不满足与宿主无关。
-      //   此前这里不豁免 `disabledByUser` ⇒ 用户停用一个坏插件后再 boot 仍会因它抛错 ——
-      //   而 boot 的激活循环（下面的 `unavailable` 集合）**是认 `disabledByUser` 的**。
-      //   同一件事两处判定不一致，后果是外壳最顺手的那个隔离原语（`deactivatePlugin`）失效，
-      //   只剩破坏性的 `unregisterPlugin` 一条路。
-      if (record.disabledByUser) continue;
-      for (const depId of this.#orderingEdges(id, record.manifest)) {
-        adj.get(depId).push(id);
-        inDegree.set(id, inDegree.get(id) + 1);
-      }
-    }
-
-    // Kahn
-    const queue = allIds.filter(id => inDegree.get(id) === 0);
-    const result = [];
-    while (queue.length > 0) {
-      const u = queue.shift();
-      result.push(u);
-      for (const v of adj.get(u)) {
-        inDegree.set(v, inDegree.get(v) - 1);
-        if (inDegree.get(v) === 0) queue.push(v);
-      }
-    }
-
-    if (result.length !== allIds.length) {
-      const remaining = allIds.filter(id => !result.includes(id));
-      throw new CordiumError(ErrorCode.CYCLIC_DEPENDENCY, `Cyclic dependency detected among plugins: ${remaining.join(', ')}`);
-    }
-    return result;
+    return resolveTopologicalOrder(this.#plugins);
   }
-
   /**
    * ★★ 必需依赖里**不满足**的那些 —— 纯查询：不改状态、不抛错。
    *
@@ -1113,41 +1050,11 @@ export class CordiumHost {
    *   （`CYCLIC_DEPENDENCY`），而「依赖还没跑起来」根本不是错误（见 boot 里 `deferred` 的注释）。
    *   ⇒ 「诊断非空 ⇔ boot 拒绝」这条只对**静态两类**成立，门禁也是这么断言的。
    *
-   * @returns {{ id: string, reason: (typeof UnresolvedReason)[keyof typeof UnresolvedReason] }[]}
+   * @returns {import('./dependency-graph.mjs').UnresolvedEntry[]}
    */
   #unresolvedDependencies(id, manifest, reach) {
-    const out = this.#staticUnresolved(manifest);
-    const already = new Set(out.map(u => u.id));
-    const selfInCycle = reach(id).has(id);
-    for (const depId of Object.keys(manifest.dependencies || {})) {
-      if (already.has(depId)) continue;                       // 静态问题优先，不重复报
-      // ★ 环：本插件与这个依赖**互相可达** ⇒ 这条边在环上
-      if (selfInCycle && reach(depId).has(id)) { out.push({ id: depId, reason: UnresolvedReason.CYCLE }); continue; }
-      // ★ 依赖在**别的**环上 ⇒ 它永远上不了线，本插件被上游的环挡住
-      if (reach(depId).has(depId)) { out.push({ id: depId, reason: UnresolvedReason.NOT_RUNNING }); continue; }
-      if (this.#isUnrunnable(this.#plugins.get(depId)?.state)) out.push({ id: depId, reason: UnresolvedReason.NOT_RUNNING });
-    }
-    return out;
+    return unresolvedDependencies(this.#plugins, id, manifest, reach, this.#booted);
   }
-
-  /**
-   * 静态可判定的依赖问题：**缺失 / 版本不符**。
-   * ★ 与 `#unresolvedDependencies` 的关系：那个给「全部原因」，这个是其中的静态子集。
-   *   拆开是因为 `#orderingEdges` 只要静态那部分（它决定 boot 抛不抛），
-   *   而算「环」要遍历整张依赖图 —— 不该在 boot 的每条边上都付这个代价。
-   */
-  #staticUnresolved(manifest) {
-    const out = [];
-    for (const [depId, expectedRange] of Object.entries(manifest.dependencies || {})) {
-      const target = this.#plugins.get(depId);
-      if (!target) { out.push({ id: depId, reason: UnresolvedReason.MISSING }); continue; }
-      if (!satisfiesSemVer(target.manifest.version, expectedRange)) {
-        out.push({ id: depId, reason: UnresolvedReason.VERSION_MISMATCH });
-      }
-    }
-    return out;
-  }
-
   /**
    * 依赖图 —— 纯查询，不改任何状态。
    * 边集与 `#orderingEdges` **一致**（必需依赖 + 已注册且版本满足的可选依赖），
@@ -1156,76 +1063,8 @@ export class CordiumHost {
    *   （**不含 `id` 自身**，除非它在环上 —— 这正是判环的用法）。
    */
   #dependencyGraph() {
-    const edges = new Map();
-    for (const [id, record] of this.#plugins.entries()) {
-      const out = [];
-      for (const [depId, range] of Object.entries(record.manifest.dependencies || {})) {
-        const t = this.#plugins.get(depId);
-        if (t && satisfiesSemVer(t.manifest.version, range)) out.push(depId);
-      }
-      for (const [depId, range] of Object.entries(record.manifest.optionalDependencies || {})) {
-        const t = this.#plugins.get(depId);
-        if (t && satisfiesSemVer(t.manifest.version, range)) out.push(depId);
-      }
-      edges.set(id, out);
-    }
-    const cache = new Map();
-    const reach = start => {
-      if (cache.has(start)) return cache.get(start);
-      const seen = new Set();
-      const stack = [...(edges.get(start) || [])];
-      while (stack.length > 0) {
-        const n = stack.pop();
-        if (seen.has(n)) continue;
-        seen.add(n);
-        for (const m of edges.get(n) || []) stack.push(m);
-      }
-      cache.set(start, seen);
-      return seen;
-    };
-    return { reach };
+    return dependencyGraph(this.#plugins);
   }
-
-  /**
-   * 这个状态下的依赖「**此刻跑不起来**」吗？
-   * ★ 刻意让 `discovered` 只在 **boot 之后**算数：`boot()` 之前人人都是 `discovered`，
-   *   把它一律算进来，会让 boot 前那份纯查询对**所有**有依赖的插件都报「未满足」——
-   *   而 boot 前查询正是本字段最主要的用法。boot 之后还停在 `discovered` 的，
-   *   才是「它没被启动」（被 `deferred` 跳过，或上游没起来）。
-   */
-  #isUnrunnable(state) {
-    if (state === LifecycleState.DISCOVERED) return this.#booted;
-    return state === LifecycleState.READY || state === LifecycleState.DISABLED
-      || state === LifecycleState.FAILED || state === LifecycleState.STOPPING;
-  }
-
-  /**
-   * 一个插件参与排序的依赖边（被依赖方 id 列表）。必选依赖缺失 / 版本不符 ⇒ 抛错。
-   * ★ 纯查询：只抛错，不改任何记录的 state（此前这里会把插件标成 FAILED ——
-   *   一个看起来只读的公开方法带副作用，诊断里会凭空出现 failed）。
-   */
-  #orderingEdges(id, manifest) {
-    const unresolved = this.#staticUnresolved(manifest);
-    if (unresolved.length > 0) {
-      // ★ 报文与错误码必须与拆分前【逐字相同】—— 既有调用方按它们断言。
-      const { id: depId, reason } = unresolved[0];
-      if (reason === UnresolvedReason.MISSING) {
-        throw new CordiumError(ErrorCode.MISSING_DEPENDENCY, `Missing dependency '${depId}' required by '${id}'`);
-      }
-      throw new CordiumError(ErrorCode.DEPENDENCY_VERSION_MISMATCH,
-        `Version mismatch for dependency '${depId}': expected ${manifest.dependencies[depId]}, got ${this.#plugins.get(depId).manifest.version}`);
-    }
-    const edges = Object.keys(manifest.dependencies || {});
-    // ★ 可选依赖：缺失 ⇒ 跳过，不报错；版本不符 ⇒ 跳过拓扑依赖（运行期视为不可用，
-    //   取服务时返回 optional_unavailable）；存在且版本匹配 ⇒ 参与拓扑排序，
-    //   保证「提供者先激活」的顺序仍然成立。
-    for (const [depId, expectedRange] of Object.entries(manifest.optionalDependencies || {})) {
-      const target = this.#plugins.get(depId);
-      if (target && satisfiesSemVer(target.manifest.version, expectedRange)) edges.push(depId);
-    }
-    return edges;
-  }
-
   // ════════════════ 生命周期：boot / 激活 / 停用 / 移除 ════════════════
 
   /**
@@ -1242,12 +1081,8 @@ export class CordiumHost {
    *   ⇒ 非懒路径（绝大多数）必须**零额外 await**：先同步判断，没有才不 await。
    */
   #hasReadyDependency(pluginId) {
-    const record = this.#plugins.get(pluginId);
-    if (!record) return false;
-    return Object.keys(record.manifest.dependencies)
-      .some(depId => this.#plugins.get(depId)?.state === LifecycleState.READY);
+    return hasReadyDependency(this.#plugins, pluginId);
   }
-
   /**
    * ★★ 按需激活的**依赖收拢**：把 `pluginId` 的必需依赖里仍在等触发的懒插件
    *  （含它们自己的依赖，递归）先拉起来。
@@ -1448,31 +1283,12 @@ export class CordiumHost {
    * ★ 不自动拉起依赖：激活顺序是调用方（或 boot）的职责；这里只拒绝「在依赖缺席时上线」。
    */
   #assertDependenciesActive(pluginId, record) {
-    for (const [depId, range] of Object.entries(record.manifest.dependencies)) {
-      const dep = this.#plugins.get(depId);
-      if (!dep) {
-        throw new CordiumError(ErrorCode.MISSING_DEPENDENCY, `Missing dependency '${depId}' required by '${pluginId}'`);
-      }
-      if (!satisfiesSemVer(dep.manifest.version, range)) {
-        throw new CordiumError(ErrorCode.DEPENDENCY_VERSION_MISMATCH, `Version mismatch for dependency '${depId}': expected ${range}, got ${dep.manifest.version}`);
-      }
-      if (dep.state !== LifecycleState.ACTIVE) {
-        throw new CordiumError(ErrorCode.DEPENDENCY_INACTIVE,
-          `Dependency '${depId}' required by '${pluginId}' is not active (state=${dep.state}); activate it first`
-        );
-      }
-    }
+    return assertDependenciesActive(this.#plugins, pluginId, record);
   }
-
   /** 直接依赖 pluginId（必需依赖）的插件 ID 列表 */
   #dependentsOf(pluginId) {
-    const out = [];
-    for (const [id, rec] of this.#plugins) {
-      if (Object.prototype.hasOwnProperty.call(rec.manifest.dependencies, pluginId)) out.push(id);
-    }
-    return out;
+    return dependentsOf(this.#plugins, pluginId);
   }
-
   /**
    * ★ 级联停用 —— 先停依赖方（递归），再停提供者。
    *   被级联停掉的插件打上 stoppedByCascade，提供者重新激活时会被拉回来。
@@ -2388,7 +2204,7 @@ export class CordiumHost {
    *   链上都找不到才回退【全局】实现。⇒ 全局实现永远是兜底，不会被作用域实现挤掉，
    *   而作用域实现也绝不会泄漏给链外的调用方。
    *
-   * @param {{ providers: Map<string, any>, providerEpochs: Map<string, number>, scopedProviders: Map<string | symbol, Map<string, any>> }} contract
+   * @param {{ access: string, requiredPermission?: string, providers: Map<string, any>, providerEpochs: Map<string, number>, scopedProviders: Map<string | symbol, Map<string, any>> }} contract
    * @param {string | symbol | null} scopeKey 调用方的作用域；null = 全局，symbol = 私有作用域
    * @returns {{ providerId: string, impl: any, epoch: number, slotKey: string | symbol | null } | null}
    *   没有实现时返回 null（由调用方决定报什么错）。
@@ -2397,46 +2213,8 @@ export class CordiumHost {
    *     句柄的"还在不在"必须按 slotKey 查，按调用方 scopeKey 查会在兜底路径上误报「已注销」。
    */
   #resolveProvider(contract, scopeKey = null) {
-    // ★ 祖先遍历只有一份实现（ScopeTree#ancestors），经 MessageChannel#scopeAncestors 取
-    for (const cursor of this.#channel.scopeAncestors(scopeKey)) {
-      const hit = this.#providerInScope(contract, cursor);
-      if (hit) return hit;
-    }
-    return this.#providerInScope(contract, null);
+    return resolveProvider(contract, scopeKey, key => this.#channel.scopeAncestors(key));
   }
-
-  /**
-   * 取【单个作用域】里的实现（不含祖先查找、不含全局回退）。
-   *
-   * @param {{ providers: Map<string, any>, providerEpochs: Map<string, number>, scopedProviders: Map<string | symbol, Map<string, any>> }} contract
-   * @param {string | symbol | null} scopeKey 要查的槽
-   * @returns {{ providerId: string, impl: any, epoch: number, slotKey: string | symbol | null } | null}
-   */
-  #providerInScope(contract, scopeKey) {
-    if (scopeKey === null) {
-      // 同一作用域最多一个提供者；Map 的唯一项就是当前注册。
-      const [pid, impl] = contract.providers.entries().next().value || [];
-      if (!pid) return null;
-      return {
-        providerId: pid,
-        impl,
-        epoch: contract.providerEpochs.get(pid) || 0,
-        slotKey: null
-      };
-    }
-    const bucket = contract.scopedProviders.get(scopeKey);
-    if (!bucket) return null;
-    // 桶内最多一条（撞名即拒）⇒ 直接取首元素，与上方全局槽同一个取法。
-    // ★ 此前写成 `for (const [pid, entry] of bucket) return ...` —— 单次迭代的循环，
-    //   语义正确但读起来像「漏了 break」（静态检查报的正是这一条）。
-    //   这里守卫退化为「非空判断」而非全局槽的 `!pid`：pid 由 PLUGIN_ID_PATTERN 强制非空，
-    //   两种守卫在本仓不可区分（若将来放开空 pid，需回来对齐）。
-    const first = bucket.entries().next().value;
-    if (!first) return null;
-    const [pid, entry] = first;
-    return { providerId: pid, impl: entry.impl, epoch: entry.epoch, slotKey: scopeKey };
-  }
-
   /**
    * 按契约声明的 access 级别校验调用方是否有权取用该服务。
    *
@@ -2444,49 +2222,13 @@ export class CordiumHost {
    * 不读插件能改的对象 —— 这是鉴权依据隔离的落点。
    */
   #assertServiceAccess(serviceName, contract, callerPluginId, providerId) {
-    const caller = this.#plugins.get(callerPluginId);
-    if (!caller) {
-      throw new CordiumError(ErrorCode.ACCESS_DENIED, `Security Violation: caller plugin '${callerPluginId}' is not registered`);
-    }
-    // ★ ACTIVATING 期同样允许取依赖：插件在 activate() 里取服务是合法用法，
-    //   限制成「仅 ACTIVE」会逼着人把代码从 activate() 里搬走。
-    // ★ 用 hasRunActivate（= ACTIVE || ACTIVATING）而非手写比较 —— 与「一处判定，多处共用」口径一致。
-    if (!hasRunActivate(caller.state)) {
-      throw new CordiumError(ErrorCode.ACCESS_DENIED,
-        `Security Violation: caller plugin '${callerPluginId}' is not active (state=${caller.state})`
-      );
-    }
-
-    if (contract.access === ServiceAccess.INTERNAL) {
-      throw new CordiumError(ErrorCode.ACCESS_DENIED,
-        `Security Violation: service '${serviceName}' is internal and cannot be accessed by plugins`
-      );
-    }
-
-    // declared 与 sensitive 都要求：调用方声明过【提供者插件】的依赖
-    if (contract.access === ServiceAccess.DECLARED || contract.access === ServiceAccess.SENSITIVE) {
-      // ★ 必须查【真正会服务你的那个提供者】，而不是只看全局槽：
-      //   调用方在自己作用域里拿到的是作用域实现，让它去声明全局提供者的依赖是查错了对象。
-      const declared = this.#pluginDependencies.get(callerPluginId);
-      if (!providerId || !declared || !declared.has(providerId)) {
-        throw new CordiumError(ErrorCode.ACCESS_DENIED,
-          `Security Violation: plugin '${callerPluginId}' did not declare a dependency on provider `
-          + `'${providerId || '(none)'}' for service '${serviceName}'`
-        );
-      }
-    }
-
-    if (contract.access === ServiceAccess.SENSITIVE) {
-      const granted = this.#pluginPermissions.get(callerPluginId);
-      if (!contract.requiredPermission || !granted || !granted.has(contract.requiredPermission)) {
-        throw new CordiumError(ErrorCode.ACCESS_DENIED,
-          `Security Violation: plugin '${callerPluginId}' lacks required permission `
-          + `'${contract.requiredPermission}' for service '${serviceName}'`
-        );
-      }
-    }
+    return assertServiceAccess({
+      serviceName, contract, callerPluginId, providerId,
+      caller: this.#plugins.get(callerPluginId),
+      declaredDeps: this.#pluginDependencies.get(callerPluginId),
+      grantedPerms: this.#pluginPermissions.get(callerPluginId)
+    });
   }
-
   // 已删除 `selectActiveProvider`（全局可变单点），理由与替代方案见 design/removed-apis.md §3
 
   // ════════════════ 通知：订阅 / 服务变更 ════════════════
@@ -2819,53 +2561,15 @@ export class CordiumHost {
       //    留着会成为一个「与 id 同值但来源不同」的第二真相源。
       // ★ 走 `entries()` 而不是 `values()`：**记录的 id 是 Map 的键，不在记录里**。
       //   判环要按 id 查图，`p.id` 会是 `undefined`（实测：环被误报成 not_running）。
-      plugins: Array.from(this.#plugins.entries()).map(([id, p]) => ({
-        // ★★ manifest 字段由【契约表】派生，不手列。
-        //
-        //   为什么：手列会漏。本项目已同形踩了 4 次（optionalDependencies /
-        //   optionalProvider / 契约未知键 / 本处的 kind+displayName+description）——
-        //   每次都是「字段加进了 manifest 与 MANIFEST_FIELD_TABLE，投影忘了跟」。
-        //   而手工清单的门禁救不了它：门禁也只检查它自己列的那几个，新字段
-        //   **同时被实现和门禁忽略**，照常全绿。
-        //
-        //   ⇒ 判据取自唯一真相源：往契约表加字段 ⇒ 这里自动带出、门禁自动要求。
-        //      **不需要任何人记得改两处。**
-        ...manifestSnapshot(p.manifest),
-        state: p.state,
-        error: p.state === LifecycleState.FAILED ? describeError(p.error) : null,
-        activationMs: p.activationMs,
-        // ★ 依赖没齐 ⇒「它为什么没起来」只能靠这一项回答（见 #unresolvedDependencies 的注释）
-        unresolvedDependencies: this.#unresolvedDependencies(id, p.manifest, reach)
-      })),
-      services: Array.from(this.#serviceContracts.entries()).map(([name, s]) => ({
-        name,
-        access: s.access,
-        requiredPermission: s.requiredPermission,
-        // 接口形状（未声明 = null）；拷贝一份，诊断是只读快照
-        methods: s.methods ? [...s.methods] : null,
-        // 单提供者语义下，诊断值是当前全局槽的派生快照，
-        // 不是可写的「活动主」状态。
-        // ★ 断言 `string | null`：`Map.keys().next().value` 在本仓的 TS 版本里被推成 `any`
-        //   （`IteratorResult` 的 `TReturn` 泛型默认 `any`），断言的是**已知事实**（键集是 `string`），
-        //   不是绕过类型 —— 这正是不写它 `activeProvider` 会掉回 `any`、稳定面失去类型的原因。
-        activeProvider: /** @type {string | null} */ (s.providers.keys().next().value || null),
-        providerCount: s.providers.size,
-        // ★ 上面两项只看【全局槽】—— 只注册了作用域实现的服务此前显示「0 个提供者」，
-        //   与「确实没人提供」不可区分。作用域实现单独计数（各作用域桶之和），不混进全局口径。
-        scopedProviderCount: Array.from(s.scopedProviders.values()).reduce((n, bucket) => n + bucket.size, 0),
-        // ★ 计数是聚合口径，明细是排障口径（「哪个作用域由谁提供」）—— 两者分立，互不替代。
-        //   与数据源同构：scopedProviders 是 Map<scopeKey, Map<providerId, entry>>，
-        //   桶内单提供者（#registerService 撞名即拒）⇒ 每桶恰出一条；空桶注销即收，这里不会看到空桶。
-        //   ★ scopeKey 可能是 Symbol（privateScope）⇒ 一律 String() 渲染，只供观察、不可回用
-        //     （同 channel.scopes 的既定口径，见下方）。
-        scopedProviders: Array.from(s.scopedProviders, ([scopeKey, bucket]) => ({
-          scopeKey: String(scopeKey),
-          // ★ 同 `activeProvider`：`keys().next().value` 在本仓 TS 版本里被推成 `any`
-          //   （`IteratorResult` 的 `TReturn` 泛型**默认 `any`**，官方 5.6 说明逐字），
-          //   断言的是**已知事实**（桶键是 `string`），不是绕过类型。
-          providerId: /** @type {string | null} */ (bucket.keys().next().value ?? null)
-        }))
-      })),
+      plugins: /** @type {Array<import('./types.mjs').PluginManifest & {
+        state: string, error: string | null, activationMs: number,
+        unresolvedDependencies: { id: string, reason: string }[]
+      }>} */ (
+        Array.from(this.#plugins.entries()).map(([id, p]) =>
+          pluginSnapshot(id, p, (pid, manifest) => this.#unresolvedDependencies(pid, manifest, reach))
+        )
+      ),
+      services: Array.from(this.#serviceContracts.entries()).map(([name, c]) => serviceSnapshot(name, c)),
       actionsCount: this.#actionHandlers.size,
       permissions: [...this.#permissions].sort(),
       uiContributionsCount: this.#uiContributions.size,
