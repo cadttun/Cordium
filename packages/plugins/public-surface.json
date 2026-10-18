@@ -1,31 +1,31 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "exports": {
-    "./runtime": [
-      "PLUGIN_API_VERSION",
-      "validatePluginManifest",
-      "validatePluginManifestDetailed"
-    ],
-    "./ecosystem": [
-      "callWithTimeout",
-      "normalizeDependencies",
-      "resolvePluginDependencies"
-    ],
-    "./catalog": [
-      "createPluginCatalog"
-    ],
-    "./isolation": [
-      "IsolationCode",
-      "callIsolated",
-      "configureIsolation",
-      "startIsolated"
-    ],
-    "./loader": [
-      "loadPlugins"
-    ],
-    "./reload": [
-      "reloadPlugin",
-      "watchPlugins"
-    ]
+    "./runtime": {
+      "PLUGIN_API_VERSION": "string",
+      "validatePluginManifest": "function",
+      "validatePluginManifestDetailed": "function"
+    },
+    "./ecosystem": {
+      "callWithTimeout": "async-function",
+      "normalizeDependencies": "function",
+      "resolvePluginDependencies": "function"
+    },
+    "./catalog": {
+      "createPluginCatalog": "function"
+    },
+    "./isolation": {
+      "IsolationCode": "object",
+      "callIsolated": "function",
+      "configureIsolation": "function",
+      "startIsolated": "function"
+    },
+    "./loader": {
+      "loadPlugins": "async-function"
+    },
+    "./reload": {
+      "reloadPlugin": "async-function",
+      "watchPlugins": "function"
+    }
   }
 }

@@ -39,6 +39,10 @@
 
 - ★ **新增错误码 `call_cancelled`**（`@cordium/kernel`）：与 `call_timeout` **分开** —— 「我自己喊的停」与「预算用完了」该触发完全不同的上游反应。
 
+- ★★ **公开面快照记录导出「种类」**（`schemaVersion` 1 → 2，仓内工件）：`exports` 从**字符串数组**改为**名字 → 种类**的对象。★ 修的是「`async function f()` 改成 `function f()` 完全隐形」——`Object.keys()` 只能拿到名字。★ 判据：`Object.prototype.toString` 能分 `async` / `generator`，但 **class 与普通函数都是 `[object Function]`** ⇒ class 靠 `String(v)` 前缀补判；★ **arrow 与普通函数在运行时不可区分 ⇒ 刻意不细分**（分不出的硬分只会造出假变化）。★★ **格式演进是安全的**：`classifyBump` 同时吃旧数组与新对象，跨格式**只比名字**（旧版种类未知 ⇒ 不判种类变化）⇒ **历史快照不需要重写，也不会因换格式造出假的 breaking**。★ 种类变化按 `breaking` 报（`changed`），因为它可能改变调用方语义。
+
+- ★★ **新增类型面快照 `type-surface.json`**（两包各一份，仓内工件）：把 `types/*.d.mts` **剥注释、去空白**后入仓，跨版本可 `git diff`。★ 修的是**名字面看不见的那一半**：一次迁移演练里的 5 个编译错误**全部**落在类型面，而名字面报「零变化」。★ 为什么用文本归一化而不是 AST：**TypeScript 7 不提供 Compiler API**（官方公告：*"While TypeScript 7.0 is here, it does not ship with an API"*，2026-07-08），实测 `require('typescript')` 只剩 `version`、`unstable/ast` 也没导出 `parseSourceFile` ⇒ 判据不建在实验性 API 上。★★ **刻意不参与 `classifyBump`**：类型收紧对「按旧类型写的消费方」是破坏、对「按新类型写的」不是 —— 方向性判断没法只从 diff 得出，所以只**如实呈现**，把判断留给发版的人。
+
 - ★ **`IsolationOptions`：隔离调用的选项形状**（`@cordium/plugins/isolation`）：`startIsolated` 与 `callIsolated` **共用**同一个 typedef。★ 修的是一个**类型面退化**：`callIsolated` 的 JSDoc 原写「`@param {object} [options] 同 startIsolated`」——**JSDoc 的「同某某」是散文，`tsc` 解不出结构**，生成的声明退化成裸 `options?: object` ⇒ 消费方**失去全部字段提示与拼写检查**（实测：`{ timeoutMS: 500 }` 与 `{ timeoutMs: '500' }` 都能过类型检查）。现两处都引用同一 typedef，字段只写一遍。**运行时零变化**。
 
 - ★★ **预览面 `@cordium/kernel/testing` / `@cordium/plugins/testing`**：公开可达、**不承诺 semver**、**不进公开面快照**的第三档。内核侧 `createTestHost` / `makeManifest` / `bootTestHost` / `assertErrorCode`；插件侧 `makePluginManifest` / `writePluginModule` / `makePlugin`。★ 刻意不预装插件、不预置服务契约、不自动 boot。★ **显式具名导出**（不用 `export *` —— 那会让将来新加的符号自动变公开，与本层「不承诺」的目的直接冲突）。
