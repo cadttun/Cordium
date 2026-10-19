@@ -282,9 +282,11 @@ export class EffectScope {
 
     // 4. 插件的清理回调（逆序）。共享一个总预算：某个回调挂起 ⇒ 等到预算用完即记错误、继续下一个；
     //    预算用完后剩下的回调照样【调用】（不再等待），保证每个都被执行过、dispose 有界结束。
+    // ★ 第一个回调拿满 timeoutMs、不再读时钟：停用钩子耗尽预算时宿主只留 1ms，截止时刻与剩余量若各读一次
+    //   Date.now()，中间跨过毫秒刻度剩余量就是 0 ⇒ 挂起的回调不被等待、超时也不进错误日志。
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+    let remaining = timeoutMs > 0 ? timeoutMs : Infinity;
     for (const fn of Array.from(this.#disposers).reverse()) {
-      const remaining = deadline - Date.now();
       try {
         if (remaining > 0) {
           await runWithTimeout(fn, remaining === Infinity ? 0 : remaining, () => new CordiumError(ErrorCode.LIFECYCLE_TIMEOUT,
@@ -295,6 +297,7 @@ export class EffectScope {
       } catch (err) {
         this.#reportDisposeError(err);
       }
+      remaining = deadline - Date.now();
     }
     this.#disposers.clear();
   }

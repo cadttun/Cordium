@@ -36,6 +36,7 @@
 
 - ★ **激活失败时 `error` 晚于 `failed` 广播写入**：`watchPluginState` 监听器在回调里同步拉快照，会看到 `state: 'failed'` 配 `error: "undefined"`。现先写 `error` 再迁移。
 - ★ **嵌套派发里内层的 `action_owner_gone` 原样穿过外层**（`@cordium/kernel`）：A 的处理器派发 B、B 的插件在 B 执行中途被停用 ⇒ A 的调用方收到 `action_owner_gone`，看上去像 A 的插件被停用了，其实 A 好好的；其他内层失败冒到外层都套成外层的 `action_failed`，唯独它不套。现在只有处理器跑完时**它自己的**动作已被撤下才抛 `action_owner_gone`（照旧只计 `handled`、不记审计）；内层冒上来的按普通处理器失败处理：套成 A 的 `action_failed`（`cause` 是内层错误）、计 A 的 `failed`、按「嵌套派发只记一次」记一条审计。重试分类随之与其他内层失败一致（`action_failed` 不可重试）。
+- ★ **停用时挂起的清理回调偶尔不被等待、超时不进错误日志**（`@cordium/kernel`）：`deactivate()` 耗尽生命周期预算后，宿主给清理回调只留 1ms；清理阶段算截止时刻与算剩余量各读一次时钟，中间跨过毫秒刻度剩余量就是 0 ⇒ 第一个挂起的清理回调只被调用、不被等待，它的超时也不记进 `recentErrors`。停用照旧走到 `disabled`、登记照旧全部摘除，只是少了这条错误。现在第一个清理回调拿满剩余窗口，之后每跑完一个再按截止时刻重算。
 
 ## [0.6.0] - 2026-10-19
 

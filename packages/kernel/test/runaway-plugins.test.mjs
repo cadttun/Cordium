@@ -64,6 +64,37 @@ test('★ deactivate() 与清理回调都永不结束 ⇒ 停用在预算内走�
   assert.equal(host.getDiagnostics().plugins[0].state, 'active', '同一插件后续的生命周期操作不再被堵死');
 });
 
+test('★ 停用钩子耗尽预算、清理回调只剩 1ms：两次读时钟之间跨过毫秒刻度，挂起的回调照样等到超时并进错误日志', async (t) => {
+  const host = new CordiumHost({ lifecycleTimeoutMs: 20 });
+  let a, laterDisposerRan = false;
+  register(host, 'p.a', { activate(c) { a = c; }, deactivate: never });
+  await host.boot();
+  a.scope.addDisposer(() => { laterDisposerRan = true; });
+  a.scope.addDisposer(() => never());
+  a.scope.addDisposer(() => never());   // 逆序执行 ⇒ 这个最先跑（addDisposer 按函数身份去重 ⇒ 两个挂起的得是不同的函数）
+  // 每读一次时钟比上一次晚 100ms（远超预算）⇒ 任意两次读之间都已越过截止时刻；计时器走自己的时钟，不受影响
+  const realNow = Date.now;
+  let reads = 0;
+  const clock = t.mock.method(Date, 'now', () => realNow() + 100 * reads++);
+  await host.deactivatePlugin('p.a');
+  clock.mock.restore();
+  const timeouts = host.getDiagnostics().recentErrors.filter(e => /lifecycle budget/.test(e.message));
+  assert.equal(timeouts.length, 1, '最先跑的挂起回调被等到超时、记一条；之后预算已尽，第二个挂起的只调用不等');
+  assert.equal(host.getDiagnostics().plugins[0].state, 'disabled');
+  assert.ok(laterDisposerRan, '挂起的回调之后的回调照样执行');
+});
+
+test('lifecycleTimeoutMs: 0（不限）⇒ 停用等清理回调真正跑完才走到 disabled', async () => {
+  const host = new CordiumHost({ lifecycleTimeoutMs: 0 });
+  let a, cleaned = false;
+  register(host, 'p.a', { activate(c) { a = c; } });
+  await host.boot();
+  a.scope.addDisposer(async () => { await new Promise(r => setTimeout(r, 20)); cleaned = true; });
+  await host.deactivatePlugin('p.a');
+  assert.ok(cleaned, '不限预算 ⇒ 等到清理回调结束');
+  assert.equal(host.getDiagnostics().plugins[0].state, 'disabled');
+});
+
 test('★ 停用进行中（清理回调挂起、预算未到）：服务 / 动作 / 监听器此刻就已摘除，不等预算耗尽', async () => {
   // 预算 800ms：检查点在 20ms 时（远未耗尽）；结尾等停用收完，不留挂着的计时器
   const host = new CordiumHost({ lifecycleTimeoutMs: 800 });
