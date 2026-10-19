@@ -21,6 +21,7 @@ import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause, describeValu
  * @property {() => number} maxInFlight 同时在途的派发数上限
  * @property {symbol} releaseKey 宿主释放令牌（登记宿主自有的释放回调用）
  * @property {(level: string, message: string, details?: any) => void} log 写宿主审计日志
+ * @property {() => void} onChange 表的条目数变了（增 / 删）—— 宿主据此给注册表 revision 记账
  */
 
 export class ActionRegistry {
@@ -120,6 +121,7 @@ export class ActionRegistry {
       timeoutMs: timeoutMs ?? null,
       handler
     });
+    this.#q.onChange();
 
     if (scope) {
       // ★ 宿主自有释放：先于插件的清理回调执行，插件的回调挂起也拖不住它（否则停用卡住时动作仍可派发）
@@ -128,6 +130,7 @@ export class ActionRegistry {
         const current = this.#entries.get(action);
         if (current && current.ownerId === ownerId) {
           this.#entries.delete(action);
+          this.#q.onChange();
         }
       }, this.#q.releaseKey);
     }

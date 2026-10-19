@@ -59,6 +59,7 @@ const STABLE_TYPE_SIGNATURE = [
   '<root>.booted = boolean',
   '<root>.hostVersion = string',
   '<root>.plugins = array',
+  '<root>.revision = number',
   '<root>.services = array',
   '<root>.totalPlugins = number',
   '<root>.uiContributionsCount = number',

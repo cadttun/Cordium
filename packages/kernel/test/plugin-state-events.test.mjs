@@ -77,11 +77,15 @@ test('★ 注册与移除同样可见（from / to 为 null 表示不在表里）
   await host.boot();
   seen.length = 0;
 
+  // revision 另有专门的门禁（registry-watch.test.mjs）；这里只钉 id / from / to 的形状
+  const shape = ({ revision, ...rest }) => rest;
+
   host.registerPlugin(m('p.late'), { activate() {} });
-  assert.deepEqual(seen.at(-1), { id: 'p.late', from: null, to: 'discovered' }, '★ 新插件入表要让订阅者知道');
+  assert.deepEqual(shape(seen.at(-1)), { id: 'p.late', from: null, to: 'discovered' }, '★ 新插件入表要让订阅者知道');
+  assert.equal(seen.at(-1).revision, host.getDiagnostics().revision, '★ 载荷的 revision 与快照对得上账');
 
   await host.unregisterPlugin('p.late');
-  assert.deepEqual(seen.at(-1), { id: 'p.late', from: 'disabled', to: null }, '★ 移出插件表同样要通知');
+  assert.deepEqual(shape(seen.at(-1)), { id: 'p.late', from: 'disabled', to: null }, '★ 移出插件表同样要通知');
 });
 
 test('★ 按需激活的 ready 迁移也可见（装配层要能显示「等触发」）', async () => {

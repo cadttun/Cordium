@@ -287,7 +287,7 @@ test('★ 公开面门禁：实例字段与原型方法必须与清单一致（�
     'activatePlugin', 'boot', 'deactivatePlugin', 'declarePermissions', 'declareServiceContract',
     'declareServiceContracts', 'declareUIContributionTypes', 'dispatchAction', 'dispatchActionAsHost', 'getDiagnostics',
     'getInternalService', 'getService', 'getUIContributions',
-    'log', 'recordManifestDiagnostic', 'registerPlugin', 'replacePlugin', 'unregisterPlugin'
+    'log', 'recordManifestDiagnostic', 'registerPlugin', 'replacePlugin', 'unregisterPlugin', 'watchRegistry'
   ]);
 });
 

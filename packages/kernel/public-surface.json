@@ -38,6 +38,7 @@
       "ACTIVATION_POLICY_VALUES": "array",
       "ActivationPolicy": "object",
       "CordiumError": "class",
+      "DIAGNOSTICS_VERSION_HISTORY": "array",
       "ErrorCode": "object",
       "KERNEL_API_VERSION": "string",
       "LOG_LEVEL_VALUES": "array",
@@ -199,7 +200,8 @@
     "recordManifestDiagnostic",
     "registerPlugin",
     "replacePlugin",
-    "unregisterPlugin"
+    "unregisterPlugin",
+    "watchRegistry"
   ],
   "pluginContext": [
     "dispatchAction",

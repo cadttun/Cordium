@@ -37,6 +37,10 @@ export type ActionRegistryQueries = {
      * 写宿主审计日志
      */
     log: (level: string, message: string, details?: any) => void;
+    /**
+     * 表的条目数变了（增 / 删）—— 宿主据此给注册表 revision 记账
+     */
+    onChange: () => void;
 };
 /**
  * @typedef {object} ActionRegistryQueries
@@ -47,6 +51,7 @@ export type ActionRegistryQueries = {
  * @property {() => number} maxInFlight 同时在途的派发数上限
  * @property {symbol} releaseKey 宿主释放令牌（登记宿主自有的释放回调用）
  * @property {(level: string, message: string, details?: any) => void} log 写宿主审计日志
+ * @property {() => void} onChange 表的条目数变了（增 / 删）—— 宿主据此给注册表 revision 记账
  */
 export declare class ActionRegistry {
     #private;

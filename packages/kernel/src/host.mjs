@@ -65,6 +65,12 @@ const SERVICE_CHANGE = Symbol('cordium.service-change');
 const PLUGIN_STATE = Symbol('cordium.plugin-state');
 
 /**
+ * 「注册表变了」的轻信号（`host.watchRegistry`）。**模块私有 symbol**，理由同上：
+ * 只有宿主能发；载荷只有 `{ revision }`，要内容自己去 `getDiagnostics()` 拉（list-watch）。
+ */
+const REGISTRY_CHANGE = Symbol('cordium.registry-change');
+
+/**
  * 统一的「没有配置」值 —— 冻结的空对象，`registerPlugin` 路径下 activate 的第二参。
  * ★ 冻结：插件改它无效（与 `loadPlugins` 路径交付的 config 同一口径）；
  *   共享单例：它是只读的，不需要每个插件各造一份。
@@ -98,7 +104,7 @@ const EMPTY_CONFIG = Object.freeze({});
  * @property {(name: string, impl: object) => void} provideService
  * @property {(name: string) => unknown} getService 服务句柄（成员由服务契约声明，内核无从预知 ⇒ 任意）
  * @property {(name: string, listener: (change: { name: string, providerId: string, scopeKey: string | symbol | null, action: string, epoch: number | null }) => void) => (() => boolean)} watchService 返回退订函数
- * @property {(listener: (change: { id: string, from: string | null, to: string | null }) => void) => (() => boolean)} watchPluginState 返回退订函数
+ * @property {(listener: (change: { id: string, from: string | null, to: string | null, revision: number }) => void) => (() => boolean)} watchPluginState 返回退订函数；`revision` 与 `getDiagnostics().revision` 对账
  * @property {(label: string) => PluginContext} scoped
  * @property {() => PluginContext} privateScope
  * @property {(name: string, listener: (...args: any[]) => any, options?: object) => (() => boolean)} on 返回退订函数
@@ -219,13 +225,16 @@ export class CordiumHost {
     defaultTimeoutMs: () => this.#defaultActionTimeoutMs,
     maxInFlight: () => this.#maxInFlightActions,
     releaseKey: this.#scopeReleaseKey,
-    log: (level, message, details) => this.log(level, message, details)
+    log: (level, message, details) => this.log(level, message, details),
+    // ★ actionsCount 在稳定面 ⇒ 增删都记账（激活后在运行期注册 / 注销的动作也算）
+    onChange: () => this.#touchRegistry()
   });
   // 注入窄查询（同 ActionRegistry 的口径）：注册表只问「这个 type 算不算合法」，
   // 不拿宿主引用、读不到也改不了别的状态。闭包延迟求值 ⇒ 与 #uiTypes 的初始化顺序无关。
   #uiContributions = new UIRegistry({
     isKnownType: (type) => this.#uiTypes.has(type),
-    knownTypes: () => [...this.#uiTypes]
+    knownTypes: () => [...this.#uiTypes],
+    onChange: () => this.#touchRegistry()
   });
   /**
    * ★★ UI 贡献 `type` 的【合法值集】—— 由装配方登记，缺省空集（= 不校验）。
@@ -308,6 +317,12 @@ export class CordiumHost {
   #maxInFlightActions;
   /** @type {boolean} */
   #booted;
+  /**
+   * ★ 注册表的逻辑版本号（`getDiagnostics().revision`）—— 只经 `#touchRegistry` 递增。
+   *   不用时间戳：时钟会回拨、会重复（K8s `resourceVersion` 同理，是逻辑版本不是物理时间）。
+   * @type {number}
+   */
+  #revision = 0;
 
   /** 宿主应用自身的版本（只读）
    * @returns {string}
@@ -758,6 +773,7 @@ export class CordiumHost {
 
     if (this.#serviceContracts.has(serviceName)) return;
     this.#serviceContracts.set(serviceName, record);
+    this.#touchRegistry();
   }
 
   /**
@@ -938,11 +954,14 @@ export class CordiumHost {
     //   （实测：替换一个 `failed` 插件，state 仍是 failed、error 仍是上一版那条）。
     //   ⇒ 清 error；原态是终态 `failed` 时退回「尚未尝试」（lazy 退回 `ready`）——
     //     新代码还没跑过，不该顶着旧结论。其余状态（用户停用 `disabled` 等）保持不动。
+    this.#snapshotAuthority(next.manifest);
     if (record.state === LifecycleState.FAILED) {
       record.error = null;
       this.#setState(record, record.manifest.activation === ActivationPolicy.LAZY ? LifecycleState.READY : LifecycleState.DISCOVERED);
+    } else {
+      // ★ 状态没变也要记账：manifest 投影（plugins[].version 等）在稳定面，换代码就是变了
+      this.#touchRegistry();
     }
-    this.#snapshotAuthority(next.manifest);
     return previous;
   }
 
@@ -1201,13 +1220,20 @@ export class CordiumHost {
           this.#logFailure('warn', `Rollback of plugin '${id}' failed`, rollbackError, id);
         }
       }
-      this.#booted = false;
+      this.#setBooted(false);
       this.#logFailure('error', 'CordiumHost boot failed and rolled back', error);
       throw error;
     }
 
-    this.#booted = true;
+    this.#setBooted(true);
     this.log('info', 'CordiumHost booted successfully');
+  }
+
+  /** `booted` 在稳定面 ⇒ 真翻转才记账（重复 boot 成功不该让订阅方白拉一次） */
+  #setBooted(value) {
+    if (this.#booted === value) return;
+    this.#booted = value;
+    this.#touchRegistry();
   }
 
   /**
@@ -1388,8 +1414,9 @@ export class CordiumHost {
     try {
       this.#assertDependenciesActive(pluginId, record);
     } catch (err) {
-      this.#setState(record, LifecycleState.FAILED);
+      // ★ 先写 error 再迁移：#setState 会广播，监听器同步拉快照必须看到失败原因
       record.error = err;
+      this.#setState(record, LifecycleState.FAILED);
       this.#logFailure('error', `Plugin '${pluginId}' failed to activate`, err, pluginId);
       throw err;
     }
@@ -1458,8 +1485,10 @@ export class CordiumHost {
       this.log('info', `Plugin activated: ${pluginId}`);
     } catch (err) {
       record.activationMs = Date.now() - started;
-      this.#setState(record, LifecycleState.FAILED);
+      // ★ 先写 error 再迁移：#setState 会广播，监听器同步拉快照时 failed 记录必须带着这次的原因
+      //   （反过来写，回调里读到的 error 是 describeError(undefined) ⇒ 字符串 "undefined"）
       record.error = err;
+      this.#setState(record, LifecycleState.FAILED);
       await scope.dispose(this.#scopeReleaseKey, { timeoutMs: budget });
       record.scope = null;
       this.#logFailure('error', `Plugin '${pluginId}' failed to activate`, err, pluginId);
@@ -1672,7 +1701,7 @@ export class CordiumHost {
        * 此前没有这个时机，装配层只能**包装宿主的注册方法**来制造它 —— 而包装是在改别人的对象，
        * 内核把方法改成不可写或私有后它会**静默失效**（表现是「停用的插件面板还留在屏幕上」）。
        *
-       * @param {(change: {id: string, from: string, to: string}) => void} listener 收到冻结的轻量元数据
+       * @param {(change: {id: string, from: string | null, to: string | null, revision: number}) => void} listener 收到冻结的轻量元数据
        * @returns {() => boolean} 退订函数（作用域会托管它，插件停用后自动摘除）
        */
       watchPluginState: (listener) => this.#watchPluginStateForPlugin(pluginId, scope, listener),
@@ -1947,6 +1976,8 @@ export class CordiumHost {
     //
     //   载荷刻意保持【轻】：只带"够判断要不要关心"的信息，要完整实现自己去取服务
     //   （依据 Jenkins pubsub-light 的轻事件口径 —— 也让事件天然不撑上下文、零 token）。
+    // ★ 提供者变了 ⇒ services[].activeProvider / providerCount 可能变 ⇒ 记账（先于服务通知）
+    this.#touchRegistry();
     this.#channel.broadcast(SERVICE_CHANGE, Object.freeze({
       name: serviceName,
       providerId,
@@ -1991,6 +2022,7 @@ export class CordiumHost {
     // 只在实际摘掉了一个提供者时才广播 —— 避免"注销根本不存在的服务"也发通知，
     // 那会让订阅者做无谓的重建。
     if (had) {
+      this.#touchRegistry();
       this.#channel.broadcast(SERVICE_CHANGE, Object.freeze({
         name: serviceName,
         providerId,
@@ -2333,7 +2365,7 @@ export class CordiumHost {
    *
    * @param {string} pluginId 订阅方（闭包注入，不可伪造）
    * @param {import('./scope.mjs').EffectScope} scope
-   * @param {(change: {id: string, from: string, to: string}) => void} listener
+   * @param {(change: {id: string, from: string | null, to: string | null, revision: number}) => void} listener
    */
   #watchPluginStateForPlugin(pluginId, scope, listener) {
     if (typeof listener !== 'function') {
@@ -2364,12 +2396,33 @@ export class CordiumHost {
     const from = record.state;
     if (from === next) return;
     record.state = next;
-    this.#channel.broadcast(PLUGIN_STATE, Object.freeze({ id: record.manifest.id, from, to: next }));
+    const revision = this.#touchRegistry();
+    this.#channel.broadcast(PLUGIN_STATE, Object.freeze({ id: record.manifest.id, from, to: next, revision }));
   }
 
   /** 插件表**增删**同样是一次「注册表变更」—— 订阅方需要知道名单变了（from / to 为 null） */
   #announcePresence(id, from, to) {
-    this.#channel.broadcast(PLUGIN_STATE, Object.freeze({ id, from, to }));
+    const revision = this.#touchRegistry();
+    this.#channel.broadcast(PLUGIN_STATE, Object.freeze({ id, from, to, revision }));
+  }
+
+  /**
+   * ★★ 注册表变更的**唯一记账点**：`#revision` +1，并发 `REGISTRY_CHANGE` 轻信号。
+   *
+   * 承诺（`revision` 在稳定面）：**稳定面任一点名字段可能变化 ⇒ 必经此处**。
+   *   反过来不承诺：+1 了不保证快照真有可见差异（可以多加，不会漏加）。
+   *   不稳定面（日志、权限清单、通道摘要……）的变化**不**记账 —— 否则每条 info 日志都会触发重拉。
+   *
+   * ★ 调用时机同 `#setState`：**事实落定之后**。监听器里同步调 `getDiagnostics()`，
+   *   拿到的 `revision` ≥ 收到的那个，且已包含这次变化。
+   * ⚠️ 广播同步执行：监听器若在回调里再改注册表，内层信号会**先于**外层其余监听器送达
+   *   ⇒ 送达顺序不保证与 revision 同序。消费方按 revision 比大小丢弃过期信号，不按到达顺序。
+   * @returns {number} 本次变更后的 revision
+   */
+  #touchRegistry() {
+    const revision = ++this.#revision;
+    this.#channel.broadcast(REGISTRY_CHANGE, Object.freeze({ revision }));
+    return revision;
   }
 
   /**
@@ -2532,6 +2585,28 @@ export class CordiumHost {
   // ════════════════ 诊断快照 ════════════════
 
   /**
+   * ★★ 订阅「注册表变了」—— 宿主 / 装配层的 list-watch 入口（插件侧用 `ctx.watchPluginState`）。
+   *
+   * 载荷只有 `{ revision }`：告诉你「现在是第 N 版」，内容自己去 `getDiagnostics()` 拉，
+   *   拉到的快照 `revision >= N` 即已包含这次变化（与 K8s list → watch from resourceVersion 同形）。
+   *   不推初始状态 —— 先拉一次快照，再订阅。
+   *
+   * ★ 为什么在宿主上：`host.events.subscribe` 只收字符串，内部信号是模块私有 symbol ⇒
+   *   此前宿主**没有任何**监听注册表的路径（只能写转发插件或轮询）。
+   * ⚠️ 同步送达；监听器抛错不阻断其他监听器、也不阻断触发它的那次变更（进错误日志）。
+   *   送达顺序不保证与 revision 同序（见 `#touchRegistry`）⇒ 按 revision 比大小，不按到达顺序。
+   *
+   * @param {(change: { revision: number }) => void} listener
+   * @returns {() => boolean} 退订函数（幂等；首次退订返回 true）
+   */
+  watchRegistry(listener) {
+    if (typeof listener !== 'function') {
+      throw new CordiumError(ErrorCode.INVALID_ARGUMENT, 'watchRegistry requires a function listener');
+    }
+    return this.#channel.subscribe(REGISTRY_CHANGE, listener, { scopeLabel: null, owner: HOST_CALLER });
+  }
+
+  /**
    * 获取当前运行时完整诊断拓扑 (可用于空内核自检或可视化呈现)
    *
    * ★★ **稳定性契约**（allowlist 形态，与 k6 的措辞同一口径：
@@ -2564,6 +2639,8 @@ export class CordiumHost {
       //   不能只写在文档里（文档不会跟着 API 调用走）。取值来自契约表，不另写字面量。
       //   ⚠️ 它本身**不在稳定面**：稳定面发生不兼容改动时它才递增，承诺它等于承诺它不变。
       schemaVersion: DIAGNOSTICS_CONTRACT.schemaVersion,
+      // ★ 注册表逻辑版本号（稳定面）：与 watchRegistry / watchPluginState 载荷里的 revision 对账
+      revision: this.#revision,
       hostVersion: this.#hostVersion,
       booted: this.#booted,
       totalPlugins: this.#plugins.size,

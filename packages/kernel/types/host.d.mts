@@ -32,12 +32,13 @@ export type PluginContext = {
         epoch: number | null;
     }) => void) => (() => boolean);
     /**
-     * 返回退订函数
+     * 返回退订函数；`revision` 与 `getDiagnostics().revision` 对账
      */
     watchPluginState: (listener: (change: {
         id: string;
         from: string | null;
         to: string | null;
+        revision: number;
     }) => void) => (() => boolean);
     scoped: (label: string) => PluginContext;
     privateScope: () => PluginContext;
@@ -367,6 +368,24 @@ export declare class CordiumHost {
      */
     getUIContributions(type?: string): any[];
     /**
+     * ★★ 订阅「注册表变了」—— 宿主 / 装配层的 list-watch 入口（插件侧用 `ctx.watchPluginState`）。
+     *
+     * 载荷只有 `{ revision }`：告诉你「现在是第 N 版」，内容自己去 `getDiagnostics()` 拉，
+     *   拉到的快照 `revision >= N` 即已包含这次变化（与 K8s list → watch from resourceVersion 同形）。
+     *   不推初始状态 —— 先拉一次快照，再订阅。
+     *
+     * ★ 为什么在宿主上：`host.events.subscribe` 只收字符串，内部信号是模块私有 symbol ⇒
+     *   此前宿主**没有任何**监听注册表的路径（只能写转发插件或轮询）。
+     * ⚠️ 同步送达；监听器抛错不阻断其他监听器、也不阻断触发它的那次变更（进错误日志）。
+     *   送达顺序不保证与 revision 同序（见 `#touchRegistry`）⇒ 按 revision 比大小，不按到达顺序。
+     *
+     * @param {(change: { revision: number }) => void} listener
+     * @returns {() => boolean} 退订函数（幂等；首次退订返回 true）
+     */
+    watchRegistry(listener: (change: {
+        revision: number;
+    }) => void): () => boolean;
+    /**
      * 获取当前运行时完整诊断拓扑 (可用于空内核自检或可视化呈现)
      *
      * ★★ **稳定性契约**（allowlist 形态，与 k6 的措辞同一口径：
@@ -392,6 +411,7 @@ export declare class CordiumHost {
      */
     getDiagnostics(): {
         schemaVersion: 1;
+        revision: number;
         hostVersion: string;
         booted: boolean;
         totalPlugins: number;

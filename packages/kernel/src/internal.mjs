@@ -29,6 +29,8 @@ export { PluginKind, PLUGIN_KIND_VALUES, ActivationPolicy, ACTIVATION_POLICY_VAL
 export { LogLevel, LOG_LEVEL_VALUES } from './types.mjs';
 // ★ 插件层的 API 版本由此派生（不再各写一份字面量，两层不可能漂移）
 export { KERNEL_API_VERSION, isApiVersionCompatible } from './types.mjs';
+// ★ 诊断契约的版本历史：给读旧快照的工具 / 文档用，不是运行时消费方的承诺 ⇒ 只走 internal
+export { DIAGNOSTICS_VERSION_HISTORY } from './types.mjs';
 export { parseRange, isValidSemVer, compareSemVer, satisfiesSemVer } from './semver-api.mjs';
 export { CordiumError, ErrorCode } from './errors.mjs';
 // ★ 重试分类也经 internal 转出：plugins 包判「这个码要不要退避」时不该连带加载整个宿主

@@ -349,6 +349,40 @@ export declare const DIAGNOSTICS_CONTRACT: Readonly<{
     unstable: readonly string[];
 }>;
 /**
+ * ★★ 诊断契约的**版本历史**（「版本 → 形状」的成文表）—— 经 `./internal` 交出，不进主入口。
+ *
+ * ── 为什么需要 ────────────────────────────────────────────────────
+ *   `schemaVersion` 只回答「现在是第几版」，不回答「这个稳定键是哪一版起才有的」。
+ *   读**存档的旧快照**（或对接旧内核）的工具必须知道这件事，否则只能拿当前契约硬套。
+ *
+ * ── bump 判据（abicheck 的 schema 版本决策记录，逐字）────────────────
+ *   「The bump is a **discipline trigger**, not a guarantee every change is backward-incompatible
+ *    in practice. … **A version is bumped whenever an old reader could silently misinterpret
+ *    the new data**, even if the change is additive on the wire.」
+ *   ⇒ 判据是「旧读取方会不会**静默误读**」，不是「是不是新增」：
+ *     · 纯新增、旧读取方忽略即可 ⇒ **记一行、不 bump**（`schemaVersion` 沿用上一行）；
+ *     · 删键 / 改名 / 改类型 / 改既有枚举字面量 / 同名键换语义 ⇒ **记一行、必须 bump**。
+ *
+ * ── 每行的形状 ────────────────────────────────────────────────────
+ *   `schemaVersion`：该变更之后的契约版本；`release`：首次随哪个包版本发出；
+ *   `change`：一句话说清改了什么；`added`：本行**新进入稳定面**的 `路径 → 键`。
+ *   ★ `added` 一律**字面列出**，不从 `MANIFEST_FIELD_TABLE` 派生 —— 这是历史记录，
+ *     派生会让「往 manifest 加字段」自动混过门禁（那正是本表要拦的事）。
+ *
+ * ★ 门禁（`diagnostics-version-history.test.mjs`）：末行 `schemaVersion` 与契约同值；
+ *   版本只增不跳号；`release` 合法且不回退；`change` 非空不重复；
+ *   ★ **各行 `added` 之并 == 当前稳定面** —— 稳定面每加一个键，都必须回答「这是哪一版加的」。
+ *
+ * ★ 显式标类型：否则推断出的是逐行字面量联合，每加一行历史，类型面快照都跟着漂。
+ * @type {ReadonlyArray<Readonly<{ schemaVersion: number, release: string, change: string, added: Readonly<Record<string, readonly string[]>> }>>}
+ */
+export declare const DIAGNOSTICS_VERSION_HISTORY: ReadonlyArray<Readonly<{
+    schemaVersion: number;
+    release: string;
+    change: string;
+    added: Readonly<Record<string, readonly string[]>>;
+}>>;
+/**
  * ★★ 规范化字符串列表（**两层 schema 共享的单一实现**）
  *
  * 依据：Fowler《Tolerant Reader》「make sure there's only one bit of code that

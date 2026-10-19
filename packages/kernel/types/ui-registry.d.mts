@@ -15,11 +15,16 @@ export type UIRegistryQueries = {
      * 已登记值集（仅用于报文）
      */
     knownTypes?: () => string[];
+    /**
+     * 条目增 / 删后调用（宿主据此给注册表 revision 记账）
+     */
+    onChange?: () => void;
 };
 /**
  * @typedef {object} UIRegistryQueries
  * @property {(type: string) => boolean} [isKnownType] `type` 是否为装配方登记过的合法值
  * @property {() => string[]} [knownTypes] 已登记值集（仅用于报文）
+ * @property {() => void} [onChange] 条目增 / 删后调用（宿主据此给注册表 revision 记账）
  */
 export declare class UIRegistry {
     #private;
