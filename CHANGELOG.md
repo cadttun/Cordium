@@ -18,7 +18,7 @@
 
 ## [Unreleased]
 
-> 相对 `0.6.0`：纯新增（原型方法 +1、`./internal` 导出 +1、稳定面键 +1、载荷字段 +1、不稳定面字段 +1），删除 0 ⇒ 下一版 `0.7.0`。
+> 相对 `0.6.0`：纯新增（原型方法 +1、构造选项 +1、`./internal` 导出 +1、稳定面键 +1、载荷字段 +1、不稳定面字段 +1、日志条目字段 +1），删除 0 ⇒ 下一版 `0.7.0`。
 
 ### Added
 
@@ -29,10 +29,13 @@
 - ★★ **动作处理器失败进审计**（`@cordium/kernel`）：处理器抛错时，除了把 `action_failed` 抛给调用方（不变），内核另记一条 warn 级审计，`details` 带 `outcome: 'error'` / `action` / `ownerId` / `callerPluginId` 以及原始错误的码与位置。此前调用方把错误吞掉，这次失败就没有任何痕迹。嵌套派发只在最先失败的那一层记一次（递归风暴不刷屏）；warn 级不进 `recentErrors`。
 - ★ **派发路径另外三类审计的 `details` 补齐同一组字段**：超时（`outcome: 'timeout'`）、权限拒绝（`'denied'`，另带 `requiredPermission`）、过载（`'overloaded'`）都带 `action` / `ownerId` / `callerPluginId`，可以按 `outcome` 统一筛选。报文文本不变。
 - ★ **按插件的派发计数 `plugins[].counters`（不稳定面）**（`@cordium/kernel`）：每个插件记录多一个计数对象 —— 处理方的 `handled`（处理器被调到的次数，含失败与超时）/ `failed`（以 `action_failed` 结束）/ `timedOut`（本次计时器到点，与 `failed` 不重叠），发起方的 `dispatched`，以及这一轮的起点 `since`（毫秒时间戳）。只数真调到了处理器的派发：没有这个动作、缺权限、调用方不活、过载被拒都不数；宿主自己发起的只记处理方。停用再激活继续累计，`replacePlugin` 清零并换新的 `since`，移除插件随记录消失。常开、无开关；计数变化不让 `revision` +1。代价：每次派发多两次 Map 查找与两次自增，空处理器实测多约 8～36 ns（2%～6%）。
+- ★★ **日志出口：构造选项 `onLog`**（`@cordium/kernel`）：`new CordiumHost({ onLog(entry) { … } })`，内核每记一条日志，在当前同步代码跑完后按 `seq` 顺序交一份副本给它。此前装配方只能轮询 `getDiagnostics().recentLogs`，而快照只给最近 20 条。环形缓冲与 `getDiagnostics()` 不变。回调同步抛错或返回的 promise 被拒都接住：在环形缓冲里记一条 warn、不送回给它，连续失败只记第一次。回调执行期间同步记的日志不送回（防止「收一条记一条」无限循环）。送达前同步记了超过 `maxLogSize` 条时挤掉最旧的，并补记一条 warn 报丢了几条。只给装配方（构造选项），插件拿不到。
+- ★ **日志条目带 `seq`**：宿主内从 1 起、每记一条 +1，错误与普通日志共用一条序列，非法级别被拒的调用不占号。`recentLogs` / `recentErrors` / `onLog` 交出的条目都带。用来把快照与推送拼起来时去重，以及核验导出的记录：`seq` 连续就说明一条没漏。
 
 ### Fixed
 
 - ★ **激活失败时 `error` 晚于 `failed` 广播写入**：`watchPluginState` 监听器在回调里同步拉快照，会看到 `state: 'failed'` 配 `error: "undefined"`。现先写 `error` 再迁移。
+- ★ **嵌套派发里内层的 `action_owner_gone` 原样穿过外层**（`@cordium/kernel`）：A 的处理器派发 B、B 的插件在 B 执行中途被停用 ⇒ A 的调用方收到 `action_owner_gone`，看上去像 A 的插件被停用了，其实 A 好好的；其他内层失败冒到外层都套成外层的 `action_failed`，唯独它不套。现在只有处理器跑完时**它自己的**动作已被撤下才抛 `action_owner_gone`（照旧只计 `handled`、不记审计）；内层冒上来的按普通处理器失败处理：套成 A 的 `action_failed`（`cause` 是内层错误）、计 A 的 `failed`、按「嵌套派发只记一次」记一条审计。重试分类随之与其他内层失败一致（`action_failed` 不可重试）。
 
 ## [0.6.0] - 2026-10-19
 

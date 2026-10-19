@@ -204,8 +204,9 @@ export class ActionRegistry {
     if (ownerStats) ownerStats.handled += 1;
     if (callerStats) callerStats.dispatched += 1;
     let timedOut = false;
+    let result;
     try {
-      const result = await runWithTimeout(
+      result = await runWithTimeout(
         () => entry.handler(payload, { callerPluginId, action }),
         timeoutMs,
         () => {
@@ -213,14 +214,6 @@ export class ActionRegistry {
           return new CordiumError(ErrorCode.ACTION_TIMEOUT, `Action '${action}' from plugin '${callerPluginId}' timed out after ${timeoutMs}ms`);
         }
       );
-      // ★ 执行期间属主被停用（handler 已被摘除）⇒ 迟到的结果不得交给调用方 ——
-      //   否则「已停用的插件」仍在向世界输出。⚠️ 副作用可能已经发生（与超时同一口径）。
-      if (this.#entries.get(action) !== entry) {
-        throw new CordiumError(ErrorCode.ACTION_OWNER_GONE,
-          `Action '${action}' owner '${entry.ownerId}' was deactivated before the action completed; result discarded`
-        );
-      }
-      return result;
     } catch (err) {
       // ★ 超时必须与普通失败在审计里【可区分】：outcome='timeout' 而非 'error'，
       //   并明确记下「处理器可能还在跑」—— 调用方据此判断是否需要幂等兜底。
@@ -234,7 +227,6 @@ export class ActionRegistry {
         );
         throw this.#markRecorded(err);
       }
-      if (err instanceof CordiumError && err.code === ErrorCode.ACTION_OWNER_GONE) throw err;
       // ★ 处理器冒出来的一切（含它内部再派发失败的 CordiumError）一律套信封 ——
       //   此前原样透传：抛字符串则调用方拿不到码 / 归属 / 栈；更糟的是内部派发的 action_not_found /
       //   action_timeout 与「本动作不存在 / 本动作超时」同码，调用方分不清哪一层出的错（实测）。
@@ -265,6 +257,16 @@ export class ActionRegistry {
       this.#inFlight -= 1;
       if (this.#inFlight < limit / 2) this.#overloadWarned = false;
     }
+    // ★ 执行期间属主被停用（handler 已被摘除）⇒ 迟到的结果不得交给调用方 ——
+    //   否则「已停用的插件」仍在向世界输出。⚠️ 副作用可能已经发生（与超时同一口径）。
+    // ★ 这道检查必须在 try 之外：catch 只该看到处理器抛出的东西。放进 try 就得按码把它挑出来原样重抛，
+    //   而码分不清「本层的判定」与「处理器内部再派发、从内层冒上来的同码错误」（与上面 timedOut 不看码同理）。
+    if (this.#entries.get(action) !== entry) {
+      throw new CordiumError(ErrorCode.ACTION_OWNER_GONE,
+        `Action '${action}' owner '${entry.ownerId}' was deactivated before the action completed; result discarded`
+      );
+    }
+    return result;
   }
 
   /**

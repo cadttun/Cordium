@@ -130,6 +130,8 @@ export declare class CordiumHost {
      * @param {number} [options.lifecycleTimeoutMs=30000] 生命周期钩子默认上限（0 / 负数 = 不限）
      * @param {number} [options.maxInFlightActions=10000] 同时在途动作派发数上限
      * @param {number} [options.maxManifestDiagnostics=200] manifest 诊断留存上限
+     * @param {(entry: import('./host-util.mjs').LogEntry) => void | Promise<void>} [options.onLog]
+     *   日志出口：每记一条，在当前同步代码跑完后交一份副本给它（环形缓冲照旧）。它抛错或返回的 promise 被拒都不影响宿主
      */
     constructor(options?: {
         hostVersion?: string;
@@ -139,6 +141,7 @@ export declare class CordiumHost {
         lifecycleTimeoutMs?: number;
         maxInFlightActions?: number;
         maxManifestDiagnostics?: number;
+        onLog?: (entry: import('./host-util.mjs').LogEntry) => void | Promise<void>;
     });
     /**
      * 记录运行时审计日志 (有上限，防止内存无限膨胀)
@@ -441,20 +444,8 @@ export declare class CordiumHost {
         actionsCount: number;
         permissions: string[];
         uiContributionsCount: number;
-        recentLogs: {
-            timestamp: number;
-            level: string;
-            message: string;
-            details?: any;
-            stack?: string;
-        }[];
-        recentErrors: {
-            timestamp: number;
-            level: string;
-            message: string;
-            details?: any;
-            stack?: string;
-        }[];
+        recentLogs: import("./host-util.mjs").LogEntry[];
+        recentErrors: import("./host-util.mjs").LogEntry[];
         errorLogCount: number;
         manifestDiagnostics: {
             path: string;

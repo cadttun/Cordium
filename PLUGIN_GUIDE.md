@@ -512,7 +512,8 @@ import { loadPlugins } from '@cordium/plugins/loader';
 const host = new CordiumHost({
   actionTimeoutMs: 30000,     // 动作默认超时
   lifecycleTimeoutMs: 30000,  // activate / deactivate 时限（0 = 不限）
-  maxInFlightActions: 10000   // 同时在途的动作派发上限
+  maxInFlightActions: 10000,  // 同时在途的动作派发上限
+  onLog: (entry) => logStore.push(entry)   // 可选：日志出口（见下文「把日志接出去」）
 });
 
 host.declarePermissions(['perm.export']);
@@ -578,6 +579,26 @@ const failing = diag.plugins.filter(p => (p.counters?.failed ?? 0) > 0).map(p =>
 ★ **只读稳定面 + 忽略未知字段**，内核**加**字段就不会打到你的代码 —— 这正是分两档的目的。
 反过来，读了不稳定面就得自己承担内核改它的后果。★ 判活跃请用 `LifecycleState.ACTIVE` 常量，
 不要写字面量 `'active'`（拼错是静态值，不会报错，只会静默判错）。
+
+### 把日志接出去：`onLog`
+
+快照里的 `recentLogs` 只给最近 20 条。要完整的日志流，构造时传 `onLog`：内核每记一条日志，交一份副本给它（形状与 `recentLogs` 的条目相同）。它是追加的出口，宿主自己的环形缓冲和 `getDiagnostics()` 照旧。
+
+```js
+const host = new CordiumHost({
+  onLog(entry) {   // { seq, timestamp, level, message, details?, stack? }
+    logStore.push(entry);
+  }
+});
+```
+
+- **不同步回调**：先排队，等当前同步代码跑完，在微任务里按 `seq` 顺序送，所以它比 `watchRegistry` 这类同步推送晚一拍到。
+- **`seq`**：宿主内从 1 起、每记一条 +1，错误与普通日志共用一条序列。导出的记录 `seq` 连续，就说明一条没漏。
+- **回调出错**：同步抛错和返回的 promise 被拒都会被接住，在环形缓冲里记一条 warn，不送回给它；连续失败只记第一次。
+- **别在回调里记日志**：回调执行期间同步记的只进环形缓冲、不送回（否则「收一条记一条」会无限循环），`seq` 上会留下断处；`await` 之后再记的照常送达，每收一条就记一条的回调会一直转下去。
+- **送不及**：送达前同步记了超过 `maxLogSize` 条，最旧的会被挤掉，随后补记一条 warn，`details.dropped` 是丢掉的条数。
+- **只给装配方**：插件拿不到 `onLog`，也看不到彼此的日志。日志里有插件写的消息，可能带业务数据；写进文件或发到外部系统前要不要脱敏，由装配方决定。
+- 日志内容（`message` 的文本、`details` 的字段）照旧不承诺格式：按字段读，别解析文本。
 
 ### 一个插件起不来时，会连累谁
 

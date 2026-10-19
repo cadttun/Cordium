@@ -463,14 +463,24 @@ function containerSize(v) {
 }
 
 /**
+ * @typedef {object} LogEntry 一条日志（`recentLogs` / `recentErrors` 与构造选项 `onLog` 交出的都是这个形状的副本）
+ * @property {number} seq 宿主内的序号：从 1 起，每记一条 +1（错误与普通日志共用一条序列）
+ * @property {number} timestamp 记录时刻（毫秒时间戳）
+ * @property {string} level `LogLevel` 取值之一
+ * @property {string} message 正文（已转成字符串）
+ * @property {any} [details] 附加细节的快照
+ * @property {string} [stack] 仅 error 级：记日志那一行的调用栈
+ */
+
+/**
  * 对外交出一条日志的副本（诊断只读快照，不是审计记录的写入口）。
  * details 写入时已是快照，必然可克隆。
  *
  * ★ 参数 / 返回类型必须写明：此前二者皆缺 ⇒ tsc 推成隐式 `any` ⇒
  *   `getDiagnostics()` 的 `recentLogs` / `recentErrors` 静默退化成 `any[]`。
  *   二者虽在**不稳定面**，但「一条日志快照的形状」是确定的 —— 形状确定就该标出来。
- * @param {{ timestamp: number, level: string, message: string, details?: any, stack?: string }} entry
- * @returns {{ timestamp: number, level: string, message: string, details?: any, stack?: string }}
+ * @param {LogEntry} entry
+ * @returns {LogEntry}
  */
 export function copyLogEntry(entry) {
   const copy = { ...entry };

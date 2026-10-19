@@ -296,10 +296,23 @@ export class CordiumHost {
    * @type {HostEvents}
    */
   #events;
-  /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
+  /** @type {Array<import('./host-util.mjs').LogEntry>} */
   #auditLogs;
-  /** @type {Array<{ timestamp: number, level: string, message: string, details?: any, stack?: string }>} */
+  /** @type {Array<import('./host-util.mjs').LogEntry>} */
   #errorLogs;
+  /** @type {number} 上一条日志的序号（`LogEntry.seq`） */
+  #logSeq = 0;
+  /** @type {((entry: import('./host-util.mjs').LogEntry) => any) | null} 构造选项 `onLog` */
+  #logSink = null;
+  /** @type {Array<import('./host-util.mjs').LogEntry>} 等着交给 `onLog` 的日志（上限同 maxLogSize） */
+  #logQueue = [];
+  /** @type {number} 送达前就被挤掉的条数（下一轮补记一条 warn） */
+  #logQueueDropped = 0;
+  #logDrainScheduled = false;
+  /** 正在调 `onLog`：期间同步记的日志不再送回给它 */
+  #inLogSink = false;
+  /** `onLog` 正在连续失败：不重复记 */
+  #logSinkFailing = false;
   /** @type {Array<{ path: string, pluginId: string, fields: string[], severity: string, timestamp: number }>} */
   #manifestDiagnostics;
   /** @type {number} 因超出留存上限而被丢弃的 manifest 诊断条数 */
@@ -385,10 +398,12 @@ export class CordiumHost {
    * @param {number} [options.lifecycleTimeoutMs=30000] 生命周期钩子默认上限（0 / 负数 = 不限）
    * @param {number} [options.maxInFlightActions=10000] 同时在途动作派发数上限
    * @param {number} [options.maxManifestDiagnostics=200] manifest 诊断留存上限
+   * @param {(entry: import('./host-util.mjs').LogEntry) => void | Promise<void>} [options.onLog]
+   *   日志出口：每记一条，在当前同步代码跑完后交一份副本给它（环形缓冲照旧）。它抛错或返回的 promise 被拒都不影响宿主
    */
   constructor(options) {
     // null / undefined 视同不传；字符串 / 数组 / 数字 ⇒ invalid_option（此前静默展开后全部落回默认值）
-    options = readOptions(options, 'CordiumHost', ['hostVersion', 'maxLogSize', 'maxErrorLogSize', 'actionTimeoutMs', 'lifecycleTimeoutMs', 'maxInFlightActions', 'maxManifestDiagnostics'], ErrorCode.INVALID_OPTION);
+    options = readOptions(options, 'CordiumHost', ['hostVersion', 'maxLogSize', 'maxErrorLogSize', 'actionTimeoutMs', 'lifecycleTimeoutMs', 'maxInFlightActions', 'maxManifestDiagnostics', 'onLog'], ErrorCode.INVALID_OPTION);
     // ★ 构造参数校验 —— 此前 `maxLogSize: -1` 之类被原样收下，日志缓冲行为失常而无报错。
     //   缺省（undefined）仍取默认值；显式传入非法值 ⇒ 响亮失败。
     const positiveInt = (name, value, fallback) => {
@@ -414,6 +429,11 @@ export class CordiumHost {
      *   「出过事」冲掉。错误单独留一份，且这一份**只被错误挤掉**。
      */
     this.#maxErrorLogSize = positiveInt('maxErrorLogSize', options.maxErrorLogSize, 100);
+    // ★ 日志出口只给装配方（构造选项），不挂到 ctx 上：插件之间不该互看日志 —— 消息带插件名，还可能带业务数据
+    if (options.onLog !== undefined && typeof options.onLog !== 'function') {
+      throw new CordiumError(ErrorCode.INVALID_OPTION, `CordiumHost option 'onLog' must be a function, got ${describeValue(options.onLog)}`);
+    }
+    this.#logSink = options.onLog ?? null;
 
     // 动作处理器默认执行上限（毫秒）。单条注册可用 timeoutMs 覆盖。
     // 设为 0 或负数表示不限制（不推荐：插件处理器挂起会连带卡住调用方）。
@@ -569,7 +589,8 @@ export class CordiumHost {
     // ★ details 存【快照】不存引用：此前原样存入 ⇒ 调用方（插件经 ctx.log）
     //   记完日志后改自己手里的对象，就能回头改写审计记录。
     // message 一律转成字符串：非字符串（对象）此前原样存引用，调用方事后改它就改了审计记录；symbol 在 ctx.log 的模板里直接抛
-    const entry = { timestamp: Date.now(), level, message: describeValue(message), details: snapshotDetails(details) };
+    // ★ seq 在级别校验之后才取：被拒的调用不占号 ⇒ 导出的 seq 连续，就说明一条没漏
+    const entry = { seq: ++this.#logSeq, timestamp: Date.now(), level, message: describeValue(message), details: snapshotDetails(details) };
     // ★ 错误自带栈：排查时「哪一行抛的」比「抛了什么」值钱得多，
     //   而栈抓取只在错误路径上付一次代价。
     // ★ 不构造错误对象 —— 这里没有「失败」，只要一份栈；借 captureStackTrace 挂到普通对象上，
@@ -592,6 +613,81 @@ export class CordiumHost {
     if (level === 'error') {
       if (this.#errorLogs.length >= this.#maxErrorLogSize) this.#errorLogs.shift();
       this.#errorLogs.push(entry);
+    }
+    if (this.#logSink) this.#enqueueLog(entry);
+  }
+
+  /**
+   * 排队等着交给 `onLog`。
+   * ★ `onLog` 执行期间同步记的日志只进环形缓冲、不排队：否则「收一条记一条」的回调会无限循环。
+   * ★ 队列上限同 maxLogSize：送达前被挤掉的，环形缓冲里也已经没有了；丢了几条在下一轮补记一条 warn，seq 的断处可见。
+   * @param {import('./host-util.mjs').LogEntry} entry
+   */
+  #enqueueLog(entry) {
+    if (this.#inLogSink) return;
+    if (this.#logQueue.length >= this.#maxLogSize) {
+      this.#logQueue.shift();
+      this.#logQueueDropped += 1;
+    }
+    this.#logQueue.push(entry);
+    if (!this.#logDrainScheduled) {
+      this.#logDrainScheduled = true;
+      queueMicrotask(() => this.#drainLogQueue());
+    }
+  }
+
+  /**
+   * ★ 放到微任务里送，不在 log() 里同步回调：log() 常在内核操作做到一半时被调（派发的 catch 里、换实现的过程中），
+   *   同步回调里再调宿主，就会在状态还没落定时重入。
+   */
+  #drainLogQueue() {
+    while (this.#logQueue.length > 0) {
+      const batch = this.#logQueue;
+      const dropped = this.#logQueueDropped;
+      this.#logQueue = [];
+      this.#logQueueDropped = 0;
+      if (dropped > 0) {
+        this.log('warn', `${dropped} log entries were dropped before reaching onLog (logged faster than they could be delivered); the gap shows in seq`, { dropped });
+      }
+      for (const entry of batch) this.#deliverLog(entry);
+    }
+    this.#logDrainScheduled = false;
+  }
+
+  /**
+   * 交一份副本给 `onLog`。同步抛错与返回的 promise 被拒都接住：异步拒绝没人接会成为 unhandledRejection，Node 默认直接退出进程。
+   * @param {import('./host-util.mjs').LogEntry} entry
+   */
+  #deliverLog(entry) {
+    this.#inLogSink = true;
+    try {
+      const result = /** @type {(entry: import('./host-util.mjs').LogEntry) => any} */ (this.#logSink)(copyLogEntry(entry));
+      if (result && typeof result.then === 'function') {
+        result.then(() => { this.#logSinkFailing = false; }, (error) => this.#logSinkFailed(error));
+      } else {
+        this.#logSinkFailing = false;
+      }
+    } catch (error) {
+      this.#logSinkFailed(error);
+    } finally {
+      this.#inLogSink = false;
+    }
+  }
+
+  /**
+   * `onLog` 失败：在环形缓冲里记一条 warn，但不送回给它（一个总在抛错的回调否则会无限循环）。
+   * ★ 连续失败只记第一次；成功送达一次后复位。
+   * @param {unknown} error
+   */
+  #logSinkFailed(error) {
+    if (this.#logSinkFailing) return;
+    this.#logSinkFailing = true;
+    const outer = this.#inLogSink;
+    this.#inLogSink = true;
+    try {
+      this.#logFailure('warn', 'onLog callback failed (the entry is still in the host log)', error);
+    } finally {
+      this.#inLogSink = outer;
     }
   }
 

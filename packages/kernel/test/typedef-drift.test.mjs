@@ -133,7 +133,15 @@ async function typedefCases() {
       truth: Object.keys(host.events), from: '运行时 host.events 的键' },
     { what: 'PluginCounters', file: 'packages/kernel/src/diagnostics-projection.mjs',
       truth: Object.keys(freshCounters()), from: '运行时 freshCounters() 的键' },
+    { what: 'LogEntry', file: 'packages/kernel/src/host-util.mjs',
+      truth: logEntryKeys(host), from: '运行时一条 error 级日志的键' },
   ];
+}
+
+/** 记一条 error 级日志再读回来：error 级的键最全（带 stack），用它当 `LogEntry` 的真相源。 */
+function logEntryKeys(host) {
+  host.log('error', 'typedef probe', { k: 1 });
+  return Object.keys(host.getDiagnostics().recentErrors[0]);
 }
 
 /**
