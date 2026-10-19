@@ -41,6 +41,10 @@ export type ActionRegistryQueries = {
      * 表的条目数变了（增 / 删）—— 宿主据此给注册表 revision 记账
      */
     onChange: () => void;
+    /**
+     * 该插件当前这一轮的派发计数（宿主持有；HOST_CALLER 没有 ⇒ null）
+     */
+    statsOf: (pluginId: string) => (import('./diagnostics-projection.mjs').PluginCounters | null);
 };
 /**
  * @typedef {object} ActionRegistryQueries
@@ -52,6 +56,7 @@ export type ActionRegistryQueries = {
  * @property {symbol} releaseKey 宿主释放令牌（登记宿主自有的释放回调用）
  * @property {(level: string, message: string, details?: any) => void} log 写宿主审计日志
  * @property {() => void} onChange 表的条目数变了（增 / 删）—— 宿主据此给注册表 revision 记账
+ * @property {(pluginId: string) => (import('./diagnostics-projection.mjs').PluginCounters | null)} statsOf 该插件当前这一轮的派发计数（宿主持有；HOST_CALLER 没有 ⇒ null）
  */
 export declare class ActionRegistry {
     #private;

@@ -325,7 +325,7 @@ const result = await ctx.dispatchAction('acme.export', { rows: [1, 2, 3] });
 | `action_owner_gone` | 执行期间处理器所属插件被停用，结果作废 |
 | `action_overloaded` | 同时在途的派发数达到上限（默认 1 万，通常是递归派发失控），处理器没有被调用。递归派发时它发生在最深一层，外层调用方收到的是层层包裹的 `action_failed`，要沿 `err.cause` 往下找 |
 
-处理器抛错时，除了把 `action_failed` 抛给调用方，内核还会在宿主审计日志里记一条 warn：`details.outcome` 为 `'error'`，并带动作名（`action`）、处理器所属插件（`ownerId`）、调用方（`callerPluginId`）和原始错误的码与位置。调用方把错误吞掉，这条记录也还在；嵌套派发时只在最先失败的那一层记一次。
+处理器抛错时，除了把 `action_failed` 抛给调用方，内核还会在宿主审计日志里记一条 warn：`details.outcome` 为 `'error'`，并带动作名（`action`）、处理器所属插件（`ownerId`）、调用方（`callerPluginId`）和原始错误的码与位置。调用方把错误吞掉，这条记录也还在；嵌套派发时只在最先失败的那一层记一次。装配方还能在诊断快照的 `plugins[].counters`（不稳定面）里看到你的处理器被调用、失败、超时各多少次。
 
 ⚠️ **别把密钥、令牌、密码、连接串写进错误消息**：消息会原样进入审计日志和诊断快照，装配方的状态面板能看到。需要带上下文时，带不敏感的标识（例如记录 id），不带凭据本身。
 
@@ -572,6 +572,7 @@ const active = diag.plugins.filter(p => p.state === LifecycleState.ACTIVE).map(p
 
 // ⚠️ 不稳定面：能用，但内核随时会改它（文本、条数、内部形状）
 const tail = diag.recentLogs.slice(-5).map(l => l.message);
+const failing = diag.plugins.filter(p => (p.counters?.failed ?? 0) > 0).map(p => p.id);   // 按插件的派发计数（排障用）
 ```
 
 ★ **只读稳定面 + 忽略未知字段**，内核**加**字段就不会打到你的代码 —— 这正是分两档的目的。

@@ -35,7 +35,7 @@ import {
 } from './dependency-graph.mjs';
 import { resolveProvider, assertServiceAccess } from './service-resolution.mjs';
 import { formatFailure } from './failure-report.mjs';
-import { pluginSnapshot, serviceSnapshot } from './diagnostics-projection.mjs';
+import { pluginSnapshot, serviceSnapshot, freshCounters } from './diagnostics-projection.mjs';
 // ★ 不读宿主状态的模块级函数已搬出（原样，零行为变化）
 import {
   freezeManifestForPlugin, snapshotDetails, copyLogEntry, MAX_TIMER_MS, describeValue, describeError, readOptions, runWithTimeout,
@@ -185,6 +185,7 @@ export class CordiumHost {
    *   disabledByUser: boolean,
    *   stoppedByCascade: boolean,
    *   stoppedWhileReady: boolean,
+   *   counters: import('./diagnostics-projection.mjs').PluginCounters,
    *   error?: Error
    * }>}
    */
@@ -227,7 +228,9 @@ export class CordiumHost {
     releaseKey: this.#scopeReleaseKey,
     log: (level, message, details) => this.log(level, message, details),
     // ★ actionsCount 在稳定面 ⇒ 增删都记账（激活后在运行期注册 / 注销的动作也算）
-    onChange: () => this.#touchRegistry()
+    onChange: () => this.#touchRegistry(),
+    // ★ 派发计数在插件记录上；宿主自己（HOST_CALLER）没有记录 ⇒ null
+    statsOf: (id) => this.#plugins.get(id)?.counters ?? null
   });
   // 注入窄查询（同 ActionRegistry 的口径）：注册表只问「这个 type 算不算合法」，
   // 不拿宿主引用、读不到也改不了别的状态。闭包延迟求值 ⇒ 与 #uiTypes 的初始化顺序无关。
@@ -885,6 +888,8 @@ export class CordiumHost {
       lifecycleTimeoutMs: lifecycleTimeoutMs ?? null,
       // 最近一次激活耗时（毫秒；诊断用，供装配方判断该放宽谁）
       activationMs: null,
+      // 派发计数（不稳定面 plugins[].counters）：挂在记录上 ⇒ 移除插件时随记录一起消失
+      counters: freshCounters(),
       // ★ 生命周期迁移队列（见 #serializeLifecycle）：
       //   pending = 在途 + 排队的调用数；0 表示空闲。
       //   transition = 队列尾 promise（初始已解决 ⇒ 空闲）。
@@ -950,6 +955,9 @@ export class CordiumHost {
     record.manifest = next.manifest;
     record.entry = next.entry;
     record.lifecycleTimeoutMs = next.lifecycleTimeoutMs;
+    // ★ 换了实现就开新一轮计数：旧实现的失败不得算到新实现头上（失败回滚、换回旧代码也是新一轮）。
+    //   执行中的调用在开始时已取定旧的计数对象，迟到的结果记在旧一轮上（见 ActionRegistry.dispatch）。
+    record.counters = freshCounters();
     // ★ 换代码后【上一版的失败结论作废】—— 否则窗口期诊断把旧版本的 `error` 归到新版本头上
     //   （实测：替换一个 `failed` 插件，state 仍是 failed、error 仍是上一版那条）。
     //   ⇒ 清 error；原态是终态 `failed` 时退回「尚未尝试」（lazy 退回 `ready`）——
@@ -2650,7 +2658,8 @@ export class CordiumHost {
       //   判环要按 id 查图，`p.id` 会是 `undefined`（实测：环被误报成 not_running）。
       plugins: /** @type {Array<import('./types.mjs').PluginManifest & {
         state: string, error: string | null, activationMs: number,
-        unresolvedDependencies: { id: string, reason: string }[]
+        unresolvedDependencies: { id: string, reason: string }[],
+        counters: import('./diagnostics-projection.mjs').PluginCounters
       }>} */ (
         Array.from(this.#plugins.entries()).map(([id, p]) =>
           pluginSnapshot(id, p, (pid, manifest) => this.#unresolvedDependencies(pid, manifest, reach))

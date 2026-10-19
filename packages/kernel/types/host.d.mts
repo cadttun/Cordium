@@ -423,6 +423,7 @@ export declare class CordiumHost {
                 id: string;
                 reason: string;
             }[];
+            counters: import('./diagnostics-projection.mjs').PluginCounters;
         }>;
         services: {
             name: string;

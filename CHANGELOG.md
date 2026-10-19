@@ -18,7 +18,7 @@
 
 ## [Unreleased]
 
-> 相对 `0.6.0`：纯新增（原型方法 +1、`./internal` 导出 +1、稳定面键 +1、载荷字段 +1），删除 0 ⇒ 下一版 `0.7.0`。
+> 相对 `0.6.0`：纯新增（原型方法 +1、`./internal` 导出 +1、稳定面键 +1、载荷字段 +1、不稳定面字段 +1），删除 0 ⇒ 下一版 `0.7.0`。
 
 ### Added
 
@@ -28,6 +28,7 @@
 - ★ **`DIAGNOSTICS_VERSION_HISTORY`（仅 `./internal`）**：诊断契约「版本 → 形状」表，每行记 `schemaVersion` / `release` / `change` / `added`。bump 判据取自 abicheck 的 schema 版本决策记录：旧读取方可能**静默误读**才 bump，纯新增记一行不 bump。门禁要求各行 `added` 之并恰好等于当前稳定面。
 - ★★ **动作处理器失败进审计**（`@cordium/kernel`）：处理器抛错时，除了把 `action_failed` 抛给调用方（不变），内核另记一条 warn 级审计，`details` 带 `outcome: 'error'` / `action` / `ownerId` / `callerPluginId` 以及原始错误的码与位置。此前调用方把错误吞掉，这次失败就没有任何痕迹。嵌套派发只在最先失败的那一层记一次（递归风暴不刷屏）；warn 级不进 `recentErrors`。
 - ★ **派发路径另外三类审计的 `details` 补齐同一组字段**：超时（`outcome: 'timeout'`）、权限拒绝（`'denied'`，另带 `requiredPermission`）、过载（`'overloaded'`）都带 `action` / `ownerId` / `callerPluginId`，可以按 `outcome` 统一筛选。报文文本不变。
+- ★ **按插件的派发计数 `plugins[].counters`（不稳定面）**（`@cordium/kernel`）：每个插件记录多一个计数对象 —— 处理方的 `handled`（处理器被调到的次数，含失败与超时）/ `failed`（以 `action_failed` 结束）/ `timedOut`（本次计时器到点，与 `failed` 不重叠），发起方的 `dispatched`，以及这一轮的起点 `since`（毫秒时间戳）。只数真调到了处理器的派发：没有这个动作、缺权限、调用方不活、过载被拒都不数；宿主自己发起的只记处理方。停用再激活继续累计，`replacePlugin` 清零并换新的 `since`，移除插件随记录消失。常开、无开关；计数变化不让 `revision` +1。代价：每次派发多两次 Map 查找与两次自增，空处理器实测多约 8～36 ns（2%～6%）。
 
 ### Fixed
 

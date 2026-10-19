@@ -22,6 +22,7 @@ import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause, describeValu
  * @property {symbol} releaseKey 宿主释放令牌（登记宿主自有的释放回调用）
  * @property {(level: string, message: string, details?: any) => void} log 写宿主审计日志
  * @property {() => void} onChange 表的条目数变了（增 / 删）—— 宿主据此给注册表 revision 记账
+ * @property {(pluginId: string) => (import('./diagnostics-projection.mjs').PluginCounters | null)} statsOf 该插件当前这一轮的派发计数（宿主持有；HOST_CALLER 没有 ⇒ null）
  */
 
 export class ActionRegistry {
@@ -195,6 +196,13 @@ export class ActionRegistry {
         { pluginId: callerPluginId }));
     }
     this.#inFlight += 1;
+    // ★ 派发计数（不稳定面 plugins[].counters）：只数【真的调到了处理器】的 —— 上面几道闸拒掉的一律不数；
+    //   懒激活「未命中 → 拉起 → 重试」只有重试那次走到这里 ⇒ 只记一次。
+    //   计数对象在调用开始时取定：执行中途 replacePlugin 开了新一轮，迟到的结果仍记在旧一轮上。
+    const ownerStats = this.#q.statsOf(entry.ownerId);
+    const callerStats = this.#q.statsOf(callerPluginId);
+    if (ownerStats) ownerStats.handled += 1;
+    if (callerStats) callerStats.dispatched += 1;
     let timedOut = false;
     try {
       const result = await runWithTimeout(
@@ -218,6 +226,7 @@ export class ActionRegistry {
       //   并明确记下「处理器可能还在跑」—— 调用方据此判断是否需要幂等兜底。
       //   判据是【本次调用自己的】计时器，不是错误码：处理器内部再派发的动作超时也是 action_timeout 码。
       if (timedOut) {
+        if (ownerStats) ownerStats.timedOut += 1;
         this.#q.log(
           'warn',
           `Action '${action}' from plugin '${callerPluginId}' timed out after ${timeoutMs}ms`,
@@ -230,6 +239,8 @@ export class ActionRegistry {
       //   此前原样透传：抛字符串则调用方拿不到码 / 归属 / 栈；更糟的是内部派发的 action_not_found /
       //   action_timeout 与「本动作不存在 / 本动作超时」同码，调用方分不清哪一层出的错（实测）。
       //   原值一条不丢地放在 cause 上（与 parallel 的 listener_failed 同一口径）。
+      // ★ 计数逐层都记（与审计的「只记一次」不同）：内层失败、外层随之失败 ⇒ 两次调用都以失败结束，各 +1
+      if (ownerStats) ownerStats.failed += 1;
       const reason = summarizeCause(err);
       const failure = new CordiumError(ErrorCode.ACTION_FAILED,
         `Action '${action}' (owner '${entry.ownerId}') failed: ${reason}`,

@@ -549,8 +549,11 @@ test('★★ 诊断快照的字段必须【由 manifest 契约派生】—— �
   //    `DIAGNOSTICS_CONTRACT.stable['plugins[]']` 的尾巴是**同一份知识写了两遍**。
   //    两份清单的漂移是**双向**的：漏了 ⇒ 新字段被当成"凭空多出"而误红；
   //    多了 ⇒ 某个已删字段仍被"登记在册"而放行。⇒ 取真相源，去掉这一份。
-  const RUNTIME_FIELDS = DIAGNOSTICS_CONTRACT.stable['plugins[]']
-    .filter((k) => !MANIFEST_FIELD_TABLE.kernel.includes(k));
+  //  ★ 不稳定面里挂在 plugins[] 下的（如 counters）同样是契约里登记过的运行时字段 —— 一并取，不另抄。
+  const RUNTIME_FIELDS = [
+    ...DIAGNOSTICS_CONTRACT.stable['plugins[]'],
+    ...DIAGNOSTICS_CONTRACT.unstable.filter((p) => p.startsWith('plugins[].')).map((p) => p.slice('plugins[].'.length))
+  ].filter((k) => !MANIFEST_FIELD_TABLE.kernel.includes(k));
   const extra = Object.keys(entry).filter(
     (k) => !MANIFEST_FIELD_TABLE.kernel.includes(k) && !RUNTIME_FIELDS.includes(k)
   );
@@ -559,7 +562,7 @@ test('★★ 诊断快照的字段必须【由 manifest 契约派生】—— �
     [],
     `诊断快照出现了未登记的字段：${extra.join(', ')}\n`
     + `  ⇒ 要么是忘了登记进 MANIFEST_FIELD_TABLE.kernel（若是 manifest 字段），\n`
-    + `     要么是新增运行时状态却没加进本测试的 RUNTIME_FIELDS（若是内核观察结果）。`
+    + `     要么是新增运行时状态却没登记进 DIAGNOSTICS_CONTRACT（stable['plugins[]'] 或 unstable 的 plugins[].x）。`
   );
 
   // ③ kind 的语义（装配层靠它区分 core / business）

@@ -416,6 +416,8 @@ export const DIAGNOSTICS_CONTRACT = Object.freeze({
     'manifestDiagnostics', 'manifestDiagnosticsDropped',
     // 通道内部摘要、权限清单、作用域提供者明细
     'channel', 'permissions', 'services[].scopedProviderCount', 'services[].scopedProviders',
+    // 按插件的派发计数（排障用；口径随需求演进）
+    'plugins[].counters',
     // 契约版本号本身随契约演进
     'schemaVersion'
   ])

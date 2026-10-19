@@ -33,6 +33,7 @@ import { CordiumHost } from '../src/index.mjs';
 // ★ `MANIFEST_FIELD_TABLE` **不在**主入口（它是内部工具，`public-surface.test.mjs` 专门守这条），
 //   本包测试走相对路径取 —— 与 host.test.mjs 同款。
 import { MANIFEST_FIELD_TABLE } from '../src/types.mjs';
+import { freshCounters } from '../src/diagnostics-projection.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -130,6 +131,8 @@ async function typedefCases() {
       truth: Object.keys(ctx), from: '运行时 ctx 的键' },
     { what: 'HostEvents', file: 'packages/kernel/src/host.mjs',
       truth: Object.keys(host.events), from: '运行时 host.events 的键' },
+    { what: 'PluginCounters', file: 'packages/kernel/src/diagnostics-projection.mjs',
+      truth: Object.keys(freshCounters()), from: '运行时 freshCounters() 的键' },
   ];
 }
 

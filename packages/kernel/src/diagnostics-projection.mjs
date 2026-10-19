@@ -33,12 +33,32 @@ export function manifestSnapshot(manifest) {
 }
 
 /**
- * 插件记录的诊断投影（manifest 白名单 + 运行态 + 未满足依赖）。
+ * @typedef {object} PluginCounters 一个插件当前这一轮的派发计数（`plugins[].counters`，不稳定面）
+ * @property {number} handled 它的处理器被调到的次数（含失败与超时）
+ * @property {number} failed 其中以 `action_failed` 结束的次数
+ * @property {number} timedOut 其中本次计时器到点的次数（与 failed 不重叠）
+ * @property {number} dispatched 它发起、且真的调到了处理器的派发次数
+ * @property {number} since 这一轮从何时开始（毫秒时间戳）
+ */
+
+/**
+ * 新一轮计数的初值。注册与 `replacePlugin` 各开一轮。
+ *
+ * ★ `since` 让读的人判断两次快照之间计数有没有被重置过 —— 只比是否相等，不比大小
+ *   （与 OpenTelemetry 累计型指标的 start time 同一用途）。
+ * @returns {PluginCounters}
+ */
+export function freshCounters() {
+  return { handled: 0, failed: 0, timedOut: 0, dispatched: 0, since: Date.now() };
+}
+
+/**
+ * 插件记录的诊断投影（manifest 白名单 + 运行态 + 未满足依赖 + 派发计数）。
  *
  * @param {string} id 记录的 id（它是 Map 的键，**不在记录里**）
- * @param {{ manifest: any, state: string, error?: unknown, activationMs: number }} record
+ * @param {{ manifest: any, state: string, error?: unknown, activationMs: number, counters: PluginCounters }} record
  * @param {(id: string, manifest: any) => { id: string, reason: string }[]} unresolvedOf
- * @returns {import('./types.mjs').PluginManifest & { state: string, error: string | null, activationMs: number, unresolvedDependencies: { id: string, reason: string }[] }}
+ * @returns {import('./types.mjs').PluginManifest & { state: string, error: string | null, activationMs: number, unresolvedDependencies: { id: string, reason: string }[], counters: PluginCounters }}
  */
 export function pluginSnapshot(id, record, unresolvedOf) {
   return {
@@ -47,7 +67,9 @@ export function pluginSnapshot(id, record, unresolvedOf) {
     error: record.state === LifecycleState.FAILED ? describeError(record.error) : null,
     activationMs: record.activationMs,
     // ★ 依赖没齐 ⇒「它为什么没起来」只能靠这一项回答
-    unresolvedDependencies: unresolvedOf(id, record.manifest)
+    unresolvedDependencies: unresolvedOf(id, record.manifest),
+    // ★ 不稳定面（排障用）。交副本：改快照里的数不得回写宿主
+    counters: { ...record.counters }
   };
 }
 
