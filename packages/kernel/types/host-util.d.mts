@@ -54,6 +54,7 @@ export declare function firstFrame(stack: unknown): string | null;
  *
  * ★ 为什么需要：后台失败（emit 监听器、清理回调、生命周期钩子）没有调用方可以 catch，
  *   只进宿主日志 —— 此前日志里只有一句 message，看不出是哪个插件、哪一行。
+ *   动作处理器失败的审计也用它：调用方能 catch，但它把错误吞掉时，只剩这一条记录。
  * ★ 任何怪值（throw undefined / Symbol / 抛错的 getter / Proxy）都不得让这里再抛：错误路径上的工具。
  * ★ 有界：cause 链只展开头 4 层 + 尾 4 层（中间记个数）、每段栈截 4KB —— 递归派发的信封链可以上万层。
  *

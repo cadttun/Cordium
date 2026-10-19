@@ -26,6 +26,8 @@
 - ★★ **`host.watchRegistry(listener)`**：宿主侧的 list-watch 入口，载荷只有冻结的 `{ revision }`，内容自己去 `getDiagnostics()` 拉。此前宿主没有任何监听注册表的路径（`host.events.subscribe` 只收字符串，内部信号是私有 symbol）。同步送达；监听器抛错不阻断其他监听器与变更本身（warn 级进审计日志）。
 - ★ **`ctx.watchPluginState` 载荷新增 `revision`**：与 `getDiagnostics().revision` 同一条序列，收到事件后拉一份 `revision` 不小于它的快照即已包含这次变化。
 - ★ **`DIAGNOSTICS_VERSION_HISTORY`（仅 `./internal`）**：诊断契约「版本 → 形状」表，每行记 `schemaVersion` / `release` / `change` / `added`。bump 判据取自 abicheck 的 schema 版本决策记录：旧读取方可能**静默误读**才 bump，纯新增记一行不 bump。门禁要求各行 `added` 之并恰好等于当前稳定面。
+- ★★ **动作处理器失败进审计**（`@cordium/kernel`）：处理器抛错时，除了把 `action_failed` 抛给调用方（不变），内核另记一条 warn 级审计，`details` 带 `outcome: 'error'` / `action` / `ownerId` / `callerPluginId` 以及原始错误的码与位置。此前调用方把错误吞掉，这次失败就没有任何痕迹。嵌套派发只在最先失败的那一层记一次（递归风暴不刷屏）；warn 级不进 `recentErrors`。
+- ★ **派发路径另外三类审计的 `details` 补齐同一组字段**：超时（`outcome: 'timeout'`）、权限拒绝（`'denied'`，另带 `requiredPermission`）、过载（`'overloaded'`）都带 `action` / `ownerId` / `callerPluginId`，可以按 `outcome` 统一筛选。报文文本不变。
 
 ### Fixed
 

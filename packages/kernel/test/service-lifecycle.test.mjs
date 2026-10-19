@@ -506,8 +506,12 @@ test('超时必须在审计里与普通失败可区分（outcome=timeout）', as
     '必须注明处理器可能还在跑 —— 调用方据此判断是否需要幂等兜底'
   );
 
-  const errorLog = host.getDiagnostics().recentLogs.find(log => log.details?.outcome === 'error');
-  assert.equal(errorLog, undefined, '普通业务失败不得被记成超时（两者必须可区分）');
+  // ★ 普通失败也进审计（outcome=error，见 action-failure-log.test.mjs），但必须与超时分开：各一条、互不冒充
+  const logs = host.getDiagnostics().recentLogs.filter(log => log.details?.action?.startsWith('audit.'));
+  assert.deepEqual(logs.map(l => [l.details.action, l.details.outcome]),
+    [['audit.timeout', 'timeout'], ['audit.error', 'error']],
+    '普通业务失败不得被记成超时，超时也不得再补一条 error（两者必须可区分）');
+  assert.match(logs[1].message, /业务爆炸/);
 });
 
 // ★ 句柄失效判定此前只按 id 查消费者 ⇒ 同 id 重新激活后，上一次激活拿到的旧句柄复活。

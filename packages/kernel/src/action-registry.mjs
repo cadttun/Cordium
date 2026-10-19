@@ -10,7 +10,7 @@
  */
 
 import { CordiumError, ErrorCode } from './errors.mjs';
-import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause, describeValue, assertScopeLive } from './host-util.mjs';
+import { readOptions, runWithTimeout, MAX_TIMER_MS, summarizeCause, describeValue, assertScopeLive, errorDetails } from './host-util.mjs';
 
 /**
  * @typedef {object} ActionRegistryQueries
@@ -31,6 +31,11 @@ export class ActionRegistry {
   #inFlight = 0;
   /** 在途数触顶后的告警限频：回落到一半以下才允许下一次告警 */
   #overloadWarned = false;
+  /**
+   * 已进过审计的失败（按错误对象身份）—— 嵌套派发时只在**最先发生的那一层**记一次。
+   * ★ WeakSet：不拦回收，错误对象没人引用后条目自动消失 ⇒ 不会无界增长。
+   */
+  #recorded = new WeakSet();
 
   /** @param {ActionRegistryQueries} queries */
   constructor(queries) {
@@ -163,8 +168,9 @@ export class ActionRegistry {
       // ★ 读【宿主持有的权限快照】，不读 caller.manifest ——
       //   后者正是交给插件的那个对象，插件往里 push 一个字符串就能给自己提权。
       if (!this.#q.hasPermission(callerPluginId, entry.requiredPermission)) {
-        this.#q.log('warn', `Security Violation: Plugin '${callerPluginId}' lacks permission '${entry.requiredPermission}' for action '${action}'`);
-        throw new CordiumError(ErrorCode.ACCESS_DENIED, `Security Violation: Plugin '${callerPluginId}' lacks required permission '${entry.requiredPermission}'`);
+        this.#q.log('warn', `Security Violation: Plugin '${callerPluginId}' lacks permission '${entry.requiredPermission}' for action '${action}'`,
+          { outcome: 'denied', action, ownerId: entry.ownerId, callerPluginId, requiredPermission: entry.requiredPermission });
+        throw this.#markRecorded(new CordiumError(ErrorCode.ACCESS_DENIED, `Security Violation: Plugin '${callerPluginId}' lacks required permission '${entry.requiredPermission}'`));
       }
     }
 
@@ -181,11 +187,12 @@ export class ActionRegistry {
       if (!this.#overloadWarned) {
         this.#overloadWarned = true;
         this.#q.log('warn', `Action dispatch overloaded: ${this.#inFlight} in flight (maxInFlightActions ${limit}); rejecting '${action}' from '${callerPluginId}' — likely recursive or runaway dispatch`,
-          { action, callerPluginId, inFlight: this.#inFlight });
+          { outcome: 'overloaded', action, ownerId: entry.ownerId, callerPluginId, inFlight: this.#inFlight });
       }
-      throw new CordiumError(ErrorCode.ACTION_OVERLOADED,
+      // ★ 限频没记的那些也标「已记」：风暴里冒到外层的 action_failed 不得绕过限频逐层再记
+      throw this.#markRecorded(new CordiumError(ErrorCode.ACTION_OVERLOADED,
         `Action '${action}' rejected: ${this.#inFlight} dispatches already in flight (maxInFlightActions ${limit}); the handler was not called`,
-        { pluginId: callerPluginId });
+        { pluginId: callerPluginId }));
     }
     this.#inFlight += 1;
     let timedOut = false;
@@ -214,21 +221,58 @@ export class ActionRegistry {
         this.#q.log(
           'warn',
           `Action '${action}' from plugin '${callerPluginId}' timed out after ${timeoutMs}ms`,
-          { outcome: 'timeout', note: 'handler may still be running' }
+          { outcome: 'timeout', note: 'handler may still be running', action, ownerId: entry.ownerId, callerPluginId }
         );
-        throw err;
+        throw this.#markRecorded(err);
       }
       if (err instanceof CordiumError && err.code === ErrorCode.ACTION_OWNER_GONE) throw err;
       // ★ 处理器冒出来的一切（含它内部再派发失败的 CordiumError）一律套信封 ——
       //   此前原样透传：抛字符串则调用方拿不到码 / 归属 / 栈；更糟的是内部派发的 action_not_found /
       //   action_timeout 与「本动作不存在 / 本动作超时」同码，调用方分不清哪一层出的错（实测）。
       //   原值一条不丢地放在 cause 上（与 parallel 的 listener_failed 同一口径）。
-      throw new CordiumError(ErrorCode.ACTION_FAILED,
-        `Action '${action}' (owner '${entry.ownerId}') failed: ${summarizeCause(err)}`,
+      const reason = summarizeCause(err);
+      const failure = new CordiumError(ErrorCode.ACTION_FAILED,
+        `Action '${action}' (owner '${entry.ownerId}') failed: ${reason}`,
         { cause: err, pluginId: entry.ownerId });
+      // ★★ 处理器失败进审计（warn 级）。调用方能 catch，但它吞掉时，处理方插件和宿主都无从知道这个处理器在坏
+      //   —— 与超时同一个理由：超时也有调用方，记它是因为有调用方看不到的事。
+      //   · warn 不是 error：error 进 100 槽的错误日志，频繁的业务失败会把激活失败这类真错误冲掉；
+      //     出错位置取自原始错误（details.at），error 级自动抓的只是记日志这一行的栈。
+      //   · 只记一次（OpenTelemetry 错误记录约定：同一个异常不重复记录，传给调用方的记一次）：
+      //     内层已记过的失败（action_failed / 超时 / 拒绝 / 过载）冒到外层不再记 —— 递归风暴里逐层都记就是刷屏。
+      //   · 内核分不清「处理器有 bug」与「调用方传了坏参数」⇒ 两边都记（ownerId / callerPluginId），由读的人判断。
+      //   · 报文用有界的 reason（≤ 200 字）；完整原因在 details（log() 另有体积预算）。
+      if (!this.#alreadyRecorded(err)) {
+        const details = errorDetails(err);
+        const tag = details.code && !(err instanceof CordiumError) ? ` [${details.code}]` : '';
+        const at = details.at ? ` at ${details.at}` : '';
+        this.#q.log('warn', `Action '${action}' (owner '${entry.ownerId}') failed for caller '${callerPluginId}': ${reason}${tag}${at}`,
+          { ...details, outcome: 'error', action, ownerId: entry.ownerId, callerPluginId });
+      }
+      throw this.#markRecorded(failure);
     } finally {
       this.#inFlight -= 1;
       if (this.#inFlight < limit / 2) this.#overloadWarned = false;
     }
+  }
+
+  /**
+   * 这个失败是否已在更内层记过：沿 cause 链看，最多 32 层。
+   * ★ 必须看 cause 链：处理器 `throw new Error('…', { cause: err })` 包一层再抛，只看本体会让同一个失败记两次。
+   * ★ 读 cause 一律 try：第三方错误可以把 cause 做成抛错的 getter / Proxy。自环由层数上限兜住。
+   */
+  #alreadyRecorded(err) {
+    let cur = err;
+    for (let depth = 0; depth < 32 && cur !== null && (typeof cur === 'object' || typeof cur === 'function'); depth++) {
+      if (this.#recorded.has(cur)) return true;
+      try { cur = cur.cause; } catch { return false; }
+    }
+    return false;
+  }
+
+  /** 标记「这个失败已进过审计」，原样返回（供 `throw this.#markRecorded(…)`） */
+  #markRecorded(err) {
+    if (err !== null && (typeof err === 'object' || typeof err === 'function')) this.#recorded.add(err);
+    return err;
   }
 }
