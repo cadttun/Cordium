@@ -127,8 +127,6 @@ export class ActionRegistry {
       timeoutMs: timeoutMs ?? null,
       handler
     });
-    this.#q.onChange();
-
     if (scope) {
       // ★ 宿主自有释放：先于插件的清理回调执行，插件的回调挂起也拖不住它（否则停用卡住时动作仍可派发）
       scope.addHostDisposer(() => {
@@ -140,6 +138,8 @@ export class ActionRegistry {
         }
       }, this.#q.releaseKey);
     }
+    // 同步通知可以触发停用，必须先把动作挂入清理链。
+    this.#q.onChange();
   }
 
   /**

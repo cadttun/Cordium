@@ -102,6 +102,27 @@ test('★ 只读不记账：连拉两次快照 revision 不变', () => {
   assert.equal(host.getDiagnostics().revision, r, '★ 日志 / 读取属不稳定面或无变化，不该让订阅方白拉');
 });
 
+test('注册通知里立即停用动作属主，动作仍随作用域释放', async () => {
+  const host = new CordiumHost();
+  let ctx;
+  let stopping;
+  let calls = 0;
+  host.registerPlugin(m('p.owner'), { activate(c) { ctx = c; } });
+  await host.boot();
+  const off = host.watchRegistry(() => {
+    if (host.getDiagnostics().actionsCount === 0) return;
+    off();
+    stopping = host.deactivatePlugin('p.owner');
+  });
+
+  assert.doesNotThrow(() => ctx.registerAction('owner.run', { handler: () => ++calls }));
+  await stopping;
+  assert.equal(host.getDiagnostics().plugins[0].state, 'disabled');
+  assert.equal(host.getDiagnostics().actionsCount, 0);
+  await assert.rejects(host.dispatchActionAsHost('owner.run'), { code: ErrorCode.ACTION_NOT_FOUND });
+  assert.equal(calls, 0);
+});
+
 test('★★ watchRegistry：回调内同步拉快照，revision 对得上账且已含这次变化', async () => {
   const host = new CordiumHost();
   const mismatches = [];

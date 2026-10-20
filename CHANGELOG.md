@@ -16,6 +16,12 @@
 两段都只在**确有**废弃 / 破坏时出现，**不预置空段**。
 （依据 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/) 对「deprecations, removals, and any breaking changes」的列举要求。）
 
+## [Unreleased]
+
+### Fixed
+
+- 注册动作先登记释放回调再通知注册表监听器；监听器同步停用属主时，不再残留停用后仍可执行的动作。
+
 ## [0.7.0] - 2026-10-21
 
 > 相对 `0.6.0`：**纯新增**（原型方法 +1、`./internal` 导出 +1、载荷字段 +1、不稳定面字段 +2、日志条目字段 +1、日志出口选项 +1），**删除 0、形状变化 0** ⇒ 按 SemVer 只需 `minor`。
