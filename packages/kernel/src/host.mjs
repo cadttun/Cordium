@@ -2513,7 +2513,7 @@ export class CordiumHost {
   /**
    * ★★ 注册表变更的**唯一记账点**：`#revision` +1，并发 `REGISTRY_CHANGE` 轻信号。
    *
-   * 承诺（`revision` 在稳定面）：**稳定面任一点名字段可能变化 ⇒ 必经此处**。
+   * 规则（`revision` 本身在不稳定面；规则由 `registry-watch.test.mjs` 守）：**稳定面任一点名字段可能变化 ⇒ 必经此处**。
    *   反过来不承诺：+1 了不保证快照真有可见差异（可以多加，不会漏加）。
    *   不稳定面（日志、权限清单、通道摘要……）的变化**不**记账 —— 否则每条 info 日志都会触发重拉。
    *
@@ -2691,7 +2691,7 @@ export class CordiumHost {
   /**
    * ★★ 订阅「注册表变了」—— 宿主 / 装配层的 list-watch 入口（插件侧用 `ctx.watchPluginState`）。
    *
-   * 载荷只有 `{ revision }`：告诉你「现在是第 N 版」，内容自己去 `getDiagnostics()` 拉，
+   * 载荷只有 `{ revision }`（诊断快照的不稳定面）：告诉你「现在是第 N 版」，内容自己去 `getDiagnostics()` 拉，
    *   拉到的快照 `revision >= N` 即已包含这次变化（与 K8s list → watch from resourceVersion 同形）。
    *   不推初始状态 —— 先拉一次快照，再订阅。
    *
@@ -2743,7 +2743,7 @@ export class CordiumHost {
       //   不能只写在文档里（文档不会跟着 API 调用走）。取值来自契约表，不另写字面量。
       //   ⚠️ 它本身**不在稳定面**：稳定面发生不兼容改动时它才递增，承诺它等于承诺它不变。
       schemaVersion: DIAGNOSTICS_CONTRACT.schemaVersion,
-      // ★ 注册表逻辑版本号（稳定面）：与 watchRegistry / watchPluginState 载荷里的 revision 对账
+      // ★ 注册表逻辑版本号（不稳定面）：与 watchRegistry / watchPluginState 载荷里的 revision 对账
       revision: this.#revision,
       hostVersion: this.#hostVersion,
       booted: this.#booted,

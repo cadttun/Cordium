@@ -373,7 +373,7 @@ export declare class CordiumHost {
     /**
      * ★★ 订阅「注册表变了」—— 宿主 / 装配层的 list-watch 入口（插件侧用 `ctx.watchPluginState`）。
      *
-     * 载荷只有 `{ revision }`：告诉你「现在是第 N 版」，内容自己去 `getDiagnostics()` 拉，
+     * 载荷只有 `{ revision }`（诊断快照的不稳定面）：告诉你「现在是第 N 版」，内容自己去 `getDiagnostics()` 拉，
      *   拉到的快照 `revision >= N` 即已包含这次变化（与 K8s list → watch from resourceVersion 同形）。
      *   不推初始状态 —— 先拉一次快照，再订阅。
      *

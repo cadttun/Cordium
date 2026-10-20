@@ -59,7 +59,6 @@ const STABLE_TYPE_SIGNATURE = [
   '<root>.booted = boolean',
   '<root>.hostVersion = string',
   '<root>.plugins = array',
-  '<root>.revision = number',
   '<root>.services = array',
   '<root>.totalPlugins = number',
   '<root>.uiContributionsCount = number',
@@ -258,4 +257,13 @@ test('★ schemaVersion 随快照交出，且与契约表同源（不是第二�
     'schemaVersion 不得进稳定面');
   assert.ok(DIAGNOSTICS_CONTRACT.unstable.includes('schemaVersion'),
     'schemaVersion 必须进不稳定面 —— 「不承诺」也要是显式的');
+});
+
+test('★ revision 在不稳定面：随快照交出，但不进稳定面（进了就是长期承诺）', async () => {
+  const snapshot = (await richHost()).getDiagnostics();
+  assert.equal(typeof snapshot.revision, 'number');
+  assert.ok(!DIAGNOSTICS_CONTRACT.stable[ROOT].includes('revision'),
+    'revision 不进稳定面 —— 真要承诺它，先改这条测试，并在 DIAGNOSTICS_VERSION_HISTORY 记一行');
+  assert.ok(DIAGNOSTICS_CONTRACT.unstable.includes('revision'),
+    'revision 必须显式列进不稳定面');
 });

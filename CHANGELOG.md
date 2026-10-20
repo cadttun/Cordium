@@ -18,11 +18,11 @@
 
 ## [Unreleased]
 
-> 相对 `0.6.0`：纯新增（原型方法 +1、构造选项 +1、`./internal` 导出 +1、稳定面键 +1、载荷字段 +1、不稳定面字段 +1、日志条目字段 +1），删除 0 ⇒ 下一版 `0.7.0`。
+> 相对 `0.6.0`：纯新增（原型方法 +1、构造选项 +1、`./internal` 导出 +1、载荷字段 +1、不稳定面字段 +2、日志条目字段 +1），删除 0 ⇒ 下一版 `0.7.0`。
 
 ### Added
 
-- ★★ **`getDiagnostics().revision`（稳定面）**：注册表的逻辑版本号。承诺「存在、为整数、单调不减；稳定面任一点名字段可能变化时 +1」—— 可以多加，不会漏加；不稳定面（日志、权限清单等）的变化不记账。记账点：插件状态迁移与增删、服务提供者增删、契约声明、动作 / UI 贡献增删、`booted` 翻转、`replacePlugin` 换 manifest。`schemaVersion` 不变（纯新增，旧读取方忽略即可）。
+- ★★ **`getDiagnostics().revision`（不稳定面）**：注册表的逻辑版本号：存在、为整数、单调不减；稳定面任一点名字段可能变化时 +1 —— 可以多加，不会漏加；不稳定面（日志、权限清单等）的变化不记账。记账点：插件状态迁移与增删、服务提供者增删、契约声明、动作 / UI 贡献增删、`booted` 翻转、`replacePlugin` 换 manifest。用来与推送对账、丢弃过期快照。1.0 之前不进稳定面（进了就是长期承诺）；`schemaVersion` 不变。
 - ★★ **`host.watchRegistry(listener)`**：宿主侧的 list-watch 入口，载荷只有冻结的 `{ revision }`，内容自己去 `getDiagnostics()` 拉。此前宿主没有任何监听注册表的路径（`host.events.subscribe` 只收字符串，内部信号是私有 symbol）。同步送达；监听器抛错不阻断其他监听器与变更本身（warn 级进审计日志）。
 - ★ **`ctx.watchPluginState` 载荷新增 `revision`**：与 `getDiagnostics().revision` 同一条序列，收到事件后拉一份 `revision` 不小于它的快照即已包含这次变化。
 - ★ **`DIAGNOSTICS_VERSION_HISTORY`（仅 `./internal`）**：诊断契约「版本 → 形状」表，每行记 `schemaVersion` / `release` / `change` / `added`。bump 判据取自 abicheck 的 schema 版本决策记录：旧读取方可能**静默误读**才 bump，纯新增记一行不 bump。门禁要求各行 `added` 之并恰好等于当前稳定面。

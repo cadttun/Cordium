@@ -395,9 +395,7 @@ export const DIAGNOSTICS_CONTRACT = Object.freeze({
    *   路径是**从快照根算起的点分路径**（`''` = 根）。
    */
   stable: Object.freeze({
-    // ★ `revision`（0.7.0 起）：注册表的**逻辑版本号**，承诺「存在、为整数、单调不减」——
-    //   稳定面任一点名字段可能变化时它必 +1（可以多加，不会漏加）。语义见 host.mjs 的 #touchRegistry。
-    '': Object.freeze(['hostVersion', 'booted', 'totalPlugins', 'actionsCount', 'uiContributionsCount', 'plugins', 'services', 'revision']),
+    '': Object.freeze(['hostVersion', 'booted', 'totalPlugins', 'actionsCount', 'uiContributionsCount', 'plugins', 'services']),
     // ★★ 记录字段 = manifest 投影 + 生命周期。**从契约表派生，不手列** ——
     //    往 manifest 加字段 ⇒ 投影自动带出 ⇒ 自动进入稳定面。手列就是「漏列即静默丢弃」那个坑。
     'plugins[]': Object.freeze([...MANIFEST_FIELD_TABLE.kernel, 'state', 'error', 'activationMs', 'unresolvedDependencies']),
@@ -418,6 +416,9 @@ export const DIAGNOSTICS_CONTRACT = Object.freeze({
     'channel', 'permissions', 'services[].scopedProviderCount', 'services[].scopedProviders',
     // 按插件的派发计数（排障用；口径随需求演进）
     'plugins[].counters',
+    // ★ 注册表逻辑版本号（0.7.0 起）：存在、为整数、单调不减；稳定面任一点名字段可能变化时 +1（可以多加，不会漏加）。
+    //   语义见 host.mjs 的 #touchRegistry。进稳定面就是长期承诺 ⇒ 1.0 之前先不进。
+    'revision',
     // 契约版本号本身随契约演进
     'schemaVersion'
   ])
@@ -465,12 +466,6 @@ export const DIAGNOSTICS_VERSION_HISTORY = Object.freeze([
       ]),
       'services[]': Object.freeze(['name', 'access', 'requiredPermission', 'methods', 'activeProvider', 'providerCount'])
     })
-  }),
-  Object.freeze({
-    schemaVersion: 1,
-    release: '0.7.0',
-    change: '顶层新增 revision（注册表逻辑版本号，单调递增）—— 纯新增，旧读取方忽略即可、不会误读 ⇒ 不 bump',
-    added: Object.freeze({ '': Object.freeze(['revision']) })
   })
 ]);
 

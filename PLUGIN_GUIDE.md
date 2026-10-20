@@ -546,6 +546,7 @@ await host.boot();
 - ★ **宿主自己要派发动作时，用 `host.dispatchActionAsHost(action, payload)`** —— 它以**宿主自己的身份**派发（`HOST_CALLER`），不受 `requiredPermission` 约束（宿主是信任根，与 `getInternalService()` 同一口径）。
   ⚠️ 别为了「过权限门」去借一个插件的 id 调 `dispatchAction(pluginId, …)` —— 那样**审计日志会记成那个插件干的**，不是宿主。确实需要「代表某个插件」时，那是**委派**，要能同时说清「谁在做」和「代表谁」。
 - ★ **装配方要发布 / 订阅事件时，用 `host.events`** —— `{ emit, waterfall, subscribe }` 三件，以**根作用域**语义（与插件在根 `ctx` 上 `ctx.on` / `ctx.emit` 同形）。装配方**不是插件、没有 `ctx`**，这是它以宿主身份参与事件的正路；订阅监听器出错时审计记 `owner` 为 `HOST_CALLER`（`'@host'`）。只给这三件，**不给** `provideService` / `registerAction` —— 那些宿主已有 `getInternalService` / `dispatchActionAsHost`。
+- ★ **装配方要知道「注册表变了」时，用 `host.watchRegistry(listener)`** —— 返回退订函数；载荷只有冻结的 `{ revision }`，内容自己去 `getDiagnostics()` 拉（拉到的快照 `revision` 不小于它，就已包含这次变化）。不推初始状态：先拉一次快照，再订阅。`revision` 属诊断快照的不稳定面：用来比大小、丢弃过期信号，别存档、别跨宿主实例比较。
 - 插件放在哪个目录都可以，清单里写绝对路径即可；以脚本自身为基准时用 `new URL('./plugins/x.mjs', import.meta.url)`。
 
 ### 读诊断快照：哪些字段可以依赖
