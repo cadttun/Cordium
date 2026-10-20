@@ -190,6 +190,8 @@ export class CordiumHost {
    * }>}
    */
   #plugins = new Map();
+  /** @type {Map<string, number>} 各插件最近一轮计数的起点，只留以后还可能撞上的（见 #nextRoundStart） */
+  #roundStarts = new Map();
   /** EffectScope 释放令牌：只有宿主能 dispose 插件的 scope / 登记宿主自有释放（见 scope.mjs #releaseKey）。须先于 #actionHandlers 初始化 */
   #scopeReleaseKey = Symbol('cordium.scope-release');
   /**
@@ -985,7 +987,7 @@ export class CordiumHost {
       // 最近一次激活耗时（毫秒；诊断用，供装配方判断该放宽谁）
       activationMs: null,
       // 派发计数（不稳定面 plugins[].counters）：挂在记录上 ⇒ 移除插件时随记录一起消失
-      counters: freshCounters(),
+      counters: freshCounters(this.#nextRoundStart(manifest.id)),
       // ★ 生命周期迁移队列（见 #serializeLifecycle）：
       //   pending = 在途 + 排队的调用数；0 表示空闲。
       //   transition = 队列尾 promise（初始已解决 ⇒ 空闲）。
@@ -1045,6 +1047,26 @@ export class CordiumHost {
     }
   }
 
+  /**
+   * 给插件开新一轮计数时的起点（`counters.since`）。
+   * 读的人只比 `since` 是否相等来判断计数有没有被重置 ⇒ 同一插件连开两轮必须得到不同的值；
+   * 而毫秒时间戳在同一毫秒内连开两轮（热替换连着两次、注销后马上重新注册）会撞上。所以：
+   *   · 这个插件上一轮的起点还没过去（≥ 此刻）⇒ 顺延 1ms；否则就用此刻。
+   *   · 按插件各算各的：启动时一批插件在同一毫秒注册，起点都是此刻，不会被挤到未来。
+   *   · 表里只留还没过去的起点（过去了的不可能再被撞上）⇒ 不随插件增删无限增长。
+   * 不防系统时钟往回拨。
+   * @param {string} id
+   * @returns {number}
+   */
+  #nextRoundStart(id) {
+    const now = Date.now();
+    for (const [key, at] of this.#roundStarts) if (at < now) this.#roundStarts.delete(key);
+    const prev = this.#roundStarts.get(id);
+    const since = prev === undefined ? now : prev + 1;
+    this.#roundStarts.set(id, since);
+    return since;
+  }
+
   /** 换掉记录里的代码与 manifest（含鉴权快照），返回换下来的那份（回滚用） */
   #swapPlugin(record, next) {
     const previous = { manifest: record.manifest, entry: record.entry, lifecycleTimeoutMs: record.lifecycleTimeoutMs };
@@ -1053,7 +1075,7 @@ export class CordiumHost {
     record.lifecycleTimeoutMs = next.lifecycleTimeoutMs;
     // ★ 换了实现就开新一轮计数：旧实现的失败不得算到新实现头上（失败回滚、换回旧代码也是新一轮）。
     //   执行中的调用在开始时已取定旧的计数对象，迟到的结果记在旧一轮上（见 ActionRegistry.dispatch）。
-    record.counters = freshCounters();
+    record.counters = freshCounters(this.#nextRoundStart(next.manifest.id));
     // ★ 换代码后【上一版的失败结论作废】—— 否则窗口期诊断把旧版本的 `error` 归到新版本头上
     //   （实测：替换一个 `failed` 插件，state 仍是 failed、error 仍是上一版那条）。
     //   ⇒ 清 error；原态是终态 `failed` 时退回「尚未尝试」（lazy 退回 `ready`）——

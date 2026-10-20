@@ -7,7 +7,7 @@
  *   · 发起方只记 dispatched；宿主自己发起的（HOST_CALLER）没有插件记录可挂 ⇒ 不记发起方；
  *   · 只数真的调到了处理器的：没有这个动作 / 缺权限 / 调用方不活 / 过载 —— 一律不数；
  *   · 嵌套失败逐层都记（与审计的「只记一次」不同）；处理器接住内层失败、自己正常返回 ⇒ 它不算失败；
- *   · 注册与 replacePlugin 各开一轮（since 变）；停用再激活不重置；移除插件随记录消失；
+ *   · 注册与 replacePlugin 各开一轮（since 变；同一毫秒内连开两轮顺延 1ms）；停用再激活不重置；移除插件随记录消失；
  *   · 计数变化不让 revision +1（否则每次派发都会触发 watchRegistry）。
  */
 import test from 'node:test';
@@ -156,13 +156,34 @@ test('★★ 计数窗口：停用再激活不重置；replacePlugin 开新一�
   assert.deepEqual(countsOf(host, 'p.a'), { ...zero, handled: 2 }, '★ 同一份实现停用再激活：接着数');
 
   const before = recordOf(host, 'p.a').counters.since;
-  while (Date.now() <= before) await tick();
   await host.replacePlugin(m('p.a', { version: '1.1.0' }), impl);
   assert.deepEqual(countsOf(host, 'p.a'), zero, '★ 换了实现：新一轮从 0 数');
-  assert.ok(recordOf(host, 'p.a').counters.since > before, '★ since 变了 ⇒ 读的人知道中间重置过');
+  assert.notEqual(recordOf(host, 'p.a').counters.since, before, '★ since 变了 ⇒ 读的人知道中间重置过');
 
   await host.unregisterPlugin('p.a');
   assert.equal(countsOf(host, 'p.a'), undefined);
+});
+
+test('★★ 同一毫秒内连开两轮：since 仍换新值（顺延 1ms），且只顺延这一个插件', async (t) => {
+  // 时钟停住 ⇒ 每一步都落在同一毫秒；判据不靠真时钟走动
+  const frozen = Date.now();
+  t.mock.method(Date, 'now', () => frozen);
+  const impl = { activate() {} };
+  const host = new CordiumHost();
+  host.registerPlugin(m('p.a'), impl);
+  host.registerPlugin(m('p.b'), impl);
+  await host.boot();
+  const sinceOf = (id) => recordOf(host, id).counters.since;
+  assert.equal(sinceOf('p.a'), frozen);
+  assert.equal(sinceOf('p.b'), frozen, '★ 按插件各算各的：同一毫秒注册的一批插件，起点都是此刻，不被挤到未来');
+
+  await host.replacePlugin(m('p.a', { version: '1.1.0' }), impl);
+  assert.equal(sinceOf('p.a'), frozen + 1, '★ 同一毫秒内换实现 ⇒ 顺延 1ms，读的人照样看得出换了一轮');
+
+  await host.unregisterPlugin('p.a');
+  host.registerPlugin(m('p.a'), impl);
+  assert.equal(sinceOf('p.a'), frozen + 2, '★ 注销后马上重新注册也一样');
+  assert.equal(sinceOf('p.b'), frozen, '★ 别的插件不受影响');
 });
 
 test('★ 执行中途 replacePlugin：旧实现迟到的失败记在旧一轮，不算到新实现头上', async () => {

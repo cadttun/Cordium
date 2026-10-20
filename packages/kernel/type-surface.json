@@ -95,7 +95,7 @@
       "dispatched: number;",
       "since: number;",
       "};",
-      "export declare function freshCounters(): PluginCounters;",
+      "export declare function freshCounters(since?: number): PluginCounters;",
       "export declare function pluginSnapshot(id: string, record: {",
       "manifest: any;",
       "state: string;",

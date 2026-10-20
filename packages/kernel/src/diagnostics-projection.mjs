@@ -38,18 +38,20 @@ export function manifestSnapshot(manifest) {
  * @property {number} failed 其中以 `action_failed` 结束的次数
  * @property {number} timedOut 其中本次计时器到点的次数（与 failed 不重叠）
  * @property {number} dispatched 它发起、且真的调到了处理器的派发次数
- * @property {number} since 这一轮从何时开始（毫秒时间戳）
+ * @property {number} since 这一轮从何时开始（毫秒时间戳）。同一插件每开一轮都是新值：同一毫秒内连开两轮时顺延 1ms
  */
 
 /**
  * 新一轮计数的初值。注册与 `replacePlugin` 各开一轮。
  *
  * ★ `since` 让读的人判断两次快照之间计数有没有被重置过 —— 只比是否相等，不比大小
- *   （与 OpenTelemetry 累计型指标的 start time 同一用途）。
+ *   （与 OpenTelemetry 累计型指标的 start time 同一用途）。所以宿主传进来的起点已按插件顺延过：
+ *   同一毫秒内连开两轮也不会撞上同一个值（见 host.mjs 的 `#nextRoundStart`）。
+ * @param {number} [since] 这一轮的起点（毫秒时间戳）；缺省为此刻
  * @returns {PluginCounters}
  */
-export function freshCounters() {
-  return { handled: 0, failed: 0, timedOut: 0, dispatched: 0, since: Date.now() };
+export function freshCounters(since = Date.now()) {
+  return { handled: 0, failed: 0, timedOut: 0, dispatched: 0, since };
 }
 
 /**
