@@ -1387,29 +1387,18 @@ export class CordiumHost {
     record.pending += 1;
     const clear = () => { record.pending -= 1; };
 
-    let run;
-    if (idle) {
-      // ★★ 空闲时必须【同步】进入任务体 —— 这一条是被测试逼出来的。
-      //   第一版无条件写成 `record.transition.then(task)`，那会把整个方法体
-      //   推迟到下一个微任务，于是 `record.state = ACTIVATING` 不再是同步生效的。
-      //   后果：调用方在「装配插件」之后紧跟的同步代码读到的是**旧状态**，
-      //   据此判断「该停用的停用」—— 会误判插件启停。
-      //   ⇒ 改造必须是「只在真的有重叠时才排队」，而不是「给每次调用都加一跳」。
-      // ★ 这里的 promise 不被 await 是【有意】的：try/catch 抓的是 task() 的【同步抛出】，
-      //   而 run 要交出去 —— 拒绝的接收者是本方法末尾 return 出去的那个调用方，
-      //   队列尾另有 .then(clear, clear) 兜底。改成 await 会把「同步进入任务体」变成异步，
-      //   正好破坏上面那条设计。（静态检查看不见「promise 被交出去」，报的是误报。）
-      try {
-        run = Promise.resolve(task());
-      } catch (err) {
-        run = Promise.reject(err);
-      }
-    } else {
-      // 真的有在途迁移 ⇒ 排到它后面。前一次失败不得阻断后一次（两种回调都接 task）。
-      run = record.transition.then(task, task);
-    }
-    // 队列尾吞掉结果：既避免未处理拒绝告警，也不让失败污染后续调用方
+    const previous = record.transition;
+    let resolve, reject;
+    /** @type {Promise<void>} */
+    const run = new Promise((res, rej) => { resolve = res; reject = rej; });
+    // 任务会同步广播状态，监听器重入前必须先占住队尾。
     record.transition = run.then(clear, clear);
+    try {
+      // 空闲时同步起步；排队时等上一条结束，上一条失败也不阻断后续任务。
+      resolve(idle ? task() : previous.then(task, task));
+    } catch (err) {
+      reject(err);
+    }
     return run;
   }
 

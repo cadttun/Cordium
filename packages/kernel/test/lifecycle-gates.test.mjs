@@ -244,6 +244,33 @@ test('★ 空闲时生命周期方法必须【同步起步】（不得整体推�
 
 // ═══════════════ ④ boot / 诊断 / 通知 ═══════════════
 
+test('状态通知里请求停用，必须等激活完成后再停用', async () => {
+  const host = makeHost();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const order = [];
+  host.registerPlugin(
+    { id: 'plugin.a', version: '1.0.0', apiVersion: '1.0.0' },
+    {
+      async activate() { await gate; order.push('activated'); },
+      deactivate() { order.push('deactivated'); }
+    }
+  );
+  let stopping;
+  const off = host.watchRegistry(() => {
+    if (pluginState(host, 'plugin.a') !== 'activating') return;
+    off();
+    stopping = host.deactivatePlugin('plugin.a');
+  });
+
+  const starting = host.activatePlugin('plugin.a');
+  await new Promise(setImmediate);
+  release();
+  await Promise.all([starting, stopping]);
+  assert.deepEqual(order, ['activated', 'deactivated']);
+  assert.equal(pluginState(host, 'plugin.a'), 'disabled');
+});
+
 test('★ 二次 boot 失败不得把【本来健康】的插件一起拆掉', async () => {
   const host = makeHost();
   for (const id of ['plugin.a', 'plugin.b']) {
