@@ -379,8 +379,8 @@ test('★ 篡改 ctx.scope.ownerId 不得改变注销结果（自己的实现必
   await host.boot();
   assert.equal(host.getInternalService('service.hijack').who(), 'hijacker');
 
-  // ★ 攻击动作：把自己伪装成另一个插件
-  captured.scope.ownerId = 'plugin.victim';
+  // 宿主 scope 的外壳只读，伪造属主当场被拒；自己的实现仍须正常清理。
+  assert.throws(() => { captured.scope.ownerId = 'plugin.victim'; }, TypeError);
 
   await host.deactivatePlugin('plugin.hijacker');
 
