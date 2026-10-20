@@ -9,7 +9,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CordiumHost } from '../src/index.mjs';
+import { CordiumHost, EffectScope } from '../src/index.mjs';
 import { LOG_DETAILS_BUDGET } from '../src/host-util.mjs';
 
 const m = (id, extra = {}) => ({ id, version: '1.0.0', apiVersion: '1.0.0', ...extra });
@@ -40,6 +40,18 @@ test('反复 scoped(同名)：同一激活只登记一次（停用时一次释�
   await host.deactivatePlugin('plugin.resident');
   assert.equal(scopes(), 0, '★ 停用后作用域必须回收 —— 若每次 scoped() 都 +1 计数而只释放一次，这里会残留');
   assert.throws(() => ctx.scoped('agent'), err => err.code === 'scope_disposed', '已登记过的 label 走复用路径，同样过生命周期门');
+});
+
+test('反复链式 scoped：同一对子作用域不重复积累释放回调', async (t) => {
+  const host = new CordiumHost();
+  const { ctx } = await residentPlugin(host);
+  const registrations = t.mock.method(EffectScope.prototype, 'addHostDisposer');
+  for (let i = 0; i < 1000; i++) ctx.scoped('parent').scoped('child');
+  assert.equal(registrations.mock.callCount(), 2);
+  assert.equal(host.getDiagnostics().channel.scopes.length, 2);
+  await host.deactivatePlugin('plugin.resident');
+  assert.deepEqual(host.getDiagnostics().channel.scopes, []);
+  assert.throws(() => ctx.scoped('parent').scoped('child'), { code: 'scope_disposed' });
 });
 
 test('反复在 privateScope 里提供 / 撤销服务：旧句柄照样失效，重新注册代次单调', async () => {

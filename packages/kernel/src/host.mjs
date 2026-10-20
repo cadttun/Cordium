@@ -1775,10 +1775,7 @@ export class CordiumHost {
       }
     };
 
-    // ★ 本 ctx 已加入过的子作用域（label → 作用域键）。同一激活里重复 `scoped(label)` 只在第一次登记 ——
-    //   此前每调一次都给作用域引用计数 +1、往 scope 挂一个 disposer，常驻插件在热路径上写
-    //   `ctx.scoped('agent').getService(...)` 会让两者随调用次数无上限增长（实测 5 万次 +11MB）。
-    //   只记键、不缓存 ctx 对象：ctx 每次现造（廉价、用完即回收），不因缓存把它们攒在内存里。
+    // 同名子作用域复用 ctx，让链式 scoped() 的后续子作用域也只登记一次。
     const joined = new Map();
 
     // ★ ctx 本身浅冻结 —— 与 manifest 同一口径（内核交给插件的一切都不可变）。
@@ -1853,10 +1850,10 @@ export class CordiumHost {
         //   于是第三方可以 `scoped(x).scoped(别人的顶层键)` 把它【追溯】挂到自己底下 ——
         //   实测后果：一个零声明插件就能让别人的 writer 作用域解析到 team 的私有实现。
         //   现在的位置在**首次创建时**定死，后来者只能加入、不能改写。
-        const joinedKey = joined.get(label);
-        if (joinedKey !== undefined) {
+        const joinedCtx = joined.get(label);
+        if (joinedCtx !== undefined) {
           assertLive(`derive scope '${label}'`);
-          return this.#buildPluginCtx(pluginId, scope, joinedKey);
+          return joinedCtx;
         }
         const requested = scopeKey ?? null;
         const binding = this.#channel.ensureScope(label, requested);
@@ -1878,8 +1875,9 @@ export class CordiumHost {
           this.#channel.releaseScope(binding.key);
           throw error;
         }
-        joined.set(label, binding.key);
-        return this.#buildPluginCtx(pluginId, scope, binding.key);
+        const childCtx = this.#buildPluginCtx(pluginId, scope, binding.key);
+        joined.set(label, childCtx);
+        return childCtx;
       },
 
       /**
