@@ -16,9 +16,21 @@
 两段都只在**确有**废弃 / 破坏时出现，**不预置空段**。
 （依据 [Keep a Changelog 1.1](https://keepachangelog.com/zh-CN/1.1.0/) 对「deprecations, removals, and any breaking changes」的列举要求。）
 
-## [Unreleased]
+## [0.7.0] - 2026-10-21
 
-> 相对 `0.6.0`：纯新增（原型方法 +1、构造选项 +1、`./internal` 导出 +1、载荷字段 +1、不稳定面字段 +2、日志条目字段 +1），删除 0 ⇒ 下一版 `0.7.0`。
+> 相对 `0.6.0`：**纯新增**（原型方法 +1、`./internal` 导出 +1、载荷字段 +1、不稳定面字段 +2、日志条目字段 +1、日志出口选项 +1），**删除 0、形状变化 0** ⇒ 按 SemVer 只需 `minor`。
+>
+> | 类别 | 明细 |
+> |---|---|
+> | 新增原型方法 | `host.watchRegistry(listener)` —— 宿主侧的 list-watch 入口 |
+> | 新增 `./internal` 导出 | `DIAGNOSTICS_VERSION_HISTORY` —— 诊断契约的「版本 → 形状」表 |
+> | 新增载荷字段 | `watchPluginState` 的事件带 `revision` |
+> | 新增不稳定面字段 | `getDiagnostics().revision`、`plugins[].counters` |
+> | 新增日志字段 | 日志条目带 `seq` |
+> | 新增构造选项 | `onLog` —— 日志出口 |
+>
+> ★ **`revision` 刻意留在不稳定面**（1.0 之前不进稳定面）：进了就是「永远存在且单调递增」的长期承诺。
+> ★ `schemaVersion` 不变（**增字段不算不兼容**）。
 
 ### Added
 
