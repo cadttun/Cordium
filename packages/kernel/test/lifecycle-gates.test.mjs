@@ -524,12 +524,13 @@ test('★ 清理回调抛错进宿主错误日志（不只打 console），且�
     `必须进宿主日志：${JSON.stringify(logged.map(l => l.message))}`);
 });
 
-test('★ ctx 浅冻结：插件不能往 ctx 上加 / 改 / 删属性；scope 不随之冻结，正当路径照常可用', async () => {
+test('ctx 与宿主 scope 外壳只读，私有状态与资源清理照常工作', async () => {
   const host = makeHost();
   const seen = {};
   host.registerPlugin(
     { id: 'plugin.a', version: '1.0.0', apiVersion: '1.0.0', provides: ['service.s'] },
     { activate(ctx) {
+        seen.ctx = ctx;
         seen.frozen = Object.isFrozen(ctx);
         seen.scopedFrozen = Object.isFrozen(ctx.scoped('team'));
         seen.privateFrozen = Object.isFrozen(ctx.privateScope());
@@ -540,16 +541,22 @@ test('★ ctx 浅冻结：插件不能往 ctx 上加 / 改 / 删属性；scope �
         // 反向对照：正当路径照常
         ctx.provideService('service.s', { who: () => 'A' });
         seen.who = ctx.getService('service.s').who();
-        ctx.scope.addDisposer(() => {});
+        ctx.scope.addDisposer(() => { seen.disposed = true; });
       } }
   );
   await host.boot();
+  assert.throws(() => Object.defineProperty(seen.ctx.scope, 'active', { value: true }), TypeError);
+  assert.throws(() => Object.defineProperty(seen.ctx.scope, 'dispose', { value: () => {} }), TypeError);
   assert.equal(seen.frozen, true, '★ 根 ctx 必须冻结');
   assert.equal(seen.scopedFrozen, true, '★ scoped() 派生的 ctx 同样冻结（同一份定义）');
   assert.equal(seen.privateFrozen, true, '★ privateScope() 派生的 ctx 同样冻结');
-  assert.equal(seen.scopeFrozen, false, 'scope 不得被冻（内部有活的 disposer 表）');
+  assert.equal(seen.scopeFrozen, true, 'scope 的公开外壳不得被插件改写');
   assert.ok(seen.addErr instanceof TypeError, '加属性必须抛 TypeError');
   assert.ok(seen.setErr instanceof TypeError, '改属性必须抛 TypeError');
   assert.ok(seen.delErr instanceof TypeError, '删属性必须抛 TypeError');
   assert.equal(seen.who, 'A');
+  await host.deactivatePlugin('plugin.a');
+  assert.equal(seen.disposed, true);
+  assert.equal(seen.ctx.scope.active, false);
+  assert.throws(() => seen.ctx.emit('evt'), hasCode('scope_disposed'));
 });

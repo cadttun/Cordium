@@ -1545,6 +1545,8 @@ export class CordiumHost {
       // 清理回调抛错进宿主日志（与 channel 的 onListenerError 同一口径），不再只到 console
       onDisposeError: (ownerId, err) => this.#logFailure('error', `Dispose hook of plugin '${ownerId}' threw`, err, ownerId)
     }, this.#scopeReleaseKey);
+    // 私有字段仍可更新；冻结外壳防止插件伪造 active 或替换清理方法。
+    Object.freeze(scope);
     record.scope = scope;
 
     const budget = record.lifecycleTimeoutMs ?? this.#lifecycleTimeoutMs;
@@ -1780,7 +1782,7 @@ export class CordiumHost {
     const joined = new Map();
 
     // ★ ctx 本身浅冻结 —— 与 manifest 同一口径（内核交给插件的一切都不可变）。
-    //   只冻 ctx 这一层：scope 内部有活的 disposer 表，冻它会打断生命周期；其余值都是函数 / 已冻结的 manifest。
+    //   scope 的外壳也已冻结，内部私有字段仍可维护生命周期；其余值都是函数 / 已冻结的 manifest。
     //   插件改 ctx 本就提不了权（身份、作用域键都走闭包），这里防的是「把 ctx 当储物柜 / 替换方法」的自伤与不一致。
     return Object.freeze({
       pluginId,
