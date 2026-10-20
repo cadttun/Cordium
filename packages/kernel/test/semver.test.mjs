@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 // ★ 改为直接测【中立模块】—— 被测对象搬了家，测试也应指向它的新家，
 //   而不是继续经由 host.mjs（那样测试会被宿主的存在与否干扰）。
-import { satisfiesSemVer, parseRange, isValidSemVer } from '../src/semver.mjs';
+import { satisfiesSemVer, parseRange, isValidSemVer, compareSemVer } from '../src/semver.mjs';
 import {
   SEMVER_FIXTURES,
   SEMVER_VERSIONS,
@@ -34,6 +34,22 @@ test('SemVer: 支持标准 ^, ~, >= 及 ^0.x 严格规范', () => {
   assert.equal(satisfiesSemVer('0.2.0', '^0.1.0'), false);
   assert.equal(satisfiesSemVer('0.0.3', '^0.0.3'), true);
   assert.equal(satisfiesSemVer('0.0.4', '^0.0.3'), false);
+});
+
+test('大数字预发布标识符必须精确比较，不能把不同版本判成相等', () => {
+  for (const [a, b] of [
+    ['9007199254740992', '9007199254740993'],
+    ['9'.repeat(30), '1' + '0'.repeat(30)]
+  ]) {
+    const older = `1.0.0-${a}`;
+    const newer = `1.0.0-${b}`;
+    assert.equal(compareSemVer(older, newer), -1);
+    assert.equal(compareSemVer(newer, older), 1);
+    assert.equal(compareSemVer(older, older), 0);
+    assert.equal(satisfiesSemVer(older, newer), false);
+    assert.equal(satisfiesSemVer(older, `>=${newer}`), false);
+    assert.equal(satisfiesSemVer(newer, `>${older}`), true);
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════

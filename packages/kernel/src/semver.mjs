@@ -21,7 +21,7 @@
  *
  * ── 语义基线─────────────────────────────────────────
  * **node-semver 7.7.4 默认模式**（`loose=false` / `includePrerelease=false`）。
- * 本文件是它的**语义等价移植**，逐条对齐 `classes/range.js` 的脱糖顺序：
+ * 本文件以它为语义基线，逐条对齐 `classes/range.js` 的脱糖顺序：
  * `BUILD 剥离 → caret → tilde → xrange → star → GTE0`。
  *
  * ★ 两阶段分层（与 npm 自身一致：`new Range()` 抛，`semver.satisfies()` 吞）：
@@ -48,6 +48,8 @@
  * | `includePrerelease` | 可选开关 | 未实现（恒为 npm 默认 `false`） | 插件 `^1.0.0` 本就不该匹配 `1.0.1-beta`（npm 默认行为即使用者预期） | 第一个「预发布插件版本」的真实需求 |
  * | `loose` | 可选开关 | 未实现（恒为严格） | 放宽的是不合法的串；与 manifest 校验的 fail-loud 收紧方向相反 | 同上，且须先说明为何要放宽 |
  * | `isValidSemVer` 与 `semver.valid` | `valid('1.2.3+build.1')` / `valid('v1.2.3')` / `valid(' 1.2.3')` 返回规范化后的串（真值） | 返回 `false`：原串必须逐字等于规范串 | manifest 原样入库，宽松形式会让各层判定分叉（实测内核层曾放行 `v1.0.0` 而插件层拒绝）；`+build` 不参与比较，留着只会让「同版本」出现两种写法 | 出现需要记录构建元数据的真实 manifest |
+ *
+ * 大数字预发布标识符用 BigInt 精确比较，不沿用 node-semver 7.7.4 的 Number 舍入行为。
  *
  * ★★★ 曾有的真缺陷（已修，保留作教训）：
  *   官方 `internal/re.js` 的 `makeSafeRegex` 会**把所有无界量词换成有界**——
@@ -162,14 +164,14 @@ function parseVersion(raw) {
   };
 }
 
-// 照抄 oracle 的 compareIdentifiers（含「数字字符串重新数字化」这条路径）
+// 大数字标识符不能转成 Number，否则相邻版本可能被舍入成同一个值。
 function compareIdentifiers(a, b) {
   if (typeof a === 'number' && typeof b === 'number') {
     return a === b ? 0 : a < b ? -1 : 1;
   }
   const anum = RE_NUMERIC_ID.test(a);
   const bnum = RE_NUMERIC_ID.test(b);
-  if (anum && bnum) { a = +a; b = +b; }
+  if (anum && bnum) { a = BigInt(a); b = BigInt(b); }
   return a === b ? 0
     : (anum && !bnum) ? -1
       : (bnum && !anum) ? 1
