@@ -411,6 +411,7 @@ export function activate(ctx) {
 
 - `ctx.scope.addDisposer(fn)` 返回一个移除函数。
 - `deactivate()` 与清理回调共用宿主的生命周期时限（默认 30 秒）；超时的回调会记一条错误并被跳过，不会卡住停用。
+- 同一插件的启停按调用顺序**排队**执行。⚠️ 所以在 `activate()` / `deactivate()` 里**不要等待**针对本插件的 `activatePlugin` / `deactivatePlugin`（跨插件成环同理：A 激活时等 B 激活，B 激活时又等 A 停用）：后发的请求排在当前钩子后面，等它就是等自己，只能耗到生命周期时限才失败（时限设为 0 时永远不结束），超时报文会写「queued behind it」。只发起、不 `await` 是安全的 —— 请求会在当前钩子结束后执行。
 - 插件不能自己 `dispose` 作用域（`scope_owned_by_host`）。
 
 ## 9. 错误
@@ -547,6 +548,7 @@ await host.boot();
   ⚠️ 别为了「过权限门」去借一个插件的 id 调 `dispatchAction(pluginId, …)` —— 那样**审计日志会记成那个插件干的**，不是宿主。确实需要「代表某个插件」时，那是**委派**，要能同时说清「谁在做」和「代表谁」。
 - ★ **装配方要发布 / 订阅事件时，用 `host.events`** —— `{ emit, waterfall, subscribe }` 三件，以**根作用域**语义（与插件在根 `ctx` 上 `ctx.on` / `ctx.emit` 同形）。装配方**不是插件、没有 `ctx`**，这是它以宿主身份参与事件的正路；订阅监听器出错时审计记 `owner` 为 `HOST_CALLER`（`'@host'`）。只给这三件，**不给** `provideService` / `registerAction` —— 那些宿主已有 `getInternalService` / `dispatchActionAsHost`。
 - ★ **装配方要知道「注册表变了」时，用 `host.watchRegistry(listener)`** —— 返回退订函数；载荷只有冻结的 `{ revision }`，内容自己去 `getDiagnostics()` 拉（拉到的快照 `revision` 不小于它，就已包含这次变化）。不推初始状态：先拉一次快照，再订阅。`revision` 属诊断快照的不稳定面：用来比大小、丢弃过期信号，别存档、别跨宿主实例比较。
+  监听器里可以发起启停（会排在正在进行的那次之后执行），但同 §8：别在插件钩子里 `await` 这类排在后面的请求。
 - 插件放在哪个目录都可以，清单里写绝对路径即可；以脚本自身为基准时用 `new URL('./plugins/x.mjs', import.meta.url)`。
 
 ### 读诊断快照：哪些字段可以依赖

@@ -1375,6 +1375,12 @@ export class CordiumHost {
    * ★ 语义选择：串行化而不是抛错 —— 用户连点两次开关是正常操作，
    *   抛错会把日常操作变成报错弹窗。串行化让两次请求按顺序各自完整执行。
    *
+   * ⚠️ 代价：钩子里**等待**一个排在它后面的、针对同一插件的启停请求会互等
+   *   （含跨插件成环：A 的 activate 等 B 激活，B 的 activate 又等 A 停用）。
+   *   只能靠生命周期时限收场；`lifecycleTimeoutMs: 0` 时永不结束。只发起、不等待是安全的。
+   *   ★ 刻意不做重入检测：调用那一刻看不出调用方会不会 await，按异步上下文放行重入
+   *     又会让嵌套请求绕过本方法要守的先后顺序。超时报文会提示「后面还有排队的请求」。
+   *
    * @param {string} pluginId
    * @param {() => Promise<any>} task
    * @returns {Promise<void>}
@@ -1400,6 +1406,20 @@ export class CordiumHost {
       reject(err);
     }
     return run;
+  }
+
+  /**
+   * 生命周期超时报文的补充说明：同一插件后面还有排队的启停请求时，钩子可能正在等它们（见 #serializeLifecycle）。
+   * 在超时那一刻读 pending，不在任务开始时读 —— 钩子自己发起的请求是它运行期间才入队的。
+   * 调用方都在 #serializeLifecycle 的任务体内，pending 已含当前这一个 ⇒ 减 1 才是排在后面的数量。
+   * ⚠️ 只说「有排队」，不断言钩子一定在等：别处发起的正常排队也会出现这句（报文措辞因此是条件句）。
+   * @param {{ pending: number }} record
+   */
+  #queuedLifecycleHint(record) {
+    const queued = record.pending - 1;
+    if (queued <= 0) return '';
+    return `; ${queued} lifecycle request(s) for this plugin are queued behind it — `
+      + `a hook that awaits one of them waits for itself (the hook keeps running after the timeout)`;
   }
 
   /**
@@ -1569,7 +1589,7 @@ export class CordiumHost {
         //   ⚠️ 不选「只改文档」：文档只能覆盖照着文档写的人，而这是内核的**结构问题**。
         const config = record.entry.config ?? EMPTY_CONFIG;
         await runWithTimeout(() => record.entry.activate(ctx, config), budget, () => new CordiumError(ErrorCode.LIFECYCLE_TIMEOUT,
-          `Plugin '${pluginId}' activate() did not finish within ${budget}ms (it may still be running; its scope is released, so later registrations are rejected)`,
+          `Plugin '${pluginId}' activate() did not finish within ${budget}ms (it may still be running; its scope is released, so later registrations are rejected)${this.#queuedLifecycleHint(record)}`,
           { pluginId }));
         // ★ 防御纵深 —— **本检查在当前代码路径上不可达**，保留是刻意的。按本仓既有口径，
         //   纵深防御要标清【防什么 / 代价 / 不可达的证据】三者（见 design/ 与测试目录里另外四处同形记录）：
@@ -1672,7 +1692,7 @@ export class CordiumHost {
     try {
       if (record.entry && typeof record.entry.deactivate === 'function') {
         await runWithTimeout(() => record.entry.deactivate(), budget, () => new CordiumError(ErrorCode.LIFECYCLE_TIMEOUT,
-          `Plugin '${pluginId}' deactivate() did not finish within ${budget}ms (it may still be running)`, { pluginId }));
+          `Plugin '${pluginId}' deactivate() did not finish within ${budget}ms (it may still be running)${this.#queuedLifecycleHint(record)}`, { pluginId }));
       }
     } catch (err) {
       this.#logFailure('warn', `Error during plugin deactivate hook for ${pluginId}`, err, pluginId);

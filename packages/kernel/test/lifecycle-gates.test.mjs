@@ -271,6 +271,91 @@ test('状态通知里请求停用，必须等激活完成后再停用', async ()
   assert.equal(pluginState(host, 'plugin.a'), 'disabled');
 });
 
+// ★ 队列的代价（见 host.mjs #serializeLifecycle）：钩子【等待】排在它后面的同插件请求会互等，
+//   只能靠生命周期时限收场。这几条钉住「确实会超时（不会永久挂起）」与「超时报文点明原因」。
+const LIFECYCLE_BUDGET_MS = 60;
+const QUEUED_HINT = /queued behind it.*waits for itself.*keeps running after the timeout/;
+
+test('★ activate 里等待自己的停用 ⇒ 时限内以 lifecycle_timeout 失败，报文点明后面有排队请求；之后可重试', async () => {
+  const host = new CordiumHost({ lifecycleTimeoutMs: LIFECYCLE_BUDGET_MS });
+  let waitForSelf = true;
+  let lateHook;
+  host.registerPlugin(
+    { id: 'plugin.a', version: '1.0.0', apiVersion: '1.0.0' },
+    {
+      async activate() {
+        if (!waitForSelf) return;
+        lateHook = host.deactivatePlugin('plugin.a');
+        await lateHook;   // 这个停用排在本次激活之后 ⇒ 互等
+      }
+    }
+  );
+  await assert.rejects(
+    host.activatePlugin('plugin.a'),
+    hasCode('lifecycle_timeout', new RegExp(`plugin\\.a.*${LIFECYCLE_BUDGET_MS}ms.*1 lifecycle request\\(s\\).*${QUEUED_HINT.source}`))
+  );
+  await lateHook;   // 超时放开队列后，排队的停用照常跑完 —— 不留悬着的 promise
+  assert.notEqual(pluginState(host, 'plugin.a'), 'active');
+
+  waitForSelf = false;
+  await host.activatePlugin('plugin.a');
+  assert.equal(pluginState(host, 'plugin.a'), 'active', '超时只让这一次失败，不堵死后续生命周期操作');
+});
+
+test('★ deactivate 里等待自己的重新激活 ⇒ 时限内收场，错误日志里的超时报文同样点明排队请求', async () => {
+  const host = new CordiumHost({ lifecycleTimeoutMs: LIFECYCLE_BUDGET_MS });
+  let restart;
+  host.registerPlugin(
+    { id: 'plugin.a', version: '1.0.0', apiVersion: '1.0.0' },
+    {
+      activate() {},
+      async deactivate() {
+        if (restart) return;
+        restart = host.activatePlugin('plugin.a');
+        await restart;
+      }
+    }
+  );
+  await host.boot();
+  await host.deactivatePlugin('plugin.a');   // 停用超时不抛，只进日志
+  await restart;
+  const logs = host.getDiagnostics().recentLogs.map(l => l.message);
+  assert.ok(
+    logs.some(m => /deactivate\(\) did not finish/.test(m) && QUEUED_HINT.test(m)),
+    `停用超时的日志必须带排队提示；实际：${JSON.stringify(logs)}`
+  );
+  assert.equal(pluginState(host, 'plugin.a'), 'active', '排队的激活在停用收场后照常执行');
+});
+
+test('★ 跨插件成环（A 激活时等 B 激活，B 激活时等 A 停用）⇒ 时限内收场，不会永久挂起', async () => {
+  const host = new CordiumHost({ lifecycleTimeoutMs: LIFECYCLE_BUDGET_MS });
+  let startB, stopA;
+  host.registerPlugin(
+    { id: 'plugin.a', version: '1.0.0', apiVersion: '1.0.0', activation: 'lazy' },
+    { async activate() { startB = host.activatePlugin('plugin.b'); await startB; } }
+  );
+  host.registerPlugin(
+    { id: 'plugin.b', version: '1.0.0', apiVersion: '1.0.0', activation: 'lazy' },
+    { async activate() { stopA = host.deactivatePlugin('plugin.a'); await stopA; } }
+  );
+  await assert.rejects(host.activatePlugin('plugin.a'), hasCode('lifecycle_timeout', QUEUED_HINT));
+  // A 超时放开它的队列 ⇒ 排队的停用跑完 ⇒ B 的 activate 随之返回：环上每一环都收场，不留悬着的 promise
+  await stopA;
+  await startB.catch(() => {});
+  assert.notEqual(pluginState(host, 'plugin.a'), 'active');
+});
+
+test('反例：单纯挂起的 activate（后面没有排队请求）⇒ 超时报文不带排队提示', async () => {
+  const host = new CordiumHost({ lifecycleTimeoutMs: LIFECYCLE_BUDGET_MS });
+  host.registerPlugin(
+    { id: 'plugin.a', version: '1.0.0', apiVersion: '1.0.0' },
+    { activate: () => new Promise(() => {}) }
+  );
+  const err = await host.activatePlugin('plugin.a').then(() => null, e => e);
+  assert.ok(hasCode('lifecycle_timeout')(err));
+  assert.doesNotMatch(err.message, /queued behind it/, '没有排队请求时不得误导排查方向');
+});
+
 test('★ 二次 boot 失败不得把【本来健康】的插件一起拆掉', async () => {
   const host = makeHost();
   for (const id of ['plugin.a', 'plugin.b']) {
